@@ -2,7 +2,7 @@
 
 ## Статус
 
-RECON по открытым исходникам выполнен 2026-10-01. SSH-проверка машины и реализация нового движка ещё не выполнялись. Все скорости нового core в PLAN.md являются целями.
+RECON по открытым исходникам и read-only remote RECON выполнены 2026-10-01. Связь, аппаратная topology, GGUF inventory и существующий baseline обнаружены (подробности в RECON.md, раздел 4). R0 не закрыт: новый HIP probe/kernel/copy, rocBLAS и baseline-прогон ещё не выполнялись. Реализации нового движка нет; скорости в PLAN.md остаются целями.
 
 ## Задача
 
@@ -10,9 +10,12 @@ RECON по открытым исходникам выполнен 2026-10-01. SS
 
 ## Соединение и рабочие пути
 
-SSH_TARGET: взять из начального сообщения пользователя.
+Удалённое подключение: MCP `mi50-llama-remote`, хост `amude`, пользователь `radneon`; связь проверена 2026-10-01.
 Controller repository: текущая рабочая директория OpenCode.
-Remote source/build/runs/toolchain/model paths: обнаружить в R0.
+Основная модель: `/home/radneon/models-nvme/qwen38-keep1-Q4_0.gguf` (75 399 121 792 байт), источник по указанию пользователя: https://huggingface.co/Cyronius/Qwen3.8-Flash-Next-131B-A6B-GGUF.
+MTP sidecar: `/home/radneon/models-nvme/mtp-Qwen3.8-Flash-Next-shared-Q8_0.gguf` (2 786 568 256 байт); источник загрузки не установлен.
+Baseline image: `llama.cpp-gfx906:pp-stream-dcd685463d`; source: `/home/radneon/src/worktrees/qwen38-pp-trace-75`, revision `dcd685463d597d31f5ca759d32c94592a2740fa4`.
+Baseline config: `/home/radneon/llama/docker-compose.yml`, `/home/radneon/llama/models.ini`. Toolchain найден в Docker-образах; версии и работоспособность HIP/rocBLAS ещё проверить. Remote source/build/runs нового core ещё не созданы.
 
 ## Исходный baseline пользователя
 
@@ -26,7 +29,7 @@ Remote source/build/runs/toolchain/model paths: обнаружить в R0.
 
 ## Следующие действия
 
-Обнаружить SSH target и рабочий gfx906 stack. Создать простой build/run цикл. Проверить аппаратную topology и модель inventory. Воспроизвести короткий baseline. Реализовать loader и первый CPU/HIP expert fixture.
+Через `mi50-llama-remote` проверить HIP compiler/runtime внутри найденного образа, выбрать source/build/runs нового core на корневом разделе и создать простой build/run цикл. Выполнить HIP device probe, kernel/copy smoke и rocBLAS GEMM, затем короткий baseline. В R1 реализовать loader найденных типов и первый expert fixture: у слоя 0 gate/up Q4_0, down Q4_1. Сначала non-speculative путь на выбранном GGUF без реквантизации, затем существующий MTP sidecar; другие локальные модели не включать в стартовый набор.
 
 ## Не повторять без причины
 

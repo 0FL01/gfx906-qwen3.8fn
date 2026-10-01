@@ -2,7 +2,7 @@
 
 Дата проверки открытых источников: 2026-10-01.
 
-Это архитектурное решение и разведка по исходникам. Доступ к GPU-машине в рамках подготовки документа не использовался. Реальные полосы памяти, topology, kernel timings и результаты нового движка пока неизвестны. Их устанавливает задача R0.
+Это архитектурное решение, разведка по исходникам и read-only remote RECON от 2026-10-01. Подключение, аппаратная topology, локальные GGUF и baseline проверены; результаты находятся в разделе 4. Реальные полосы памяти, HIP/rocBLAS smoke, kernel timings и результаты нового движка ещё предстоит установить в R0.
 
 ## 1. Решение и границы
 
@@ -55,6 +55,35 @@ LLVM-тесты подтверждают `v_dot8_i32_i4` на gfx906. Это I4�
 Если расхождение подтвердится, правильность архитектуры сверять с официальной reference, а старую скорость хранить как legacy baseline с явной пометкой. Не ослаблять тест для совпадения и не выдавать изменение алгоритма за только оптимизацию. Постоянный compatibility framework не нужен: достаточно маленького diagnostic oracle и объяснения.
 
 ## 4. Аппаратный RECON на машине
+
+### Подтверждено на remote 2026-10-01
+
+Подключение: MCP `mi50-llama-remote`, хост `amude`, пользователь `radneon`, Ubuntu 26.04.1, kernel `7.0.0-30-generic`. Проверка была read-only: без запуска контейнеров, загрузки полной модели, сборки и performance-прогонов.
+
+**Зафиксированный стартовый набор GGUF:**
+
+| Роль | Remote path | Размер, байт |
+| --- | --- | ---: |
+| Target keep1 | `/home/radneon/models-nvme/qwen38-keep1-Q4_0.gguf` | 75 399 121 792 |
+| MTP shared sidecar | `/home/radneon/models-nvme/mtp-Qwen3.8-Flash-Next-shared-Q8_0.gguf` | 2 786 568 256 |
+
+Источник target по указанию пользователя — Cyronius [S4]; карточка описывает Q4_0 keep1 из bartowski Q4_0. Локальные metadata согласуются с вариантом, но byte-for-byte идентичность удалённому файлу не проверялась. Источник загрузки sidecar не установлен. Сначала использовать target без реквантизации в non-speculative runtime, затем этот sidecar для MTP2. IQ1_M и остальные локальные модели не входят в стартовый набор.
+
+Оба файла GGUF v3, `general.architecture=qwen4exp`. Для всех 1224 target и 32 sidecar тензоров проверены размеры по dimensions/type, block divisibility, alignment, отсутствие перекрытий и выходов за файл; ошибок нет. Это проверка inventory и диапазонов, не end-to-end correctness модели.
+
+Target: 48 слоёв, hidden 2560, 512/top10 experts, FFN 640, native context 262144. Реальные типы (число тензоров): F32 460, F16 1, BF16 122, Q4_0 442, Q4_1 6, Q5_0 72, Q8_0 114, Q6_K 7. Все routed gate/up — Q4_0; routed down слоёв 0–5 — Q4_1, остальных 42 — Q4_0. Название файла не означает однородный Q4_0: первый expert слоя 0 требует Q4_1 down.
+
+PLE: GGUF `ple.layers=[1]` (нулевая нумерация), таблица `[160, 40000085]` Q4_0. Сохранены головы 0 и 8 с vocab sizes 20000003 и 20000081 и offsets 0 и 20000003. Остальные 14 имеют vocab size 1 и offset 40000084; у общей строки прочитаны нулевые scales всех Q4_0 блоков. PLE EOS 248044 отличается от tokenizer EOS 248046; не объединять эти значения.
+
+Sidecar: `nextn_shared_target_tensors=true`, `nextn_predict_layers=1`, тензоры блока `blk.48`, без собственных embedding/output. Типы: Q8_0 19, F32 11, BF16 2; все три routed expert tensors — Q8_0. Tokenizer обоих файлов: `gpt2`/`qwen35`, BOS 248044, EOS 248046. Совпадение полного tokenizer и поведение совместного MTP ещё не проверены.
+
+**Аппаратная часть:** Xeon E5-2698B v3, 1 сокет, 16 физических cores/32 threads, AVX2/FMA/F16C, один NUMA-узел. RAM около 121 GiB (118 GiB available на момент проверки); частота DIMM не проверена. KFD сообщает две gfx906, wave64, 240 SIMD (60 CU). Sysfs VRAM — 17 163 091 968 байт на каждой карте (~15.98 GiB); HIP device properties ещё не получены. GPU BDF `0000:05:00.0` и `0000:08:00.0`. Root ports `00:02.0`/`00:03.0` показывают 8 GT/s ×16 (PCIe3); внутренние мосты GPU показывают 16 GT/s ×16, что не повышает полосу пути до CPU. P2P permission/copy и полоса не измерены.
+
+Model NVMe `/dev/nvme0n1p1`: 239 GiB, свободно около 39 GiB. Корневой `/dev/sda2`: 468 GiB, свободно около 223 GiB. Сборку и runs нового core размещать на корневом разделе; модели не копировать.
+
+**Существующий baseline:** образ `llama.cpp-gfx906:pp-stream-dcd685463d` (image ID prefix `e6be1a2fcba8`); исходники `/home/radneon/src/worktrees/qwen38-pp-trace-75`, HEAD `dcd685463d597d31f5ca759d32c94592a2740fa4`. Конфигурация `/home/radneon/llama/docker-compose.yml` и `models.ini` указывает оба выбранных GGUF: DIO, cache112/inserts2, layer split 1:1, batch/ubatch1024, threads16, Q4_0 K/V, capacity131072, MTP2 на ROCm1, temperature1.0/top-p0.95/top-k20, min-p0, repeat-penalty1. Streaming и prefill D2D включены, подробный trace выключен. Запущенных Docker-контейнеров на момент проверки нет; baseline не воспроизводился.
+
+ROCm отсутствует в host `/opt`; доступные gfx906 Docker-образы используют существующий стек. Найденный `Dockerfile-build-llama` использует base `mixa3607/llama.cpp-gfx906:b10808-rocm-7.14-mxxm-20260826041541-pre`, `HIPCXX` из `hipconfig`, `AMDGPU_TARGETS=gfx906`. Тег образа не является проверкой compiler/runtime версии: точные версии, HIP kernel и rocBLAS GEMM ещё проверить внутри контейнера. Доступ пользователя к `/dev/kfd` и render nodes есть.
 
 ### Controller и GPU-host
 

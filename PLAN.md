@@ -10,7 +10,7 @@
 
 ## R0. Подключение, рабочая сборка, аппаратный baseline
 
-**Действия.** Обнаружить SSH target, рабочие пути, существующий образ/контейнер, модель и draft. Использовать доступный работающий gfx906 toolchain. Не обновлять систему ради свежего номера версии. Настроить один цикл source sync → remote build → remote run → получить результат. Остановить конкурирующий llama-server перед нагрузкой своего процесса; baseline запускать отдельно.
+**Действия.** Связь, модели, baseline image/source/config и аппаратная topology обнаружены 2026-10-01 (RECON.md, раздел 4; пути в STATE.md). Через MCP `mi50-llama-remote` проверить версии и работоспособность существующего контейнерного gfx906 toolchain, выбрать рабочие source/build/runs нового core на корневом разделе. Не обновлять систему ради свежего номера версии. Настроить один цикл source sync → remote build → remote run → получить результат. Остановить конкурирующий llama-server перед нагрузкой своего процесса; baseline запускать отдельно.
 
 Написать маленький device probe и реальные HIP smoke kernels. Проверить обе GPU, VRAM, wave size, CPU flags/физические cores, NUMA и PCI topology. Выполнить ограниченную серию RAM/H2D/P2P/launch/GEMM проверок из RECON, включая CPU compute одновременно с H2D. Недоступный performance counter не блокирует разработку: использовать wall time, HIP events и доступные системные данные.
 
@@ -20,9 +20,9 @@
 
 ## R1. Загрузка весов и один исполнимый эксперт
 
-**Действия.** Прочитать inventory существующего GGUF: имена, размеры, реальные types/strides и metadata. Поддержать необходимые типы, не весь каталог GGUF. Можно использовать существующий parser. Нормализовать views без полной перекопировки модели. Идентифицировать PLE, HC, GDN/QSA, shared expert, LM head и sidecar.
+**Действия.** Реализовать loader зафиксированного GGUF по проверенному inventory в RECON.md: имена, размеры, реальные types/strides и metadata. Target содержит F32/F16/BF16/Q4_0/Q4_1/Q5_0/Q8_0/Q6_K; sidecar — F32/BF16/Q8_0. Поддержать необходимые типы, не весь каталог GGUF. Можно использовать существующий parser. Нормализовать views без полной перекопировки модели. Идентифицировать PLE, HC, GDN/QSA, shared expert, LM head и sidecar.
 
-Извлечь один реальный routed expert. Сделать scalar/reference, AVX2 и HIP Q4×Q8 реализацию его gate/up → SiLU×up → down. Проверять одинаковые квантованные входы и веса, чтобы изолировать ошибки kernel от ошибок activation quantization. Затем проверить float input → quantization → matmul.
+Извлечь один реальный routed expert слоя 0: gate/up Q4_0, down Q4_1 (Q4_1 down также у слоёв 1–5; у остальных down Q4_0). Сделать scalar/reference, AVX2 и HIP Q4×Q8 реализацию его gate/up → SiLU×up → down с сохранением scale/offset Q4_1. Проверять одинаковые квантованные входы и веса, чтобы изолировать ошибки kernel от ошибок activation quantization. Затем проверить float input → quantization → matmul.
 
 Измерить 1/2/3 позиции и один PP-sized batch. На CPU применять постоянный worker pool только там, где он нужен; не создавать потоки на каждый matmul. Проверить диапазоны unpack, scale, signedness, суммы и отсутствие saturation в выбранной AVX2-схеме.
 
