@@ -1,1 +1,4 @@
 opencode.jsonc
+/build/
+/runs/
+__pycache__/

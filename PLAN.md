@@ -31,6 +31,8 @@ Scalar/CPU oracle разрешён; намеренно generic/медленны�
 
 **Готово:** исходник с контроллера собран и выполнен на обеих GPU; корректность kernel/copy проверена; есть реальные характеристики машины и первый лог baseline. STATE.md содержит рабочие команды. Не создавать отдельный framework аппаратного RECON.
 
+**Закрыт 2026-10-01:** core-probe, удалённый Release build/CTest, обе HIP/rocBLAS fixtures и новая baseline-серия 32+64 / 4096+512; команды и ограничения в README.md/STATE.md, числа в results.jsonl. Это не завершение inference core и не speedup относительно исходных пользовательских prompts.
+
 ## R1. Загрузка весов и один исполнимый эксперт
 
 **Действия.** Реализовать loader зафиксированного GGUF по проверенному inventory в RECON.md: имена, размеры, реальные types/strides и metadata. Target содержит F32/F16/BF16/Q4_0/Q4_1/Q5_0/Q8_0/Q6_K; sidecar — F32/BF16/Q8_0. Поддержать необходимые типы, не весь каталог GGUF. Можно использовать существующий parser. Нормализовать views без полной перекопировки модели. Идентифицировать PLE, HC, GDN/QSA, shared expert, LM head и sidecar.

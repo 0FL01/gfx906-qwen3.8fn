@@ -2,7 +2,7 @@
 
 Дата проверки открытых источников: 2026-10-01.
 
-Это архитектурное решение, разведка по исходникам и read-only remote RECON от 2026-10-01. Подключение, аппаратная topology, локальные GGUF и baseline проверены; результаты находятся в разделе 4. Реальные полосы памяти, HIP/rocBLAS smoke, kernel timings и результаты нового движка ещё предстоит установить в R0.
+Это архитектурное решение и разведка по исходникам с read-only remote RECON от 2026-10-01. Последующий R0 build/probe и новая baseline-серия также выполнены; результаты и ограничения находятся в разделе 4, STATE.md и results.jsonl. Полный inference нового core ещё не реализован.
 
 ## 1. Решение и границы
 
@@ -84,6 +84,14 @@ Model NVMe `/dev/nvme0n1p1`: 239 GiB, свободно около 39 GiB. Кор
 **Существующий baseline:** образ `llama.cpp-gfx906:pp-stream-dcd685463d` (image ID prefix `e6be1a2fcba8`); исходники `/home/radneon/src/worktrees/qwen38-pp-trace-75`, HEAD `dcd685463d597d31f5ca759d32c94592a2740fa4`. Конфигурация `/home/radneon/llama/docker-compose.yml` и `models.ini` указывает оба выбранных GGUF: DIO, cache112/inserts2, layer split 1:1, batch/ubatch1024, threads16, Q4_0 K/V, capacity131072, MTP2 на ROCm1, temperature1.0/top-p0.95/top-k20, min-p0, repeat-penalty1. Streaming и prefill D2D включены, подробный trace выключен. Запущенных Docker-контейнеров на момент проверки нет; baseline не воспроизводился.
 
 ROCm отсутствует в host `/opt`; доступные gfx906 Docker-образы используют существующий стек. Найденный `Dockerfile-build-llama` использует base `mixa3607/llama.cpp-gfx906:b10808-rocm-7.14-mxxm-20260826041541-pre`, `HIPCXX` из `hipconfig`, `AMDGPU_TARGETS=gfx906`. Тег образа не является проверкой compiler/runtime версии: точные версии, HIP kernel и rocBLAS GEMM ещё проверить внутри контейнера. Доступ пользователя к `/dev/kfd` и render nodes есть.
+
+### Исполнимый R0 после read-only RECON, 2026-10-01
+
+Source mirror `/home/radneon/gfx906-core/src`, build/runs на том же корневом разделе; существующие веса не копировались. `llama.cpp-gfx906:cmake-4.4.3` содержит CMake 4.4.3, `/opt/rocm/llvm/bin/clang++` Clang 23, HIP runtime/driver 7.14.60850 и rocBLAS 5.5. Production runtime image не содержит CMake. C++20/HIP20 с явным gfx906 собраны без смены стека; обе rocBLAS SGEMM fixtures прошли с max_abs_error=0.
+
+HIP properties подтвердили обе gfx906:sramecc+:xnack-, wave64, CU60, 8 async engines и 17 163 091 968 VRAM bytes на GPU, включая BDF из topology. Runtime CPU probe подтвердил 16 физических cores/32 разрешённых logical CPUs, один NUMA, AVX2/FMA/F16C. Kernel/H2D consumer, D2D readback и event-ordered P2P producer/consumer (20 epochs, оба направления) проверены. P2P доступен, но измеренный последний 4-MiB transfer — около 3 GB/s; это диагностическая точка, не основание считать P2P быстрее staging. RAM read/FMA и overlap с dual H2D синтетические, не CPU expert GEMV. Все численные измерения — в одном results.jsonl и raw r0-probe.jsonl.
+
+Production baseline выполнен отдельно с MTP2/Q4 target+draft KV, тем же preset и traces off, после чего наш core-baseline остановлен. Новые fixtures сохраняют exact 32/4096 prompt IDs и 64/512 output IDs: это не оригинальные prompts пользователя. PP/TG/HTTP и raw artifacts записаны в results.jsonl; prefix reuse выключен, temperature1/top-p.95/top-k20, ignore_eos=true. Один короткий запрос перед 4K не доказывает полностью прогретый expert cache. Histogram 0/1/2 отсутствует в structured response и оставлен null. Router требует model=current в tokenize/completion и ожидания /models status=loaded; одного /health недостаточно.
 
 ### Controller и GPU-host
 
