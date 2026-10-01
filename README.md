@@ -169,7 +169,7 @@ emulation of production mx's padded HIP bitonic/expanded-position path selects
 2051, including three valid tokens from the rejected block. This is concrete
 source-derived ID divergence, not a baseline GPU/logits measurement. It marks
 a semantic correction separately from optimization. R2 still needs numeric
-pooled-key state, GPU selection/attention and HC/PLE actual-weight fixtures.
+pooled-key state and GPU selection/attention; HC/PLE CPU fixtures are below.
 
 ## R2b: GDN convolution, recurrent state and verification prefixes
 
@@ -222,3 +222,46 @@ steps on identical inputs and zero state. Completed HIP events include reset
 and the resident transaction, excluding projections, transfers and readback.
 Resident chunks won on measured N2/3/128; numbers and raw provenance are in
 `results.jsonl`, not an end-to-end PP/TG claim. Remote Release/CTest: 10/10.
+
+## R2c: HC and PLE semantic actual-weight fixtures
+
+`hc.hpp` retains token-major `[token][branch][feature]` residuals. It implements
+branch-local RMS with direct stored gamma, low-rank SiLU/sigmoid mixing, injection
+`2*sigmoid(projection/4)`, and combination with the **original** residual. The root
+head collapses without injection or an extra norm; the MTP Tap remains the full
+widened residual before collapse. Actual block0 attention/FFN and root weights
+pass N1/2/3 sampled independent FP32-rounded HF equations and exact chunk prefixes.
+
+`ple.hpp` reads exact multiplier bits/head ranges/EOS from metadata. Lookup reads
+only selected canonical rows, preserving all sixteen logical keep1 heads. Its
+layer returns an injection to add **once before attention HC**, with branch-local
+RMS, signed-root sigmoid gating and four-tap depthwise convolution of dilation 3.
+History holds nine prior normalized rows. EOS changes the hash segment, **not**
+convolution history. Hash and convolution checkpoints are chronological; verify3
+restores both at `1 + accepted_drafts`.
+
+HF uses signed `torch.remainder`, whereas mx uses unsigned modulo. The selected
+GGUF multipliers prove every valid-token product <= INT64_MAX; XOR cannot then
+set the sign bit. Thus these hash formulas are equivalent for this variant's
+entire declared vocabulary/history, despite differing on synthetic negative
+hashes. This is **not a discovered baseline hash bug**. PLE EOS248044 remains
+distinct from tokenizer EOS248046. Actual twelve-step fixtures exercise the
+oldest dilation tap, EOS, a 10+2 chunk split and accept0/1/2 continuation.
+
+```sh
+docker run --rm --name core-hc-ple --entrypoint /bin/sh \
+  -v /home/radneon/gfx906-core:/core -v /home/radneon/models-nvme:/models:ro \
+  llama.cpp-gfx906:cmake-4.4.3 -c \
+  '/core/build/hc-test --model /models/qwen38-keep1-Q4_0.gguf && /core/build/ple-test --model /models/qwen38-keep1-Q4_0.gguf' \
+  > /home/radneon/gfx906-core/runs/r2-hc-ple.jsonl \
+  2> /home/radneon/gfx906-core/runs/r2-hc-ple.err
+python3 -B /home/radneon/gfx906-core/src/tools/record_hc_ple.py \
+  --raw /home/radneon/gfx906-core/runs/r2-hc-ple.jsonl \
+  --results /home/radneon/gfx906-core/results.jsonl
+```
+
+This slice is CPU raw-FP32 semantic qualification, **not** GPU projections or
+inference throughput. Gates remain HC `4e-6*(1+|reference|)` and PLE
+`3e-6*(1+|reference|)`; sequence/split/restore outputs are bitwise exact. Hot calls
+allocate no memory. Strict remote CTest, local ASan/UBSan and actual-weight
+results are retained; GPU projections/HC/PLE launchers require separate gates.
