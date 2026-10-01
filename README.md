@@ -148,10 +148,10 @@ docker run --rm --name core-kv --device /dev/kfd --device /dev/dri \
   2> /home/radneon/gfx906-core/runs/r2-kv.err
 docker run --rm --entrypoint /core/build/qsa-test \
   -v /home/radneon/gfx906-core:/core llama.cpp-gfx906:cmake-4.4.3 \
-  > /home/radneon/gfx906-core/runs/r2-qsa.jsonl
+  > /home/radneon/gfx906-core/runs/r2-qsa-boundaries.jsonl
 python3 -B /home/radneon/gfx906-core/src/tools/record_kv.py \
   --kv-log /home/radneon/gfx906-core/runs/r2-kv.jsonl \
-  --qsa-log /home/radneon/gfx906-core/runs/r2-qsa.jsonl \
+  --qsa-log /home/radneon/gfx906-core/runs/r2-qsa-boundaries.jsonl \
   --results /home/radneon/gfx906-core/results.jsonl
 ```
 
@@ -168,8 +168,8 @@ At 2052 visible tokens the reference selects 2048 valid IDs. A test-only CPU
 emulation of production mx's padded HIP bitonic/expanded-position path selects
 2051, including three valid tokens from the rejected block. This is concrete
 source-derived ID divergence, not a baseline GPU/logits measurement. It marks
-a semantic correction separately from optimization. R2 still needs numeric
-pooled-key state and GPU selection/attention; HC/PLE CPU fixtures are below.
+a semantic correction separately from optimization. Numeric pooled-key state
+and GPU selection/attention are qualified in R2d below.
 
 ## R2b: GDN convolution, recurrent state and verification prefixes
 
@@ -265,3 +265,56 @@ inference throughput. Gates remain HC `4e-6*(1+|reference|)` and PLE
 `3e-6*(1+|reference|)`; sequence/split/restore outputs are bitwise exact. Hot calls
 allocate no memory. Strict remote CTest, local ASan/UBSan and actual-weight
 results are retained; GPU projections/HC/PLE launchers require separate gates.
+
+## R2d: numerical index append, whole-block selection and Q4 sparse attention
+
+`qsa_index.hpp` and `hip/qsa_index.cuh` retain only completed FP32 pooled keys
+and at most three Q4-roundtripped raw keys. New keys are mean-pooled, direct-gamma
+RMS-normalized and split-half rotated at block start `4*b`; queries rotate at
+`visible-1`. Loaded text RoPE has dimension 64, base `1e7`, scale 1 and **INT32**
+sections `[11,11,10,0]`. Append publishes only new keys and the final tail after
+the sticky error is zero. Caller-owned logical length/checkpoint validity and
+stream ordering must follow publication; small tail snapshots restore `1+a`
+consumed inputs without copying pooled history. CPU guards reject stale prefixes.
+
+`hip/qsa_select.cuh` adapts furnace radix selection to unique score/ID keys,
+512 whole blocks and the actual tail. Ties choose lower block ID, including
+signed zero. Selection is exact against the CPU selector on **identical scores**;
+parallel score reductions may legitimately change cutoff IDs.
+
+`attention.hpp` provides a checked common-gather CPU oracle and direct-FP32
+diagnostic. `hip/attention.cuh` adapts furnace Q24/KV2/D256, `h/12` GQA, 64-key
+chunks and FP32 stable merge. Only selected Q4 rows are gathered into RNE FP16;
+the fixed workspace is 5,042,372 bytes (~4.81 MiB/query), not a full FP16 history.
+Cache scales/IDs/query validate before use; sticky errors prevent publication.
+Hadamard, projection, output gate and query RoPE are separate operations.
+
+```sh
+docker run --rm --name core-qsa --device /dev/kfd --device /dev/dri \
+  --group-add video --ipc host --security-opt seccomp=unconfined \
+  --entrypoint /core/build/core-qsa \
+  -v /home/radneon/gfx906-core:/core -v /home/radneon/models-nvme:/models:ro \
+  llama.cpp-gfx906:cmake-4.4.3 /models/qwen38-keep1-Q4_0.gguf \
+  > /home/radneon/gfx906-core/runs/r2-qsa-gpu.jsonl \
+  2> /home/radneon/gfx906-core/runs/r2-qsa-gpu.err
+python3 -B /home/radneon/gfx906-core/src/tools/record_qsa.py \
+  --raw /home/radneon/gfx906-core/runs/r2-qsa-gpu.jsonl \
+  --results /home/radneon/gfx906-core/results.jsonl
+```
+
+The fixture uses actual layer3 indexer weights with eight CPU raw-FP32 synthetic
+projections repeated in a prepared cache timeline. Attention uses synthetic Q4
+data. Both GPUs pass append N1/2/3/128, every tail phase, chronological prefixes,
+repeated rejection/restore, causal visibility through 131072, cutoff ties,
+subnormals, exact counts/canaries, future/unselected poisoning and error reuse.
+Fixed key/score/attention gates remain `2e-4 + 2e-4*abs(CPU reference)`;
+Q4 bytes and raw-tail bytes are exact. Remote CTest16/16 and CPU ASan/UBSan pass.
+
+Each resident metric is the mean of 20 individually completed HIP-event intervals,
+validated after each repetition. Projection, transfers, reset/restore, flag clear
+and validation are excluded. These are **not** full QSA, occupied-128K prompt,
+inference PP/TG or speedup results. The measured attention cost (~1.1 ms at 2048
+keys) remains a bottleneck to diagnose. `results.jsonl` preserves numerical scope
+and provenance. CPU boundary and GPU logs now have distinct names; the earlier
+CPU diagnostic log was overwritten by a filename collision, deterministically
+replayed with every recorded row matching, and explicitly marked as recovered.

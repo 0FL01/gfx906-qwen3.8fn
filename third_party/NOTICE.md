@@ -37,4 +37,20 @@
   No graph/cache/runtime code is imported. CPU dense/GDN oracles are original;
   format and architecture reference revisions are recorded in source comments.
 
+- `src/hip/qsa_index.hip` adapts furnace `rope.cu` D128 pooling/RMS/RoPE
+  and wave64 scoring at the furnace revision above. It reuses qualified mx
+  Q4_0 arithmetic: first signed maximum, original FP32 codes, half-scale readback.
+  Original append state, finite staging, chronological tails/prefixes and
+  conditional publication replace donor ggml/runtime/layout-cache machinery.
+- `src/hip/qsa_select.hip` adapts furnace `top-k.cu` radix histogram/cutoff/gather
+  and the mx bitonic comparison pattern. Modified: unique score/ID rank keys,
+  deterministic lower-ID ties, 512 whole blocks, actual tail/count, bounded scratch,
+  invalid-input rejection and conditional publication, not expanded positions.
+- `src/hip/attention.hip` adapts furnace `fattn.cu` D256/G12 64-key chunk and
+  stable split-K merge. Modified: direct selected IDs, bounded canonical Q4_0
+  to RNE FP16 gather, no full mask/history copy, finite checks and conditional
+  output publication. Copyright (c) 2023-2026 The ggml authors; full MIT notices
+  appear inline and in `mx-LICENSE`. Reinstinct partial/merge at the revision
+  above is a design/algebra reference, not an imported Q8 backend.
+
 Upstream URLs and rejected donor options: RECON.md section 16.
