@@ -25,5 +25,16 @@
   It emulates expanded-position selection; it is not a runtime backend.
   `src/qsa.cpp` is an original completed-block selector based on Qwen/HF
   Transformers `a005fc82babfe8871d87746decad2dbee100a125` semantics.
+- `src/hip/gdn.hip` adapts the mx wave/column state ABI and furnace
+  `ggml/src/ggml-cuda/gated_delta_net.cu` CPW2 decode and resident wave64
+  slab kernels, revision `905021dbad71c5056ef51f9fd45d545403fc989c`.
+  Copyright (c) 2023-2026 The ggml authors; MIT in `mx-LICENSE`.
+  Furnace's resident design derives from reinstinct
+  `kernels/gdn_recurrent_batched_v2.cpp` at the Apache-2.0 revision above.
+  Modifications: fixed tiled GGUF geometry, decay-before-dot FP32 ordering,
+  chronological prefixes, checked conv/L2/RMS/sigmoid preprocessing,
+  no fast intrinsics, finite staging and chunk-atomic publication.
+  No graph/cache/runtime code is imported. CPU dense/GDN oracles are original;
+  format and architecture reference revisions are recorded in source comments.
 
 Upstream URLs and rejected donor options: RECON.md section 16.

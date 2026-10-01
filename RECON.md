@@ -2,7 +2,7 @@
 
 Дата проверки открытых источников: 2026-10-01.
 
-Это архитектурное решение и разведка по исходникам с read-only remote RECON от 2026-10-01. Последующие R0 build/probe/baseline, R1 loader/expert и R2a KV transforms/QSA selection fixtures также выполнены; результаты и ограничения — STATE.md и results.jsonl. Полный inference нового core ещё не реализован.
+Это архитектурное решение и разведка по исходникам с read-only remote RECON от 2026-10-01. Последующие R0 build/probe/baseline, R1 loader/expert, R2a KV transforms/QSA selection и R2b GDN/conv fixtures также выполнены; результаты и ограничения — STATE.md и results.jsonl. Полный inference нового core ещё не реализован.
 
 ## 1. Решение и границы
 
@@ -283,6 +283,8 @@ Score на decode: dot с четырьмя query heads, ReLU по каждому
 Scalar/CPU reference GDN реализовать буквально с проверкой intermediate states; GPU decode/chunked/resident-state пути адаптировать из раздела 16. Выбрать единый state layout для decode, PP, verify и checkpoint/restore. Последовательный host-loop с отдельными launch на каждый токен допустим только как reference, не как производительный PP.
 
 Критично сохранить beta, decay, normalization Q/K, causal convolution и sigmoid output gate. Не наследовать SiLU-gate из похожей Qwen-архитектуры автоматически. Проверять recurrent и chunked outputs на одной последовательности. [S3, S5]
+
+**R2b, 2026-10-01:** src/gdn.cpp и hip/gdn.hip имеют общий FP32 [V-head][V-component][K-component] layout (K contiguous) и oldest-first raw conv history. GGUF mapping h%16 отличается от HF h/3 только из-за `_LinearAttentionVReorderBase`: converter переставляет все V-side arrays. ssm_a уже -exp(HF A_log); Q/K L2 epsilon1e-6, output RMS epsilon из metadata. GPU decode CPW2/resident wave64 chunks адаптированы из furnace/mx с finite staging и chronological prefixes; verify slot=1+accepted drafts. Loaded layer0 CPU FP32 projections → GPU recurrence до out_proj проверены на обеих GPU N1/2/3/128, с prefix/restore/error/reuse и dispatch A/B/A. N128 повторяет восемь synthetic projections; это не GPU matmul/полный inference. Raw r2-gdn*. Числа/контракт — results.jsonl/README.md.
 
 HC не является обычным residual-add. Есть четыре ветви, grouped normalization, low-rank mix, gates и inject. Между GPU передавать весь нужный residual, не только vector 2560. Форму tap для MTP считать отдельным контрактом. [S3, S5]
 

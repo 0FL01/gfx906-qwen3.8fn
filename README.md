@@ -169,4 +169,56 @@ emulation of production mx's padded HIP bitonic/expanded-position path selects
 2051, including three valid tokens from the rejected block. This is concrete
 source-derived ID divergence, not a baseline GPU/logits measurement. It marks
 a semantic correction separately from optimization. R2 still needs numeric
-pooled-key state, GPU selection/attention, GDN/HC/PLE and actual-weight fixtures.
+pooled-key state, GPU selection/attention and HC/PLE actual-weight fixtures.
+
+## R2b: GDN convolution, recurrent state and verification prefixes
+
+`dense.hpp` is a checked scalar FP32 projection/embedding oracle for all eight
+loaded GGUF types, including canonical Q5_0 and Q6_K. It reads unchanged packed
+weights; it does **not** replace the production Q8 activation arithmetic.
+`gdn.hpp` implements causal raw-input convolution, SiLU, Q/K L2 normalization,
+beta/decay, FP32 recurrence, RMSNorm and **sigmoid** output gating. Its independent
+double oracle includes HF grouped-head to GGUF tiled-head permutation tests.
+
+The shared CPU/GPU recurrent ABI is `[V-head][V-component][K-component]`, with
+K contiguous. Raw convolution history is `[qkv-feature][age]`, oldest first.
+GGUF V head `h` uses Q/K head `h % 16`: mx's converter already reordered all
+V-side tensors. Stored `ssm_a` is `-exp(HF A_log)`, not a log to exponentiate again.
+Snapshots are chronological: slot n means n consumed inputs; verifying one
+pending input plus two drafts restores slot `1 + accepted_drafts`.
+
+`hip/gdn.cuh` borrows explicit-stream device buffers, without allocation or
+host synchronization. Decode adapts furnace CPW2; chunks adapt its resident
+16-column wave64/LDS slab with the same external state layout. Sticky error bits
+are 1 for invalid values and 2 for nonfinite arithmetic. A final conditional
+publication preserves the entire active chunk state/output on numeric failure;
+scratch and speculative prefixes must not be consumed on error. CPU overflow
+instead preserves the failing token and any earlier successful chunk tokens.
+
+```sh
+docker run --rm --name core-gdn --device /dev/kfd --device /dev/dri \
+  --group-add video --ipc host --security-opt seccomp=unconfined \
+  --entrypoint /core/build/core-gdn \
+  -v /home/radneon/gfx906-core:/core -v /home/radneon/models-nvme:/models:ro \
+  llama.cpp-gfx906:cmake-4.4.3 /models/qwen38-keep1-Q4_0.gguf \
+  > /home/radneon/gfx906-core/runs/r2-gdn.jsonl \
+  2> /home/radneon/gfx906-core/runs/r2-gdn.err
+python3 -B /home/radneon/gfx906-core/src/tools/record_gdn.py \
+  --raw /home/radneon/gfx906-core/runs/r2-gdn.jsonl \
+  --results /home/radneon/gfx906-core/results.jsonl
+```
+
+The fixture loads layer0 projection/conv/control/norm weights, projects eight
+synthetic hidden vectors with the CPU FP32 oracle, then checks both GPUs at
+N=1/2/3/128 (the eight projections repeat for N128). It stops before `out_proj`;
+this is not GPU projection qualification or full-network inference. Fixed
+elementwise gates are output `2e-4 + 2e-4*|ref|`, state `2e-5 + 2e-4*|ref|`;
+raw-history bytes are exact. It checks chronological prefixes, accept0/1/2,
+two repeated rejection windows, split chunks, numeric/geometry failure atomicity
+and valid reuse. CPU dense/GDN tests also pass ASan/UBSan.
+
+Dispatch A/B/A compares validated CPW2 decode steps / resident chunk / decode
+steps on identical inputs and zero state. Completed HIP events include reset
+and the resident transaction, excluding projections, transfers and readback.
+Resident chunks won on measured N2/3/128; numbers and raw provenance are in
+`results.jsonl`, not an end-to-end PP/TG claim. Remote Release/CTest: 10/10.

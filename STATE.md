@@ -2,11 +2,11 @@
 
 ## Статус
 
-R0, R1 и срез R2a закрыты 2026-10-01: build/probe/baseline, GGUF loader/expert, Q4 KV/Hadamard CPU/HIP и QSA CPU selection boundaries. R2–R8 целиком ещё не закрыты; модель новым core ещё не исполняется. Скорости PLAN.md остаются целями.
+R0, R1 и срезы R2a/R2b закрыты 2026-10-01: build/probe/baseline, loader/expert, Q4 KV/Hadamard/QSA boundaries, dense oracle и GDN/conv CPU/HIP state/restore. R2–R8 целиком ещё не закрыты; модель новым core ещё не исполняется. Скорости PLAN.md остаются целями.
 
 ## Задача
 
-R2b: подключить GDN CPU oracle к CMake, адаптировать mx/furnace GPU recurrence к единому [V-head][V-component][K-component] state и проверить real-weight projections/state parity. Затем HC/PLE и numeric QSA pooled append/rollback/attention. Donor-first — PLAN.md/RECON.md §16; не повторять полный RECON. Основной KV target/MTP — Q4_0, expert layout canonical.
+R2c: HC и PLE actual-weight fixtures/нормализации, затем numeric QSA pooled append/rollback/attention. CPU HC файлы подготовлены отдельно, пока не входят в R2b. Donor-first — PLAN.md/RECON.md §16; не повторять полный RECON. Основной KV target/MTP — Q4_0, expert layout canonical.
 
 ## Соединение и рабочие пути
 
@@ -25,6 +25,7 @@ Baseline: `sh /home/radneon/gfx906-core/src/tools/baseline-server.sh`, зате�
 Полные команды/log capture в README.md. Для dirty source задавать CORE_DIRTY=ON. Не совмещать model baseline и probe/тяжёлую сборку. Наш baseline-контейнер сейчас остановлен.
 Expert: как probe, но entrypoint `/core/build/core-expert`, добавить `-v /home/radneon/models-nvme:/models:ro` и аргумент `/models/qwen38-keep1-Q4_0.gguf`; stdout → runs/r1-expert-final.jsonl. Inventory: core-inspect на обоих файлах без GPU devices. README.md содержит полные команды.
 KV: как probe, entrypoint `/core/build/core-kv`; stdout → runs/r2-kv.jsonl. qsa-test без GPU → runs/r2-qsa.jsonl; tools/record_kv.py валидирует/добавляет одну запись. Полные команды в README.md.
+GDN: как expert, entrypoint `/core/build/core-gdn`, target GGUF; stdout → runs/r2-gdn.jsonl, stderr → runs/r2-gdn.err; tools/record_gdn.py --raw ... --results ... . Полная команда в README.md.
 
 ## Исходный baseline пользователя
 
@@ -38,10 +39,11 @@ R0 probe завершён с passed=true: actual 16 physical/32 logical cores, �
 Новая baseline-серия (не пользовательские prompts): 32+64 — PP 12.00/TG 10.59, HTTP 8.715 s; 4096+512 — PP 197.68/TG 14.48, HTTP 56.102 s. Один повтор, без prefix reuse, temperature1/top-p.95/top-k20, ignore_eos=true, MTP2/Q4 KV. Cache cold/warm только по протоколу, occupancy неизвестна; короткий warmup не равен fully-warm. Structured acceptance histogram отсутствует, сохранён null. Artifacts `/home/radneon/gfx906-core/runs/r0-20261001T154816Z-4sffu3gz`; raw server log `r0-baseline-server.log`.
 R1: target1224/sidecar32 inventory и expert reads прошли. На обеих GPU N=1/2/3/128; common-quant linear max error 5.96e-7, float pipeline max 0.000250/RMS5.87e-6; CPU oracle/AVX2 error0. CPU A/B/A N1: 2.63/0.985/2.61 ms, принят inlined/F16C. Resident GPU N1 ~34–37 us; planar не универсально быстрее, default canonical. Это hot repeated-weight microbench, не DDR miss или inference speed. Числа/контракт в results.jsonl/README.md; raw runs/r1-{build.log,inventory.log,expert-final.jsonl,expert-final.err}. Loader196 и quant791408 checks, ASan/UBSan, удалённый Release/CTest прошли.
 R2a: Q4/Hadamard CPU/GPU bytes совпали, обе GPU/N1/2/3/128, signed-zero/tie/subnormal/error+reuse fixtures; CPU11417 checks/14 rejects, ASan/UBSan, remote CTest7/7. GPU serial/cooperative/serial pack N1 ~8.96/3.68/8.86 us, N128 ~15.49/5.55/15.44 us (изолированный primitive). QSA62750252 checks/22 rejects/16480 causal prefixes. При2052 CPU эмуляция mx включает3 extra valid IDs против reference; baseline GPU/logits не проверялись. Raw runs/r2-{kv-build.log,kv.jsonl,kv.err,qsa.jsonl}; один scoped result в results.jsonl.
+R2b: loaded layer0 + CPU FP32 projections → обе GPU recurrence/conv/norm/sigmoid; N1/2/3/128, prefix/accept0/1/2, repeated reject/split chunk, error/reuse прошли. State max error4.10e-8; output4.77e-7; raw-history bytes exact. A/B/A N128 decode/resident/decode ~6.49/3.08/6.50 ms, включая reset, не projection/full inference. CPU dense970671/GDN3299351 checks, ASan/UBSan; remote CTest10/10. Raw runs/r2-gdn{.jsonl,.err,-build.log,-cpu.jsonl}; один scoped result в results.jsonl.
 
 ## Следующие действия
 
-GDN CPU файлы готовы в рабочем дереве для следующего среза: src/gdn.{hpp,cpp}, tests/gdn_test.cpp (ещё не входят в R2a). Зафиксирован GGUF tiled V-head mapping h%16, не HF h/3: converter переставляет все V-side tensors. Проверить GPU raw-conv → SiLU → L2 Q/K → beta/decay → state → RMSNorm/sigmoid(Z), затем loaded layer0 projections. Numeric QSA append-cache и его rollback писать самим; sparse GPU selection/attention адаптировать furnace. Source excerpts — runs/donors, actual views — r1-inventory.log. Worker pool/cold DDR/DMA оставить R3/R5; hot-weight время не равно miss latency.
+Интегрировать src/hc.{hpp,cpp}/tests/hc_test.cpp, сверить HC с loaded attn/ffn/output weights. PLE: metadata-driven hash/head offsets/EOS248044, lookup только строк, conv/history и restore. GDN state [V][v][k] и chronological slot n уже зафиксированы; GGUF mapping h%16, не HF h/3. Numeric QSA append-cache/rollback писать самим, sparse GPU selection/attention адаптировать furnace. Source excerpts — runs/donors, views — r1-inventory.log. Worker pool/cold DDR/DMA оставить R3/R5.
 
 ## Не повторять без причины
 

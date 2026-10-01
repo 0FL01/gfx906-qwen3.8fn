@@ -67,6 +67,8 @@ GDN GPU-пути адаптировать из mx decode/chunked и furnace resi
 
 **Срез R2a закрыт 2026-10-01, R2 ещё не закрыт:** Q4_0 KV packing/dequant и Hadamard CPU/HIP проходят byte parity на обеих GPU; cooperative pack проверен против mx serial A/B/A. CPU block-select/actual-tail oracle проверил 2047–2056 и causal chunk prefixes. Source-derived эмуляция pinned HIP fork показывает при 2052 valid count2051 против reference2048; это семантическое исправление, не чистая оптимизация и не GPU/logits замер baseline. Команды в README.md, сырые logs/числа в results.jsonl. Следующие срезы: GDN/conv единый state, HC/PLE actual weights, numeric QSA append/rollback и sparse attention.
 
+**Срез R2b закрыт 2026-10-01:** CPU dense oracle поддерживает все actual GGUF types; GDN/conv scalar и адаптированные gfx906 CPW2/resident chunks имеют единый FP32 state/raw-history ABI и GGUF mapping h%16. Loaded layer0 projections через CPU oracle → GPU recurrence/norm/sigmoid проходят N1/2/3/128, chronological prefix/accept0/1/2, repeated reject, split-chunk и error+reuse fixtures на обеих GPU. Dispatch A/B/A поддержал resident chunks; remote CTest10/10 и CPU ASan/UBSan прошли. Это fixture до out_proj, не GPU projections или полный inference. Scope/числа — results.jsonl, команды — README.md. Следующие срезы HC/PLE и numeric QSA остаются открыты.
+
 ## R3. Первый сквозной самостоятельный runtime
 
 **Действия.** Соединить 48 слоёв в прямую последовательность вызовов. Один Session с заранее выделенными buffers; статический layer split. CPU misses и GPU hits первоначально могут синхронизироваться консервативно. Кеш и очередь копий должны сначала быть корректными.
