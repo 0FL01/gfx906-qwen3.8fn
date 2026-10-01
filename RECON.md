@@ -2,7 +2,7 @@
 
 Дата проверки открытых источников: 2026-10-01.
 
-Это архитектурное решение и разведка по исходникам с read-only remote RECON от 2026-10-01. Последующий R0 build/probe и новая baseline-серия также выполнены; результаты и ограничения находятся в разделе 4, STATE.md и results.jsonl. Полный inference нового core ещё не реализован.
+Это архитектурное решение и разведка по исходникам с read-only remote RECON от 2026-10-01. Последующие R0 build/probe, новая baseline-серия и R1 loader/реальный expert также выполнены; результаты и ограничения — STATE.md и results.jsonl. Полный inference нового core ещё не реализован.
 
 ## 1. Решение и границы
 
@@ -92,6 +92,10 @@ Source mirror `/home/radneon/gfx906-core/src`, build/runs на том же ко�
 HIP properties подтвердили обе gfx906:sramecc+:xnack-, wave64, CU60, 8 async engines и 17 163 091 968 VRAM bytes на GPU, включая BDF из topology. Runtime CPU probe подтвердил 16 физических cores/32 разрешённых logical CPUs, один NUMA, AVX2/FMA/F16C. Kernel/H2D consumer, D2D readback и event-ordered P2P producer/consumer (20 epochs, оба направления) проверены. P2P доступен, но измеренный последний 4-MiB transfer — около 3 GB/s; это диагностическая точка, не основание считать P2P быстрее staging. RAM read/FMA и overlap с dual H2D синтетические, не CPU expert GEMV. Все численные измерения — в одном results.jsonl и raw r0-probe.jsonl.
 
 Production baseline выполнен отдельно с MTP2/Q4 target+draft KV, тем же preset и traces off, после чего наш core-baseline остановлен. Новые fixtures сохраняют exact 32/4096 prompt IDs и 64/512 output IDs: это не оригинальные prompts пользователя. PP/TG/HTTP и raw artifacts записаны в results.jsonl; prefix reuse выключен, temperature1/top-p.95/top-k20, ignore_eos=true. Один короткий запрос перед 4K не доказывает полностью прогретый expert cache. Histogram 0/1/2 отсутствует в structured response и оставлен null. Router требует model=current в tokenize/completion и ожидания /models status=loaded; одного /health недостаточно.
+
+### Исполнимый R1, 2026-10-01
+
+Собственный Model повторно проверил 1224 target/32 sidecar views и metadata без mmap/полной загрузки весов. Layer0/expert0 — Q4_0 gate/up, Q4_1 down, 2 867 200 bytes; scalar/AVX2/HIP N1/2/3/128 прошли на обеих GPU. CPU inlined/F16C улучшен парным A/B/A с сохранением oracle. Canonical SDOT4/DPP основной; planar slot pack остаётся кандидатом: универсального A/B/A выигрыша нет. Packer/arithmetic ABI согласованы: mx 36-byte Q8_1 с FP16 scale и raw input sum; Q4_1 сохраняет half-rounded d4*d8/m4*s8. Reinstinct 40-byte ABI/quantized-sum correction не переносились. Fixtures/лицензии/команды — README.md и third_party/; scope и числа — results.jsonl, raw runs/r1-*. Это один expert с synthetic inputs и hot repeated weights, не teacher-forced logits, DDR miss throughput или полный PP/TG.
 
 ### Controller и GPU-host
 

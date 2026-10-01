@@ -1,7 +1,8 @@
 # Qwen3.8-Flash-Next core for 2×gfx906
 
 Standalone C++20/HIP core under implementation. The model is **not yet runnable**
-in this core; `core-probe` is the verified R0 hardware/build slice, not inference.
+in this core; `core-probe` is R0 hardware/build and `core-expert` is R1 execution
+of one real routed expert, not the full network.
 Scope and acceptance are in [PLAN.md](PLAN.md); current evidence in [STATE.md](STATE.md).
 
 ## Remote build and R0 probe
@@ -32,6 +33,62 @@ gfx906. Probe errors exit nonzero; transfer/consumer and both GEMMs are checked.
 RAM read/FMA and concurrent read/H2D are synthetic hardware measurements, **not**
 quantized expert throughput or full-request speed.
 
+## R1: validated GGUF and one real expert
+
+`Model` owns a checked GGUF v3 file descriptor and typed metadata/inventory;
+only bounded header and explicitly requested slices are read. It supports the
+eight actual target types, validates dimensions, block sizes, arithmetic,
+alignment, overlaps and file bounds. No tensor mmap, whole-weight dequantization
+or second RAM expert inventory. Sidecar sharing remains explicit.
+
+```sh
+docker run --rm --entrypoint /core/build/core-inspect \
+  -v /home/radneon/gfx906-core:/core -v /home/radneon/models-nvme:/models:ro \
+  llama.cpp-gfx906:cmake-4.4.3 /models/qwen38-keep1-Q4_0.gguf
+docker run --rm --entrypoint /core/build/core-inspect \
+  -v /home/radneon/gfx906-core:/core -v /home/radneon/models-nvme:/models:ro \
+  llama.cpp-gfx906:cmake-4.4.3 /models/mtp-Qwen3.8-Flash-Next-shared-Q8_0.gguf
+docker run --rm --name core-expert --device /dev/kfd --device /dev/dri \
+  --group-add video --ipc host --security-opt seccomp=unconfined \
+  --entrypoint /core/build/core-expert -v /home/radneon/gfx906-core:/core \
+  -v /home/radneon/models-nvme:/models:ro llama.cpp-gfx906:cmake-4.4.3 \
+  /models/qwen38-keep1-Q4_0.gguf \
+  > /home/radneon/gfx906-core/runs/r1-expert-final.jsonl
+python3 -B /home/radneon/gfx906-core/src/tools/record_expert.py \
+  /home/radneon/gfx906-core/runs/r1-expert-final.jsonl \
+  --results /home/radneon/gfx906-core/results.jsonl
+```
+
+Layer0/expert0 retains canonical Q4_0 gate/up and Q4_1 down (2,867,200 bytes).
+Activation ABI is **mx Q8_1, 36 bytes**: FP16 scale, FP16 sum of **raw** float
+inputs, 32 signed codes. Codes use the original FP32 `amax/127` and `roundf`;
+the raw sum uses ascending XOR 1/2/4/8/16. Q4_0 uses
+`d4*(integer_dot*d8-8*raw_sum)`. Q4_1 keeps mx half-rounded `d4*d8` and
+`m4*raw_sum`, not quietly changed FP32 products. CPU oracle uses portable RNE
+half; production CPU uses checked AVX2/F16C in the complete matrix loop, no
+saturating int16 sum (Q4 pair bound 3840), no implicit FMA reassociation.
+
+GPU adapts mx SDOT4/DPP and multi-column weight reuse after donor inspection
+(attribution in `third_party/NOTICE.md`). Canonical is the default; a byte-preserving
+planar Q4_0 slot pack remains a qualification candidate, not a second full RAM
+copy. Its activation ABI/correction is **not** reinstinct's 40-byte Q8 ABI.
+Q4_1 remains canonical. Each wave computes two rows and reuses a block for up
+to three columns. N=128 is a PP-sized fixture, **not** R4 grouped MMQ prefill.
+
+Fixture gates were fixed before GPU execution: common-quant linear error
+`2e-4 + 2e-5*|reference|`; float expert pipeline `2e-3 + 2e-4*|reference|`.
+Tests include identical CPU/GPU packed bytes, half subnormals, rounding ties,
+signed/zero scales, negative-zero blocks, int8 extrema, invalid input rejection
+and valid reuse after rejection. CPU A/B/A compares old per-block calls against
+the inlined/F16C path; GPU A/B/A compares canonical/planar/canonical separately
+on both devices, never holding competing candidates simultaneously.
+
+Measurements in `results.jsonl` use one pinned CPU worker and **repeated hot
+weights**. GPU input is uploaded once before warmup; resident pipeline events
+and completed wall time are distinct. Upload/pack includes weight allocations
+and cold initialization effects, not isolated steady-state DMA. These are not
+DDR miss throughput, cache policy, logits, TG or whole-request measurements.
+
 ## Existing production baseline (separate process)
 
 No other GPU workload or heavy compiler during final measurements. If the named
@@ -59,6 +116,7 @@ Local client tests (no ROCm required):
 
 ```sh
 cmake -S . -B build -DCORE_WITH_HIP=OFF
+cmake --build build -j4
 ctest --test-dir build --output-on-failure
 ```
 

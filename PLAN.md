@@ -45,6 +45,8 @@ HIP начать с адаптации canonical DP4A и готовых Wave64/D
 
 **Готово:** реальный expert выдаёт проверенный результат CPU/GPU; зафиксированы donor/layout/activation contract, время и трафик для проверенных форм. Для correctness полный FP32 checkpoint в RAM не нужен: достаточно выбранных tensors/fixtures.
 
+**Закрыт 2026-10-01:** Model проверил оба GGUF; core-expert исполнил исходный expert0/layer0 scalar/AVX2/HIP для N=1/2/3/128 на обеих GPU. Q8_1 ABI и Q4_1 half-product semantics зафиксированы в quant.hpp/README.md; mx DPP/SDOT4 и адаптированное multi-column reuse с лицензиями в third_party/. CPU inlined/F16C принят после A/B/A и точной parity; planar не дал универсального выигрыша, основной layout canonical. Числа, scope и raw logs в results.jsonl. Это ещё не сквозной inference, DDR-miss scheduler или полноценный grouped PP.
+
 ## R2. Минимальные блоки архитектуры
 
 **Действия.** Реализовать HC mixing/injection, GDN state update и convolution, QSA indexer/attention, PLE lookup/hash/convolution и нормализации. Использовать маленькие fixtures и выборочные слои с реальными весами. Пока без fusion ради fusion.
