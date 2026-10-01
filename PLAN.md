@@ -65,6 +65,8 @@ GDN GPU-пути адаптировать из mx decode/chunked и furnace resi
 
 **Готово:** каждый блок проходит малые тесты, включая последовательное исполнение против обработки чанком. Обнаруженная численная/алгоритмическая разница с fork описана конкретно. Не требовать побитового совпадения всей генерации, если меняется FP-порядок.
 
+**Срез R2a закрыт 2026-10-01, R2 ещё не закрыт:** Q4_0 KV packing/dequant и Hadamard CPU/HIP проходят byte parity на обеих GPU; cooperative pack проверен против mx serial A/B/A. CPU block-select/actual-tail oracle проверил 2047–2056 и causal chunk prefixes. Source-derived эмуляция pinned HIP fork показывает при 2052 valid count2051 против reference2048; это семантическое исправление, не чистая оптимизация и не GPU/logits замер baseline. Команды в README.md, сырые logs/числа в results.jsonl. Следующие срезы: GDN/conv единый state, HC/PLE actual weights, numeric QSA append/rollback и sparse attention.
+
 ## R3. Первый сквозной самостоятельный runtime
 
 **Действия.** Соединить 48 слоёв в прямую последовательность вызовов. Один Session с заранее выделенными buffers; статический layer split. CPU misses и GPU hits первоначально могут синхронизироваться консервативно. Кеш и очередь копий должны сначала быть корректными.

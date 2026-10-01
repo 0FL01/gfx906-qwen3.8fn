@@ -2,7 +2,7 @@
 
 Дата проверки открытых источников: 2026-10-01.
 
-Это архитектурное решение и разведка по исходникам с read-only remote RECON от 2026-10-01. Последующие R0 build/probe, новая baseline-серия и R1 loader/реальный expert также выполнены; результаты и ограничения — STATE.md и results.jsonl. Полный inference нового core ещё не реализован.
+Это архитектурное решение и разведка по исходникам с read-only remote RECON от 2026-10-01. Последующие R0 build/probe/baseline, R1 loader/expert и R2a KV transforms/QSA selection fixtures также выполнены; результаты и ограничения — STATE.md и results.jsonl. Полный inference нового core ещё не реализован.
 
 ## 1. Решение и границы
 
@@ -51,6 +51,10 @@ LLVM-тесты подтверждают `v_dot8_i32_i4` на gfx906. Это I4�
 Эти формы нельзя считать автоматически эквивалентными. Например, при 2052 видимых токенах HF выбирает 512 завершённых блоков, то есть 2048 токенов без хвоста. Внешне видимая ширина fork top-k равна 2051; нужно проверить actual IDs/mask, padding, bias и tie-handling. Это диагностическая гипотеза о семантике, не заявление об установленном end-to-end дефекте всех запусков.
 
 Обязательный первый QSA-тест: длины 2047–2056, все четыре фазы хвоста, равные/нулевые scores и разные causal prefixes в prefill. Раздельно сравнить число ВАЛИДНЫХ выбранных позиций, сами IDs и итоговый attention output.
+
+**R2a, 2026-10-01:** `qsa_select`/`qsa-test` сверены с Transformers `a005fc82babfe8871d87746decad2dbee100a125`. Reference выбирает whole blocks largest-first и actual tail; tied IDs у PyTorch не определены, наш oracle выбирает меньший block ID. Test-only CPU эмуляция mx `dcd685…` учитывает n_kv padding, finite1e9 tail bias, HIP strict bitonic ties и окончательную causal mask. При возрастающих scores1..513 и видимой длине2052 reference имеет2048 valid IDs, fork2051: extra IDs0/1/2 из отвергнутого блока0. При2053/2054 extras2/1, при2055 нет, при2056 снова3. Это доказательство source-derived valid-ID различия для fixtures, не запуск baseline GPU/attention/logits. Corrected selection маркировать отдельно от pure speedup; постоянный исторический backend не нужен. Raw `runs/r2-qsa.jsonl`, результаты/ограничения в results.jsonl.
+
+Q4_0 KV `kv.hpp`/`hip/kv.hip`: первый absolute-max определяет signed scale, zero block хранит negative-zero scale и0x88 codes; FP32 reciprocal используется до FP16 RNE scale. Cooperative width32 reduction сохраняет first-index ties. Hadamard портирован из mx fwht.cu: normalization before ascending butterfly, Q/K256 и V64. Обе GPU проходят byte parity packing/dequant/rotation/in-place inverse и invalid+reuse fixtures. A/B/A serial/cooperative/serial — только resident primitive на N1/2/3/128, не выигрыш attention или полного запроса.
 
 Если расхождение подтвердится, правильность архитектуры сверять с официальной reference, а старую скорость хранить как legacy baseline с явной пометкой. Не ослаблять тест для совпадения и не выдавать изменение алгоритма за только оптимизацию. Постоянный compatibility framework не нужен: достаточно маленького diagnostic oracle и объяснения.
 

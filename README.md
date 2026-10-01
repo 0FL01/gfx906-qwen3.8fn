@@ -121,3 +121,52 @@ ctest --test-dir build --output-on-failure
 ```
 
 Or without local CMake: `python3 -B -m unittest discover -s tests -p baseline_test.py`.
+
+## R2a: Q4 KV transforms and QSA selection boundaries
+
+`kv.hpp` freezes canonical Q4_0 cache packing: the first maximum-absolute
+element determines signed scale, codes use the original FP32 reciprocal,
+and the FP16 scale is rounded to nearest-even. A zero block has scale `-0`
+and sixteen `0x88` bytes, matching mx. Nonfinite inputs and unrepresentable
+nonzero scales fail explicitly. `hip/kv.cuh` exposes allocation-free,
+stream-ordered device-pointer launches; the caller owns buffer lifetimes and
+checks the sticky quantization error flag before consuming invalid results.
+
+The normalized Hadamard scales before its ascending butterfly, preserving
+mx's wave64 register/shuffle order. Use Q/K256 after RoPE, V64 before cache
+storage, and inverse V64 on attention output before gating. `core-kv` checks
+exact CPU/GPU transform, packing and dequantization bytes on both cards,
+including first-max sign ties, negative zero, FP16 subnormal scales, random
+FP32 blocks, invalid inputs and valid reuse after rejection.
+
+```sh
+docker run --rm --name core-kv --device /dev/kfd --device /dev/dri \
+  --group-add video --ipc host --security-opt seccomp=unconfined \
+  --entrypoint /core/build/core-kv \
+  -v /home/radneon/gfx906-core:/core llama.cpp-gfx906:cmake-4.4.3 \
+  > /home/radneon/gfx906-core/runs/r2-kv.jsonl \
+  2> /home/radneon/gfx906-core/runs/r2-kv.err
+docker run --rm --entrypoint /core/build/qsa-test \
+  -v /home/radneon/gfx906-core:/core llama.cpp-gfx906:cmake-4.4.3 \
+  > /home/radneon/gfx906-core/runs/r2-qsa.jsonl
+python3 -B /home/radneon/gfx906-core/src/tools/record_kv.py \
+  --kv-log /home/radneon/gfx906-core/runs/r2-kv.jsonl \
+  --qsa-log /home/radneon/gfx906-core/runs/r2-qsa.jsonl \
+  --results /home/radneon/gfx906-core/results.jsonl
+```
+
+These are synthetic resident primitive benchmarks, not attention or full
+inference speed. The test-only mx serial pack / cooperative / serial A/B/A
+uses identical rotated inputs and checks all three packed outputs. Cooperative
+packing won on the measured N=1/2/3/128 forms; end-to-end qualification remains.
+
+`qsa_select` takes exactly the fully visible block scores, selects whole blocks
+and appends the actual tail; it returns counts rather than filled capacity.
+Equal scores use lower block ID first (HF/PyTorch does not specify tied IDs).
+Transformers reference is pinned to `a005fc82babfe8871d87746decad2dbee100a125`.
+At 2052 visible tokens the reference selects 2048 valid IDs. A test-only CPU
+emulation of production mx's padded HIP bitonic/expanded-position path selects
+2051, including three valid tokens from the rejected block. This is concrete
+source-derived ID divergence, not a baseline GPU/logits measurement. It marks
+a semantic correction separately from optimization. R2 still needs numeric
+pooled-key state, GPU selection/attention, GDN/HC/PLE and actual-weight fixtures.

@@ -15,5 +15,15 @@
   Modifications: canonical and planar Q4_0 plus Q4_1, mx 36-byte Q8_1
   with half scales/raw sums instead of donor 40-byte Q8/quantized-sum
   correction; mx DPP reduction, and bounded matrix/expert calls.
+- `src/kv.cpp`, `src/hip/kv.hip` and the test-only serial pack in
+  `src/kv_main.hip` adapt mx `cpy-utils.cuh` / `ggml-quants.c` Q4_0
+  quantization from the same production revision. Modified: checked shapes,
+  finite/representable scales, cooperative width32 first-maximum reduction.
+  `src/hip/kv.hip` ports only the wave64 transform from mx `fwht.cu`.
+- `tests/qsa_test.cpp` contains a CPU diagnostic adaptation of mx's strict
+  bitonic comparison network (`argsort.cu`), with the full MIT notice inline.
+  It emulates expanded-position selection; it is not a runtime backend.
+  `src/qsa.cpp` is an original completed-block selector based on Qwen/HF
+  Transformers `a005fc82babfe8871d87746decad2dbee100a125` semantics.
 
 Upstream URLs and rejected donor options: RECON.md section 16.
