@@ -178,7 +178,7 @@ PLE lookup-таблица остаётся в RAM. Из неё выбирают�
 
 ### Начальная точность кешей
 
-Для маленьких correctness fixtures использовать FP32/FP16 где это упрощает эталон. Для performance baseline реализовать тот же Q4_0 K/V, что у пользователя, включая применяемые rotations и scale semantics; иначе явно маркировать другое KV-качество. Q8_KV можно исследовать отдельно, не смешивая его с весовой квантизацией. Pooled index keys сначала FP32; raw keys предварительно проходят те же преобразования/округления, что выбранный reference path.
+Для маленьких correctness fixtures использовать FP32/FP16 где это упрощает эталон. Основной режим target и MTP требует Q4_0 для обоих K/V, включая rotations и scale semantics baseline. Q8_KV — только отдельный сравнительный эксперимент, не замена обязательного Q4 и не весовая квантизация. Pooled index keys сначала FP32; raw index keys перед pooling проходят Q4_0 quantize/dequantize как в baseline.
 
 ### Расчёт вместимости, не замер
 
@@ -256,7 +256,7 @@ HIP graphs позднее, после корректного hot path. Дина�
 
 Score на decode: dot с четырьмя query heads, ReLU по каждому head, затем sum. Top-k работает по блокам reference-семантики. Буфер до 2051 IDs является capacity, actual count хранится отдельно. Attention читает выбранные K/V, не разворачивает selection в плотную `[context×batch]` маску.
 
-Сначала простой gather выбранных rows в contiguous scratch + корректный attention kernel. Затем сравнить с прямым indexed attention. Не считать второй вариант быстрее заранее: нерегулярное чтение, reuse между query heads и launch overhead могут изменить выбор.
+Первый GPU-путь: Q4 gather/dequant только выбранных rows в bounded FP16 scratch + адаптированный специализированный sparse attention (раздел 16), с FP32 reductions/softmax. Затем сравнить с прямым indexed Q4 attention. Не считать второй вариант быстрее заранее: нерегулярное чтение, reuse между query heads и launch overhead могут изменить выбор.
 
 Для PP считать scores tiles-ами по queries/blocks и не держать промежуточные данные на все heads×context×chunk. Одно FP32 представление 128K×4K уже равно 2 GiB. Тайлование требуется до увеличения chunk.
 
@@ -264,7 +264,7 @@ Score на decode: dot с четырьмя query heads, ReLU по каждому
 
 ## 10. GDN и HC
 
-GDN decode сначала реализовать буквально с проверкой intermediate states. Для PP нужен chunked recurrence/scan или корректно перенесённый подход существующего kernel. Последовательный host-loop с отдельными launch на каждый токен допустим только как reference, не как производительный PP.
+Scalar/CPU reference GDN реализовать буквально с проверкой intermediate states; GPU decode/chunked/resident-state пути адаптировать из раздела 16. Выбрать единый state layout для decode, PP, verify и checkpoint/restore. Последовательный host-loop с отдельными launch на каждый токен допустим только как reference, не как производительный PP.
 
 Критично сохранить beta, decay, normalization Q/K, causal convolution и sigmoid output gate. Не наследовать SiLU-gate из похожей Qwen-архитектуры автоматически. Проверять recurrent и chunked outputs на одной последовательности. [S3, S5]
 
@@ -379,3 +379,61 @@ S19. Legacy profiler support: https://rocm.docs.amd.com/projects/rocprofiler/en/
 Актуальный tracing interface: https://rocmdocs.amd.com/projects/rocprofiler-sdk/en/latest/how-to/using-rocprofv3.html
 
 Дополнительно для локального изучения production streaming: ggml/src/ggml-cuda/mmq.cu в указанном fork. Там есть copy-group events и диагностические host waits; удалять synchronization без producer-consumer test нельзя.
+
+## 16. Доноры hot gfx906 kernels и layouts
+
+Read-only source RECON 2026-10-01: проверены production FEATURES.md/model/cache/kernel paths, полный furnace README, reinstinct docs/ARCHITECTURE.md и относящиеся kernels/dispatch/packers. Новых performance-прогонов не было. Порядок проверки перед hot kernel/layout: mx → furnace → reinstinct; правило выбора и gates находятся в PLAN.md. Донор алгоритма не становится архитектурным oracle.
+
+### Зафиксированные ревизии и первое чтение
+
+| Источник | Revision | Первое чтение / роль |
+| --- | --- | --- |
+| Production mx [S5, S6] | `dcd685463d597d31f5ca759d32c94592a2740fa4` | Remote checkout из раздела 4; FEATURES.md, src/models/qwen4exp.cpp, common.cuh, mmq.cu, GDN и expert cache; эксплуатационный baseline |
+| [Публичный mx master](https://github.com/0FL01/mx-llama.cpp/tree/43dec4acba459b3116bba8cfcdb049bb2adc6540) | `43dec4acba459b3116bba8cfcdb049bb2adc6540` | Дополнительный донор; отличается от production, не подменяет его image/config |
+| [furnace gfx906-perf](https://github.com/sixvolts/llamacpp-gfx906-furnace/tree/905021dbad71c5056ef51f9fd45d545403fc989c) | `905021dbad71c5056ef51f9fd45d545403fc989c` | README целиком перед QSA/GDN/quant matmul, затем src/models/qwen4exp.cpp, repack-gcn.cu/.cuh и kernels ниже |
+| [reinstinct main](https://github.com/sixvolts/reinstinct/tree/0b79e326351d90d4554a1c18df92da5d0ab692e8) | `0b79e326351d90d4554a1c18df92da5d0ab692e8` | docs/ARCHITECTURE.md, затем kernels и src/runtime/pipeline.rs; primitive/layout reference, не runtime для портирования |
+
+mx/furnace — MIT; reinstinct объявляет Apache-2.0 в Cargo.toml. При извлечении кода проверить и сохранить относящиеся лицензии, provenance и attribution. Не импортировать Rust runtime, ggml scheduler, server, JIT/hsaco loader или multi-user infrastructure.
+
+### Карта решений для стартового GGUF
+
+**KEEP** — сохранить проверенное решение/контракт; **PORT** — извлечь небольшой готовый primitive; **ADAPT** — адаптировать под наши formats/shapes/state; **WRITE OURS** — собственная часть без подходящего готового решения. Кандидаты выбираются по parity и A/B, не по названию проекта. Для mx/furnace пути kernels ниже относительно `ggml/src/ggml-cuda/`, для reinstinct — `kernels/`, если не указан другой prefix.
+
+| Операция | Решение | Донор / конкретное применение |
+| --- | --- | --- |
+| Wave64/DPP sum/max, sdot4 | PORT | mx common.cuh; reinstinct gfx906_dpp.h для сравнения. Сохранить VALU→DPP hazard waits и cross-lane semantics |
+| Canonical Q4_0/Q4_1 GEMV/MMQ | PORT / ADAPT | mx mmvq.cu, mmq.cu, vecdotq.cuh; scale/offset Q4_1 и согласованный activation contract |
+| Planar Q4_0, N=1/2/3 | ADAPT, кандидат | mx q8_repack/repack-q4-0-host.h, q8_repack/repack-common.cuh, q8_repack/repack-kernels.cuh; reinstinct matvec_q4_0_repacked.cpp и matvec_q4_0_repacked_batched.cpp |
+| AVX2 experts и route union | WRITE OURS / ADAPT | Canonical quant arithmetic как reference; один tile и несколько CPU/GPU аккумуляторов после группировки expert IDs |
+| Grouped MoE PP | ADAPT | mx mmq.cu и staging; reinstinct moe_expert_sort.cpp, mmq_gemm_q4_0_repacked.cpp, mmq_gemm_q4k_grouped.cpp и scatter/combine. Grouped Q4_K не является готовым Q4_0/Q4_1 kernel |
+| Q8_0 / реально нужные K-quants | ADAPT | mx q8_repack; furnace repack-gcn.cu; reinstinct matvec_q8_0_repacked.cpp, matvec_q6k_repacked.cpp. Только actual tensor types, без реквантизации |
+| GDN decode / multi-token / PP | PORT / ADAPT | mx gated_delta_net.cu и gated_delta_net_chunk.cu; furnace gated_delta_net.cu; reinstinct gdn_recurrent_step_fused.cpp и gdn_recurrent_batched_v2.cpp |
+| QSA pooling / scoring | ADAPT | furnace rope.cu, dispatch ggml-cuda.cu; Q4 raw-key roundtrip, новые completed blocks, FP32 pooled keys, N=1/2/3 и query tiles |
+| Численный pooled-key cache | WRITE OURS | Single-session append, committed block count/raw tail, causal visibility и rollback; furnace host layout cache не хранит готовые numeric pooled keys |
+| Block top-k | ADAPT | furnace top-k.cu; официальный block-select, actual tail/count и проверенный tie contract вместо expanded-position selection |
+| Sparse Q4 attention | ADAPT | furnace fattn.cu: selected IDs → bounded Q4 gather/dequant → sparse FP16 kernel; reinstinct attn_partial_q8.cpp / attn_merge.cpp для split-K и softmax merge, не для замены KV-format |
+| HC fusion | ADAPT после parity | furnace dsv4-hc.cu и repack-gcn.cu HC-up/pre paths; сохранить 4 ветви, gates и MTP tap |
+| Expert cache / PP residency reuse | KEEP / ADAPT | mx src/llama-moecache.cpp, docs/development/moe-cache-prefill.md, staging ggml-cuda.cu; собственные slot maps/events и layout-aware D2D |
+| CPU miss vs H2D+GPU miss / overlap | WRITE OURS | Наш AVX2/DDR3 scheduler, admission и route reuse N=2/3; измерять RAM/DMA/compute конкуренцию |
+| Multi-GPU staging / PP pipeline | ADAPT | furnace ggml-cuda.cu, reinstinct src/runtime/pipeline.rs; events и bounded buffers, полный HC residual, не 2× single-sequence TG |
+| HIP graphs | ADAPT позднее | Стабильные GPU участки, device step descriptor для position/length/maps; не whole-engine capture CPU handoff |
+
+### Ограничения переноса, подтверждённые исходниками
+
+- **Q4 planar уже есть в production mx, но не доказано быстрее.** q8_repack/Q4_0-qualification.md описывает byte-preserving Q4_0 и default-off `GGML_CUDA_REPACK_Q4_0`. В квалификации на том же keep1 GGUF, но tensor split/host-expert конфигурации, TG ухудшился примерно на 0.5–4.1%; это чужой сохранённый результат, не новый наш замер. Q4_1 planar не покрыт. У mx и reinstinct различаются padding rules; на K=2560/640 выбирать по измерению, переносить packer вместе с kernel.
+- **Activation ABI не общий.** mx использует Q8_1/специализированные MMQ layouts; reinstinct BlockQ8 содержит FP32 scale/sum и 32 int8. Q4 offset correction и FP association также различаются. Проверять одинаковые квантованные inputs отдельно от float→quant pipeline; не смешивать форматы из разных доноров.
+- **furnace repack-gcn не поддерживает Q4_0/Q4_1.** Есть Q3_K/Q4_K/Q5_K/Q6_K, опциональные Q8_0/Q5_1. Нельзя переводить routed weights в другой quant ради этого kernel. Small-MoE dispatch по отдельным assignments не заменяет загрузку одного weight tile для нескольких совпавших routes.
+- **QSA cache и fusion требуют доработки.** LLAMA_QSA_NO_MS_CACHE управляет host block-layout cache; pooling всё ещё читает историю. Fused pool принимает F16/F32 raw keys, не Q4. Sparse attention принимает F16 K/V и получает IDs через маску. Адаптировать под наш numeric cache и прямые IDs, не создавать полную FP16 историю/маску. Expanded-position top-k и atomic tie order не считать официальной семантикой (раздел 3).
+- **GDN state layouts различаются.** У furnace resident-state путь Wave64/LDS, у reinstinct batched_v2 — swizzle/prefetch; старый step_fused_batched читает/пишет HBM state на каждом токене. У mx уже есть chunked PP. На H48/D128 сравнить эти варианты, не смешивать транспонированные state layouts или snapshot conventions; проверить state после каждого accepted prefix.
+- **PP reuse переносить без layout/OOB ошибок.** mx квалифицировал D2D reuse resident experts для PP; копирование canonical tail padding не должно читать следующий cache slot. Repacked slot нельзя слепо копировать в canonical MMQ tensor. Учитывать H2D/D2D/repack и восстановление cache в полном request time.
+- **Чужая topology не наша.** furnace измерял 4×32 GB, другие quant/config и multi-user workload; его P2P fallback вызван проблемой того HIP-стека. Наш P2P проверяется в R0. reinstinct GPU-resident runtime/loader может реквантовать исходные weights, а pipeline удерживает все PP activations; взять ordering, но использовать bounded staging и unchanged weights.
+- **Q8 KV не становится основным режимом.** reinstinct хранит int8 с FP32 scale на token/head, не ggml Q8_0 block32/FP16 scale, и его dense GQA paths не являются QSA. При 128K target+MTP Q4_0 K/V — 936 MiB; обычный Q8_0 был бы 1768 MiB, custom per-head Q8 reinstinct — 1690 MiB, без индекса/workspace. Это расчёт; Q8 допускается только отдельным экспериментом. reinstinct также не является Qwen3.8-Flash-Next logits oracle.
+
+### Навигация по feature switches furnace
+
+- `GGML_CUDA_NO_QSA_POOL`, `GGML_CUDA_NO_QSA_SCORE`: ggml-cuda.cu → rope.cu; block selection — отдельно top-k.cu.
+- `GGML_CUDA_NO_FA_GATHER`, `GGML_CUDA_NO_FA_DEC`: fattn.cu.
+- `GGML_CUDA_NO_Q8_MULTI`, `GGML_CUDA_NO_MOE_SMALL`, `GGML_CUDA_NO_Q8_NC`, `GGML_CUDA_NO_HC_UP_PRE`, `GGML_CUDA_NO_Q8_EMIT`: repack-gcn.cu.
+- `GGML_CUDA_NO_F32_NC`: ggml-cuda.cu; `LLAMA_QSA_NO_MS_CACHE`: src/llama-memory-hybrid-idx.cpp.
+
+Наличие switch или kernel не доказывает его активацию в preset и выигрыш на наших shapes. Новую работу концентрировать на GPU expert residency, CPU/H2D miss scheduling, overlap, shared route loading N=2/3 и grouped PP; новый expert quant — после same-Q4 runtime.

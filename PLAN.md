@@ -4,9 +4,22 @@
 
 ## Что считается результатом
 
-Самостоятельный C++20/HIP runtime действительно выполняет модель на выделенной машине, а не вызывает llama_decode внутри новой оболочки. Он поддерживает текст, обе gfx906, RAM-experts с GPU-кешем, полноценный prefill, корректный MTP2, append-history reuse и проверенный занятый контекст около 128K. Конвертер из оригинальных safetensors является отдельным обязательным результатом. Новый низкобитный квант является исследованием после рабочего pack, а не условием для первого запуска.
+Самостоятельный C++20/HIP runtime действительно выполняет модель на выделенной машине, а не вызывает llama_decode внутри новой оболочки. Он поддерживает текст, обе gfx906, RAM-experts с GPU-кешем, Q4_0 для обоих K/V-кешей target и MTP, полноценный prefill, корректный MTP2, append-history reuse и проверенный занятый контекст около 128K. Конвертер из оригинальных safetensors является отдельным обязательным результатом. Новый низкобитный квант является исследованием после рабочего pack, а не условием для первого запуска.
 
 Сначала функциональный результат на существующих весах. Затем выигрыш полного запроса. API-обвязка не должна задерживать inference core.
+
+## Правило перед hot kernel и выбором GPU layout
+
+Для текущей операции проверить production mx, затем furnace и reinstinct по pinned revisions и карте RECON.md, раздел 16. При первом использовании ревизии прочитать mx FEATURES.md, furnace README полностью и reinstinct docs/ARCHITECTURE.md; затем читать относящиеся к операции kernels, dispatch и packer. Не повторять полный RECON для каждого kernel и не создавать новую подготовительную веху: R0 остаётся ближайшей задачей.
+
+В соответствующем участке кода/RECON кратко зафиксировать:
+
+1. Операцию, фактические shapes/dtypes и режимы N=1/2/3/prefill.
+2. Донорские file/function/revision и решение **KEEP / PORT / ADAPT / WRITE OURS**: сохранить проверенное решение / извлечь небольшой primitive / адаптировать / написать своё при отсутствии подходящего решения.
+3. Согласованный контракт packer/kernel: activation quantization и offset correction, scales, plane order, strides/padding, state layout и lifetime buffers. Одинаковое имя Q8 не гарантирует одинаковый ABI или FP-арифметику.
+4. Малый parity fixture и ближайший reference для парного A/B; учесть repack/transfer/workspace, а не только kernel time.
+
+Scalar/CPU oracle разрешён; намеренно generic/медленный GPU production path, который сразу заменяется известным gfx906 kernel, не нужен. Переносить primitives, а не runtime/server/graph infrastructure; сохранять лицензии и attribution. Микробенч допускает кандидат в сквозной runtime, но окончательный выбор основного пути требует проверки полного запроса. Если подходящих доноров нет, писать минимальный собственный kernel и сравнивать с ближайшим reference.
 
 ## R0. Подключение, рабочая сборка, аппаратный baseline
 
@@ -24,13 +37,23 @@
 
 Извлечь один реальный routed expert слоя 0: gate/up Q4_0, down Q4_1 (Q4_1 down также у слоёв 1–5; у остальных down Q4_0). Сделать scalar/reference, AVX2 и HIP Q4×Q8 реализацию его gate/up → SiLU×up → down с сохранением scale/offset Q4_1. Проверять одинаковые квантованные входы и веса, чтобы изолировать ошибки kernel от ошибок activation quantization. Затем проверить float input → quantization → matmul.
 
+HIP начать с адаптации canonical DP4A и готовых Wave64/DPP primitives mx, не с generic GPU matmul. Planar Q4_0 из mx q8_repack и reinstinct matvec_q4_0_repacked* сравнить как кандидаты на формах 2560↔640 и N=1/2/3; Q4_1 down обязателен независимо от наличия planar-пути. Packer и activation arithmetic переносить согласованно, padding выбирать по измерению наших shapes. Сохранить один canonical host inventory; repack делать для GPU slot/tile, без второй полной копии экспертов в RAM.
+
 Измерить 1/2/3 позиции и один PP-sized batch. На CPU применять постоянный worker pool только там, где он нужен; не создавать потоки на каждый matmul. Проверить диапазоны unpack, scale, signedness, суммы и отсутствие saturation в выбранной AVX2-схеме.
 
-**Готово:** реальный expert выдаёт проверенный результат CPU/GPU; ясны его время и трафик. Для correctness полный FP32 checkpoint в RAM не нужен: достаточно выбранных tensors/fixtures.
+**Готово:** реальный expert выдаёт проверенный результат CPU/GPU; зафиксированы donor/layout/activation contract, время и трафик для проверенных форм. Для correctness полный FP32 checkpoint в RAM не нужен: достаточно выбранных tensors/fixtures.
 
 ## R2. Минимальные блоки архитектуры
 
 **Действия.** Реализовать HC mixing/injection, GDN state update и convolution, QSA indexer/attention, PLE lookup/hash/convolution и нормализации. Использовать маленькие fixtures и выборочные слои с реальными весами. Пока без fusion ради fusion.
+
+GDN GPU-пути адаптировать из mx decode/chunked и furnace resident-state Wave64/LDS; reinstinct batched_v2 использовать как дополнительный primitive reference. До переноса выбрать единый state layout для decode/prefill/verify/checkpoint и проверить QK16→V48 mapping, beta/decay и sigmoid output gate. HC сначала проверить по отдельным операциям, затем рассматривать готовые furnace fusion-кандидаты.
+
+Реализовать reference и HIP запись/чтение Q4_0 K/V: блок 32 значения, 16 байт кодов + FP16 scale, фактически 4.5 bpw. Сохранить signed scale, округление и nibble packing baseline; коды вычислять с исходным FP32 scale, не с округлённым сохранённым scale. Проверить нулевые блоки и сравнить CPU/HIP packing, dequantization и attention на одинаковых квантованных данных и выбранных IDs. Перенести нормализованный Hadamard: Q/K блоками 256 после RoPE, V блоками 64 перед записью, обратное преобразование выхода по V до gate/output projection.
+
+Индексатор: raw keys сначала Q4_0 quantize/dequantize как в baseline, затем pooling → norm → RoPE. Хранить FP32 pooled keys завершённых блоков и небольшой raw-хвост; не сохранять полную raw-историю или неиспользуемый index V. Проверить последовательное обновление против обработки чанком. Семантику block-select/хвоста проверять отдельно от формата KV, чтобы её исправление не выдавать за чистую оптимизацию.
+
+Адаптировать furnace fused pooling/scoring и radix top-k под Q4 raw-key roundtrip, завершённые блоки и actual count. Численный append-cache pooled keys и его rollback реализовать самим: furnace кеширует host layout, не готовые GPU pooled keys. Не переносить expanded-position top-k или atomic tie order как математическую спецификацию; выбор IDs и границы scores сверять с reference.
 
 Обязательная QSA-проверка: 2052 видимые позиции, 513 законченных блоков, хвост 0. Проверить официальный block-select и путь текущего fork отдельно. Дополнить длинами 2047–2056, равными/нулевыми scores, каждым остатком по 4, разными границами prefill-чанка. Считать фактический selection count отдельно от вместимости буфера 2051. Не объявлять fork ошибочным или эквивалентным по одному комментарию.
 
@@ -42,29 +65,35 @@
 
 **Действия.** Соединить 48 слоёв в прямую последовательность вызовов. Один Session с заранее выделенными buffers; статический layer split. CPU misses и GPU hits первоначально могут синхронизироваться консервативно. Кеш и очередь копий должны сначала быть корректными.
 
-Добавить embeddings, LM projection, greedy sampling и текстовую CLI через готовый tokenizer либо сначала CLI с token IDs. Выполнить короткий prompt и 32–128 output tokens. Сравнить выбранные intermediate activations и teacher-forced logits. Короткий FP16-KV correctness режим допустим, но перед одинаковым performance A/B добавить соответствующий нынешнему Q4_0-KV путь.
+Сохранить owner/residency и producer-consumer контракты mx expert cache в собственных slots/maps/events, без импорта ggml scheduler. Публиковать slot только после всех uploads/repack, заменять только после readers. Между GPU передавать нужный residual 4×2560; P2P или ограниченный pinned staging выбирать по проверке R0, не по настройке чужого стека.
+
+Добавить embeddings, LM projection, greedy sampling и текстовую CLI через готовый tokenizer либо сначала CLI с token IDs. Выполнить короткий prompt и 32–128 output tokens с Q4_0 K/V. Сравнить выбранные intermediate activations и teacher-forced logits. FP32/FP16-KV допустим только для маленьких correctness fixtures, не как основной режим или замена Q4_0 в performance A/B.
+
+Сверить выделенную память с геометрией: при capacity 131072 основной Q4_0 K/V — 864 MiB; будущий MTP K/V — ещё 72 MiB, FP32 pooled index основных и MTP слоёв — 208 MiB. Всего кеши и индекс — 1144 MiB на обе GPU без padding/workspace; это расчёт, не замер. Weights, expert cache, GDN/conv states, speculative checkpoints и workspace учитывать отдельно по каждой GPU с headroom. Память зависит от выделенной capacity, а не только занятой истории.
 
 Проверить, что обе половины сети действительно исполняются на назначенных GPU и что процесс не читает expert weights с SSD во время прогретой генерации.
 
-**Готово:** собственный бинарник самостоятельно обрабатывает запрос; все слои/PLE работают; нет NaN, утечек, бесконтрольного роста памяти и скрытого llama_decode. Скорость на этом этапе может быть ниже baseline. Не бросать core ради преждевременной оптимизации одного kernel.
+**Готово:** собственный бинарник самостоятельно обрабатывает запрос с Q4_0 K/V; все слои/PLE работают; нет NaN, утечек, бесконтрольного роста памяти и скрытого llama_decode. Выделенная память по категориям и GPU сверена с расчётом. Скорость на этом этапе может быть ниже baseline. Не бросать core ради преждевременной оптимизации одного kernel.
 
 ## R4. Полноценный prefill
 
-**Действия.** Реализовать grouped expert GEMM и загрузку экспертных tiles. GDN-prefill должен иметь реальную chunked форму, а не host loop с тысячами decode launches. QSA обрабатывает запросы тайлами с per-query causal visibility; не создаёт полноконтекстные промежуточные маски для всего большого чанка.
+**Действия.** Адаптировать mx staged MMQ и reinstinct sort/gather/grouped tiling/scatter для grouped expert GEMM и загрузки tiles наших Q4_0/Q4_1 экспертов. Не предполагать GPU-resident slab всех экспертов. Сравнить mx chunked GDN и furnace resident-state вариант на реальной геометрии; не делать host loop с тысячами decode launches.
+
+QSA обрабатывает запросы тайлами с per-query causal visibility; не создаёт полноконтекстные промежуточные маски для всего большого чанка. Постоянный K/V остаётся Q4_0; сначала gather + dequantize только выбранных rows в ограниченный FP16 scratch, адаптированный furnace sparse attention с FP32 reductions/softmax. Использовать selected IDs непосредственно, без масочного frontend донора. До 2051 IDs требуют около 4 MiB K/V scratch на query; размер query tile выбирать по фиксированному workspace budget. Не распаковывать всю историю K/V в FP16. Прямой indexed Q4 attention сравнить с gather после корректного первого пути.
 
 Сначала 1024/2048, затем 4096/8192 только при измеренном выигрыше и доступном workspace. Dense GEMM разрешено брать из rocBLAS после shape-specific проверки. Сравнить dequant+GEMM и quantized путь на настоящем распределении токенов по экспертам.
 
-Добавить compute/copy overlap через события. Для каждой GPU измерить полезную работу и простои. После одночанковой корректности проверить pipeline двух prefill-чанков между двумя GPU. Если он не окупается, оставить более простой вариант. Учесть стоимость восстановления expert cache после заимствования VRAM под PP.
+Сохранить полезное reuse resident expert weights в PP из mx prefill D2D; canonical/repacked layouts и padding должны соответствовать consumer-у, не делать слепой D2D repacked slot в canonical tensor. Добавить compute/copy overlap через события и bounded double buffering. Для каждой GPU измерить полезную работу и простои. После одночанковой корректности адаптировать event-ordered pipeline двух prefill-чанков между GPU из furnace/reinstinct. Если он не окупается, оставить более простой вариант. Учесть стоимость восстановления expert cache после заимствования VRAM под PP; две GPU не обещают 2× single-sequence TG.
 
-**Готово:** 4K и 16K prompt без prefix reuse обрабатываются корректно; границы чанков не меняют causal смысл; есть PP и полное время запроса. Нет ложного увеличения PP за счёт незаметного reuse.
+**Готово:** 4K и 16K prompt без prefix reuse обрабатываются корректно с Q4_0 K/V; границы чанков не меняют causal смысл; есть PP, полное время запроса и peak VRAM по GPU. QSA workspace ограничен выбранными rows/query tiles, нет полноконтекстной FP16-копии K/V или ложного увеличения PP за счёт незаметного reuse.
 
 ## R5. Decode, cache и короткий multi-token MoE
 
 **Действия.** Оптимизировать по профилю, а не по списку доступных инструкций. Подобрать CPU threads/affinity/first-touch и простой cache admission. Сначала baseline 112 slots/layer, затем разумный бюджет из свободной VRAM. Один owner на слой, никаких remote expert RPC.
 
-Для 1/2/3 позиций объединять routes по expert ID, читать весовой tile один раз на несколько аккумуляторов. Fuse gate/up при выигрыше. Проверить все-hit/all-miss/mixed и повторяющиеся IDs, переходы cache slot FREE → LOADING → READY → IN_USE. Не публиковать новый ID до окончания всех нужных копий; не перезаписывать slot до завершения readers.
+Для 1/2/3 позиций объединять routes по expert ID на CPU и GPU, читать весовой tile один раз на несколько аккумуляторов. Адаптировать reinstinct multi-column matvec после группировки: несколько отдельных GEMV по assignments не дают этого reuse. Собственный гибридный scheduler должен загрузить эксперта один раз для всех позиций окна, перекрывать AVX2, DDR reads, DMA и GPU compute при измеренном выигрыше. Fuse gate/up при выигрыше. Проверить все-hit/all-miss/mixed и повторяющиеся IDs, переходы cache slot FREE → LOADING → READY → IN_USE. Не публиковать новый ID до окончания всех нужных копий; не перезаписывать slot до завершения readers.
 
-Сравнить CPU miss и H2D+GPU miss на измеренных размерах. Не загружать все misses на GPU по религиозному принципу. Минимизировать лишние round-trips и выделения памяти. Inline AMDGCN/DPP применять к найденному горячему месту после disassembly и A/B. HIP graphs оставлять на поздний этап, если submission overhead действительно значим.
+Сравнить CPU miss и H2D+GPU miss на измеренных размерах с учётом reuse, repack и конкуренции за DDR3. Не загружать все misses на GPU по религиозному принципу. Минимизировать лишние round-trips и выделения памяти. Готовые DPP/sdot4 primitives уже используются с R1; новые inline AMDGCN изменения делать для найденного горячего места после disassembly и A/B. HIP graphs адаптировать позднее, если submission overhead действительно значим; positions/lengths/slot maps передавать через device descriptor, не замораживать host scalars и CPU handoff в whole-engine graph.
 
 **Готово:** есть отдельные 1/2/3-token block measurements, cache accounting и сквозной non-MTP baseline. Микроускорение принимается в основной путь только после проверки полного запроса.
 
@@ -72,25 +101,29 @@
 
 ## R6. MTP2 с корректным состоянием
 
-**Действия.** Загрузить настоящий MTP sidecar, проверить его tap, shift, shared embeddings/output и собственное history state. Сначала greedy verify, потом стохастическая схема с правильной correction. Не заменять trained MTP маленькой случайной draft-моделью.
+**Действия.** Загрузить настоящий MTP sidecar, проверить его tap, shift, shared embeddings/output и собственное history state. Его K/V хранить в Q4_0 с теми же правилами packing/rotation, что у target; Q8_0 весов sidecar не определяет формат KV. Сначала greedy verify, потом стохастическая схема с правильной correction. Не заменять trained MTP маленькой случайной draft-моделью.
 
 Явно различать три позиции: выданные пользователю токены, уже потреблённые forward токены и pending sampled token. Bonus/replacement token может ещё не входить в KV/state. Уточнить этот контракт в коде до optimization, иначе ошибки на один токен маскируются правдоподобным текстом.
 
-Первый вариант restore: checkpoint recurrent/conv/PLE/tail state + логические KV lengths, затем при необходимости replay принятого префикса. После проверки заменить дорогой replay краткими prefix states, сохраняемыми внутри 1–3-step recurrence. Никогда не копировать весь 128K KV на каждое speculative окно.
+Первый вариант restore: checkpoint recurrent/conv/PLE/tail state + логические KV lengths, затем при необходимости replay принятого префикса. Вернуть число видимых pooled blocks и raw-хвост target/MTP; отвергнутые позиции Q4 K/V исключать по lengths и перезаписывать перед новым чтением. После проверки заменить дорогой replay краткими prefix states, сохраняемыми внутри 1–3-step recurrence. Никогда не копировать весь 128K KV на каждое speculative окно.
+
+Verify использует grouped N=2/3 expert path R5, а не несколько самостоятельных decode. Адаптировать поддержку коротких GDN prefix states mx/furnace к единому state layout R2 и контракту consumed/pending/committed; серверный checkpoint scheduler донора не нужен. Проверить parity состояния после выбора каждого принятого префикса.
 
 Тесты: приняты 0/1/2 drafts, all-reject несколько окон подряд, завершение EOS, предел контекста, блок QSA завершился speculative токеном и откатился, PLE пересёк EOS, reuse после генерации. Проверить состояние против последовательного исполнения тех же фактически потреблённых токенов. Для stochastic correction добавить маленький тест распределений, не требующий запуска всей модели.
 
-**Готово:** MTP2 работает корректно на тех же sampling settings; есть acceptance histogram и время draft/verify/restore. Скорость считается по реальным output tokens. Сравнение с MTP off сначала с одинаковым бюджетом cache; перераспределение freed draft VRAM является отдельным экспериментом.
+**Готово:** MTP2 работает корректно на тех же sampling settings с Q4_0 K/V у target и draft; есть acceptance histogram и время draft/verify/restore. Скорость считается по реальным output tokens. Сравнение с MTP off сначала с одинаковым бюджетом cache; перераспределение freed draft VRAM является отдельным экспериментом.
 
 ## R7. Длинный контекст и практическое использование
 
 **Действия.** Последовательно проверить занятые 32K, 64K и около 128K. Для capacity 131072 оставлять место под 512 outputs, special tokens и необходимое speculative lookahead. У самой границы уменьшать draft horizon, не выходить за buffers.
 
+На каждой длине использовать Q4_0 K/V у target/MTP, проверять causal visibility и выбранные teacher-forced logits против reference; FP32/FP16 эталон ограничивать малыми fixtures. Сохранять capacity, фактическую длину, выделенные KV/index/state/workspace bytes и peak VRAM по каждой GPU, включая prefill и verify/restore. Проверить отсутствие роста workspace до полноконтекстной FP16-копии K/V.
+
 Отдельно измерить cold/full PP, warm expert cache, incremental PP после длинной истории и TG на этой истории. Добавить несколько retrieval fixtures с ответом в начале/середине/конце, но не выдавать их за полную оценку качества.
 
 Проверить cancellation между безопасными boundaries и повторный запрос; append-history reuse; EOS/stop handling и корректный tokenizer/chat template. После рабочей CLI добавить минимальный streaming API готовой библиотекой или тонким внешним адаптером. Tool-call output сериализуется по template, ядро не исполняет инструменты за клиента.
 
-**Готово:** реальный длинный ввод обработан, 512 outputs измерены, continuation корректен. Capacity allocation не считается тестом 128K. Есть практическая команда запуска/endpoint без UI, multi-user scheduler и model zoo.
+**Готово:** реальный длинный ввод обработан с Q4_0 K/V, 512 outputs измерены, continuation корректен; память укладывается в VRAM каждой GPU с headroom. Capacity allocation не считается тестом 128K. Есть практическая команда запуска/endpoint без UI, multi-user scheduler и model zoo.
 
 ## R8. Runtime-pack из оригинальных safetensors
 
