@@ -1,6 +1,7 @@
 #include "session.hpp"
 #include "dense.hpp"
 #include "ple.hpp"
+#include "routes.hpp"
 #include "hip/attention.cuh"
 #include "hip/blocks.cuh"
 #include "hip/dense.cuh"
@@ -28,6 +29,13 @@
 namespace qwen {
 namespace {
 constexpr int H = 2560, W = 10240, V = 248320;
+SessionConfig checked_config(SessionConfig config) {
+    if (config.capacity < 4 || config.capacity > 131072 || config.capacity % 4 ||
+        config.expert_slots < 1 || config.expert_slots > 512 ||
+        config.max_batch_tokens < 1 || config.max_batch_tokens > 3)
+        throw std::invalid_argument("Session capacity/slots/max_batch_tokens");
+    return config;
+}
 void hip(hipError_t e) {
     if (e != hipSuccess) throw std::runtime_error(hipGetErrorString(e));
 }
@@ -82,7 +90,9 @@ struct Device {
     std::vector<Buffer> scratch;
     Buffer q8, error, logits, gathered_k, gathered_v, partial_o, partial_ms;
     Buffer histogram, select_state, candidates, ids, block_ids, counts;
-    explicit Device(int d) : id(d) {
+    Buffer routed_contributions;
+    std::unique_ptr<RouteGroups> routes;
+    explicit Device(int d, int max_tokens) : id(d) {
         hip(hipSetDevice(id));
         hipDeviceProp_t p{}; hip(hipGetDeviceProperties(&p, id));
         const std::string arch(p.gcnArchName);
@@ -93,14 +103,21 @@ struct Device {
             blas(rocblas_create_handle(&handle));
             scratch.reserve(24);
             // f(16) also holds 32768 completed-block scores at capacity 128K.
-            for (int i = 0; i < 24; ++i) scratch.emplace_back(32768 * sizeof(float));
-            q8 = Buffer(512 * sizeof(Q8_1)); error = Buffer(sizeof(int)); logits = Buffer(V * sizeof(float));
+            // N3 QSA projections require 36864 floats. N1 sizes/counts stay exact.
+            const int elements = std::max(32768, max_tokens * 12288);
+            for (int i = 0; i < 24; ++i) scratch.emplace_back(elements * sizeof(float));
+            q8 = Buffer(std::max(512, max_tokens * W / 32) * sizeof(Q8_1));
+            error = Buffer(sizeof(int)); logits = Buffer(max_tokens * V * sizeof(float));
             gathered_k = Buffer(1050112 * sizeof(std::uint16_t));
             gathered_v = Buffer(1050112 * sizeof(std::uint16_t));
             partial_o = Buffer(202752 * sizeof(float)); partial_ms = Buffer(792 * sizeof(float2));
             histogram = Buffer(8192 * sizeof(int)); select_state = Buffer(16 * sizeof(std::uint64_t));
             candidates = Buffer(512 * sizeof(std::uint64_t)); ids = Buffer(2051 * sizeof(std::int32_t));
             block_ids = Buffer(512 * sizeof(std::int32_t)); counts = Buffer(2 * sizeof(int));
+            if (max_tokens > 1) {
+                routed_contributions = Buffer(max_tokens * 10 * H * sizeof(float));
+                routes = std::make_unique<RouteGroups>(max_tokens);
+            }
         } catch (...) {
             if (handle) { if (rocblas_destroy_handle(handle) != rocblas_status_success) std::abort(); }
             cleanup(hipStreamDestroy(stream)); stream = nullptr; throw;
@@ -132,12 +149,12 @@ struct Matrix {
     TensorType type = TensorType::F32;
     int input = 0, output = 0;
     Buffer data;
-    void apply(Device& d, const float* x, float* y) const {
+    void apply(Device& d, const float* x, float* y, int columns) const {
         if (type == TensorType::F32 || type == TensorType::BF16 || type == TensorType::F16) {
-            blas(launch_dense_linear(d.handle, {data.get(), input, output}, x, 1, y, d.stream));
+            blas(launch_dense_linear(d.handle, {data.get(), input, output}, x, columns, y, d.stream));
         } else {
-            hip(launch_quantize_q8_1(x, d.q8.get<Q8_1>(), input, 1, d.flag(), d.stream));
-            hip(launch_quantized_linear({type, data.get<void>(), input, output}, d.q8.get<Q8_1>(), 1, y, d.stream));
+            hip(launch_quantize_q8_1(x, d.q8.get<Q8_1>(), input, columns, d.flag(), d.stream));
+            hip(launch_quantized_linear({type, data.get<void>(), input, output}, d.q8.get<Q8_1>(), columns, y, d.stream));
         }
     }
 };
@@ -183,15 +200,15 @@ struct Hc {
           norm(parameter(m, d, prefix + "norm.weight", {W})) {
         if (!head) inject = matrix(m, d, prefix + "inject.weight", W, 4);
     }
-    void mix(Device& d, const float* residual, float epsilon, bool head = false) const {
-        hip(launch_group_rms_norm(residual, norm.get(), 1, W, H, epsilon, false, d.f(2), d.flag(), d.stream));
-        down.apply(d, d.f(2), d.f(3));
-        hip(launch_hc_lowrank_activation(d.f(3), 1, d.f(4), d.flag(), d.stream));
-        up.apply(d, d.f(4), d.f(5));
-        hip(launch_hc_mix(d.f(2), d.f(5), 1, d.f(6), d.flag(), d.stream));
+    void mix(Device& d, const float* residual, float epsilon, int tokens, bool head = false) const {
+        hip(launch_group_rms_norm(residual, norm.get(), tokens, W, H, epsilon, false, d.f(2), d.flag(), d.stream));
+        down.apply(d, d.f(2), d.f(3), tokens);
+        hip(launch_hc_lowrank_activation(d.f(3), tokens, d.f(4), d.flag(), d.stream));
+        up.apply(d, d.f(4), d.f(5), tokens);
+        hip(launch_hc_mix(d.f(2), d.f(5), tokens, d.f(6), d.flag(), d.stream));
         if (!head) {
-            inject.apply(d, d.f(2), d.f(7));
-            hip(launch_hc_injection(d.f(7), 1, d.f(8), d.flag(), d.stream));
+            inject.apply(d, d.f(2), d.f(7), tokens);
+            hip(launch_hc_injection(d.f(7), tokens, d.f(8), d.flag(), d.stream));
         }
     }
 };
@@ -222,7 +239,7 @@ struct Experts {
         hip(hipSetDevice(d.id)); slots = Buffer(total() * static_cast<std::size_t>(nslots)); map.resize(nslots);
     }
     std::size_t total() const { return bytes[0] + bytes[1] + bytes[2]; }
-    void run(Device& d, int id, const Q8_1* input, float weight, SessionStats& stats) {
+    std::byte* acquire(Device& d, int id, int columns, SessionStats& stats) {
         if (id < 0 || id >= 512) throw std::runtime_error("expert ID");
         int chosen = -1;
         for (std::size_t i = 0; i < map.size(); ++i) if (map[i].id == id) { chosen = static_cast<int>(i); break; }
@@ -234,17 +251,28 @@ struct Experts {
                 destination += bytes[j];
             }
             map[chosen].id = id; ++stats.expert_misses; stats.expert_upload_bytes += total();
-        } else ++stats.expert_hits;
+            stats.expert_hits += static_cast<std::uint64_t>(columns - 1);
+        } else stats.expert_hits += static_cast<std::uint64_t>(columns);
         map[chosen].stamp = ++clock;
         // Upload, prior readers, reuse and new readers are on the SAME stream.
         // Eviction cannot overwrite a slot before any previous down has finished.
-        auto* base = slots.get<std::byte>() + total() * chosen;
-        hip(launch_quantized_linear({TensorType::Q4_0, base, H, 640}, input, 1, d.f(16), d.stream));
-        hip(launch_quantized_linear({TensorType::Q4_0, base + bytes[0], H, 640}, input, 1, d.f(17), d.stream));
-        hip(launch_silu_up(d.f(16), d.f(17), 640, d.f(18), d.flag(), d.stream));
-        hip(launch_quantize_q8_1(d.f(18), d.q8.get<Q8_1>(), 640, 1, d.flag(), d.stream));
-        hip(launch_quantized_linear({down_type, base + bytes[0] + bytes[1], 640, H}, d.q8.get<Q8_1>(), 1, d.f(19), d.stream));
+        return slots.get<std::byte>() + total() * chosen;
+    }
+    void project(Device& d, const std::byte* base, const Q8_1* input, int columns) {
+        // KEEP qualified canonical Q4xQ8 Columns1/2/3: the same weight registers
+        // feed all columns. No padding/repack or per-token projection fallback.
+        hip(launch_quantized_linear({TensorType::Q4_0, base, H, 640}, input, columns, d.f(16), d.stream));
+        hip(launch_quantized_linear({TensorType::Q4_0, base + bytes[0], H, 640}, input, columns, d.f(17), d.stream));
+        hip(launch_silu_up(d.f(16), d.f(17), columns * 640, d.f(18), d.flag(), d.stream));
+        hip(launch_quantize_q8_1(d.f(18), d.q8.get<Q8_1>(), 640, columns, d.flag(), d.stream));
+        hip(launch_quantized_linear({down_type, base + bytes[0] + bytes[1], 640, H}, d.q8.get<Q8_1>(), columns, d.f(19), d.stream));
+    }
+    void run(Device& d, int id, const Q8_1* input, float weight, SessionStats& stats) {
+        project(d, acquire(d, id, 1, stats), input, 1);
         hip(launch_scaled_add(d.f(19), weight, H, d.f(20), d.flag(), d.stream));
+    }
+    void run_group(Device& d, int id, const Q8_1* input, int columns, SessionStats& stats) {
+        project(d, acquire(d, id, columns, stats), input, columns);
     }
 };
 
@@ -304,14 +332,16 @@ struct Layer {
         auto& d = device; hip(hipSetDevice(d.id));
         for (auto* b : {&recurrent, &history, &tail}) if (b->bytes()) hip(hipMemsetAsync(b->get<void>(), 0, b->bytes(), d.stream));
     }
-    template<class Observe> void attention(int position, int capacity, float epsilon, Observe&& observe) {
+    template<class Observe> void attention(int position, int capacity, float epsilon, int tokens, Observe&& observe) {
         auto& d = device;
-        qkv.apply(d, d.f(6), d.f(9));
+        qkv.apply(d, d.f(6), d.f(9), tokens);
         if ((index + 1) % 4) {
-            z.apply(d, d.f(6), d.f(10)); alpha.apply(d, d.f(6), d.f(11)); beta.apply(d, d.f(6), d.f(12));
+            z.apply(d, d.f(6), d.f(10), tokens); alpha.apply(d, d.f(6), d.f(11), tokens); beta.apply(d, d.f(6), d.f(12), tokens);
             observe("qkv", d.f(9), 10240); observe("z", d.f(10), 6144);
             observe("alpha", d.f(11), 48); observe("beta", d.f(12), 48);
-            if (state_probe) {
+            // The large state/control witness is N1-only. Do not label a whole
+            // window's pre/post state as per-token chronological prefixes.
+            if (state_probe && tokens == 1) {
                 observe("gdn_state_pre", recurrent.get(), 786432);
                 // Recomputed through the same GPU helper, NOT a capture of
                 // recurrence registers. f(22) is diagnostic-only scratch.
@@ -322,86 +352,134 @@ struct Layer {
                 observe("gdn_control_decay_recomputed", d.f(22) + 96, 48);
             }
             launch_gdn({conv.get(), dt.get(), a.get(), gdn_norm.get(), epsilon},
-                       {d.f(9), d.f(10), d.f(11), d.f(12)}, 1, recurrent.get(), history.get(), d.f(13),
+                       {d.f(9), d.f(10), d.f(11), d.f(12)}, tokens, recurrent.get(), history.get(), d.f(13),
                        {d.f(14), stage_recurrent.get(), stage_history.get(), d.f(15), nullptr, nullptr, d.flag()}, d.stream);
-            if (state_probe) observe("gdn_state_post", recurrent.get(), 786432);
+            if (state_probe && tokens == 1) observe("gdn_state_post", recurrent.get(), 786432);
             observe("gdn_convolved_normalized", d.f(14), 10240);
             observe("final_output", d.f(13), 6144);
         } else {
-            key.apply(d, d.f(6), d.f(10)); value.apply(d, d.f(6), d.f(11));
+            key.apply(d, d.f(6), d.f(10), tokens); value.apply(d, d.f(6), d.f(11), tokens);
             observe("qsa_q_gate_raw", d.f(9), 12288);
             observe("qsa_key_raw", d.f(10), 512); observe("qsa_value_raw", d.f(11), 512);
-            hip(launch_qsa_split_q_gate(d.f(9), 1, d.f(12), d.f(13), d.flag(), d.stream));
+            hip(launch_qsa_split_q_gate(d.f(9), tokens, d.f(12), d.f(13), d.flag(), d.stream));
             observe("qsa_gate_raw", d.f(13), 6144);
-            hip(launch_group_rms_norm(d.f(12), q_norm.get(), 1, 6144, 256, epsilon, true, d.f(14), d.flag(), d.stream));
-            hip(launch_group_rms_norm(d.f(10), k_norm.get(), 1, 512, 256, epsilon, true, d.f(15), d.flag(), d.stream));
-            hip(launch_qsa_rope(d.f(14), frequencies.get(), 1, 24, position, d.f(14), d.flag(), d.stream));
-            hip(launch_qsa_rope(d.f(15), frequencies.get(), 1, 2, position, d.f(15), d.flag(), d.stream));
-            launch_hadamard(d.f(14), d.f(12), 6144, 256, d.stream);
-            launch_hadamard(d.f(15), d.f(10), 512, 256, d.stream);
-            launch_hadamard(d.f(11), d.f(15), 512, 64, d.stream);
+            hip(launch_group_rms_norm(d.f(12), q_norm.get(), tokens, 6144, 256, epsilon, true, d.f(14), d.flag(), d.stream));
+            hip(launch_group_rms_norm(d.f(10), k_norm.get(), tokens, 512, 256, epsilon, true, d.f(15), d.flag(), d.stream));
+            hip(launch_qsa_rope(d.f(14), frequencies.get(), tokens, 24, position, d.f(14), d.flag(), d.stream));
+            hip(launch_qsa_rope(d.f(15), frequencies.get(), tokens, 2, position, d.f(15), d.flag(), d.stream));
+            launch_hadamard(d.f(14), d.f(12), tokens * 6144, 256, d.stream);
+            launch_hadamard(d.f(15), d.f(10), tokens * 512, 256, d.stream);
+            launch_hadamard(d.f(11), d.f(15), tokens * 512, 64, d.stream);
             observe("qsa_query_rotated", d.f(12), 6144);
             observe("qsa_key_rotated", d.f(10), 512); observe("qsa_value_rotated", d.f(15), 512);
-            launch_quantize_q4(d.f(10), kv_k.get<Q4_0>() + position * 16, 512, d.flag(), d.stream);
-            launch_quantize_q4(d.f(15), kv_v.get<Q4_0>() + position * 16, 512, d.flag(), d.stream);
-            index_q.apply(d, d.f(6), d.f(14)); index_k.apply(d, d.f(6), d.f(15));
+            // Contiguous [position+t][2][8 Q4 blocks], with unchanged packing.
+            launch_quantize_q4(d.f(10), kv_k.get<Q4_0>() + position * 16, tokens * 512, d.flag(), d.stream);
+            launch_quantize_q4(d.f(15), kv_v.get<Q4_0>() + position * 16, tokens * 512, d.flag(), d.stream);
+            index_q.apply(d, d.f(6), d.f(14), tokens); index_k.apply(d, d.f(6), d.f(15), tokens);
             QsaIndexConfig cfg; cfg.capacity = static_cast<std::size_t>(capacity); cfg.rms_epsilon = epsilon; cfg.rotary_dim = 64;
             QsaIndexDeviceParameters p{cfg, iq_norm.get(), ik_norm.get(), frequencies.get()};
-            hip(launch_qsa_index_append(p, d.f(15), position, 1, pooled.get(), tail.get(),
+            hip(launch_qsa_index_append(p, d.f(15), position, tokens, pooled.get(), tail.get(),
                 {d.q8.get<Q4_0>(), d.f(16), d.f(17), d.f(18), nullptr, d.flag()}, d.stream));
-            hip(launch_qsa_index_score(p, d.f(14), pooled.get(), position + 1, d.f(15), d.f(16), d.flag(), d.stream));
-            hip(launch_qsa_select(d.f(16), position + 1, d.ids.get<std::int32_t>(), d.block_ids.get<std::int32_t>(), d.counts.get<int>(),
-                {d.histogram.get<int>(), d.select_state.get<std::uint64_t>(), d.candidates.get<std::uint64_t>(), d.flag()}, d.stream));
-            hip(launch_attention_q4(d.f(12), kv_k.get<Q4_0>(), kv_v.get<Q4_0>(), capacity, d.ids.get<std::int32_t>(),
-                d.counts.get<int>(), position + 1, d.f(14),
-                {d.gathered_k.get<std::uint16_t>(), d.gathered_v.get<std::uint16_t>(), d.partial_o.get(),
-                 d.partial_ms.get<float2>(), d.f(15), d.flag()}, d.stream));
-            observe("qsa_attention_rotated", d.f(14), 6144);
-            launch_hadamard(d.f(14), d.f(12), 6144, 64, d.stream);
-            observe("qsa_attention_inverse_h64", d.f(12), 6144);
-            hip(launch_sigmoid_gate(d.f(12), d.f(13), 6144, d.f(14), d.flag(), d.stream));
-            observe("qsa_attention_gated", d.f(14), 6144);
-            // The common post-attention output buffer is f(13); raw gate is now dead.
-            hip(hipMemcpyAsync(d.f(13), d.f(14), 6144 * sizeof(float), hipMemcpyDeviceToDevice, d.stream));
+            // All prepared keys may exist, but every score/select/gather receives
+            // ONLY start+t+1 visibility (and thus the actual causal tail). f(12)
+            // queries, f(13) raw gates and f(14) index queries survive the loop.
+            // Append's f(16..18) die before the serialized bounded query workspace.
+            for (int t = 0; t < tokens; ++t) {
+                const int visible = position + t + 1;
+                hip(launch_qsa_index_score(p, d.f(14) + t * 512, pooled.get(), visible, d.f(15), d.f(16), d.flag(), d.stream));
+                hip(launch_qsa_select(d.f(16), visible, d.ids.get<std::int32_t>(), d.block_ids.get<std::int32_t>(), d.counts.get<int>(),
+                    {d.histogram.get<int>(), d.select_state.get<std::uint64_t>(), d.candidates.get<std::uint64_t>(), d.flag()}, d.stream));
+                hip(launch_attention_q4(d.f(12) + t * 6144, kv_k.get<Q4_0>(), kv_v.get<Q4_0>(), capacity, d.ids.get<std::int32_t>(),
+                    d.counts.get<int>(), visible, d.f(17),
+                    {d.gathered_k.get<std::uint16_t>(), d.gathered_v.get<std::uint16_t>(), d.partial_o.get(),
+                     d.partial_ms.get<float2>(), d.f(15), d.flag()}, d.stream));
+                observe("qsa_attention_rotated", d.f(17), 6144, t);
+                launch_hadamard(d.f(17), d.f(18), 6144, 64, d.stream);
+                observe("qsa_attention_inverse_h64", d.f(18), 6144, t);
+                hip(launch_sigmoid_gate(d.f(18), d.f(13) + t * 6144, 6144, d.f(9) + t * 6144, d.flag(), d.stream));
+                observe("qsa_attention_gated", d.f(9) + t * 6144, 6144, t);
+            }
+            // f(9) holds all gated rows. Only now are ALL raw gates dead.
+            hip(hipMemcpyAsync(d.f(13), d.f(9), tokens * 6144 * sizeof(float), hipMemcpyDeviceToDevice, d.stream));
         }
-        attn_output.apply(d, d.f(13), d.f(9));
+        attn_output.apply(d, d.f(13), d.f(9), tokens);
         observe("block_attention_out", d.f(9), H);
     }
-    void ffn(SessionStats& stats) {
+    void ffn(SessionStats& stats, int tokens) {
         auto& d = device;
-        router.apply(d, d.f(6), d.f(9));
-        hip(launch_router_softmax(d.f(9), 1, d.f(10), d.flag(), d.stream));
-        std::array<float, 512> probabilities{};
-        hip(hipMemcpyAsync(probabilities.data(), d.f(10), sizeof(probabilities), hipMemcpyDeviceToHost, d.stream));
+        router.apply(d, d.f(6), d.f(9), tokens);
+        hip(launch_router_softmax(d.f(9), tokens, d.f(10), d.flag(), d.stream));
+        std::array<float, 3 * 512> probabilities{};
+        hip(hipMemcpyAsync(probabilities.data(), d.f(10), tokens * 512 * sizeof(float), hipMemcpyDeviceToHost, d.stream));
         d.check("router layer " + std::to_string(index));
-        std::array<int, 512> order{}; std::iota(order.begin(), order.end(), 0);
-        std::partial_sort(order.begin(), order.begin() + 10, order.end(), [&](int i, int j) {
-            return probabilities[i] > probabilities[j] || (probabilities[i] == probabilities[j] && i < j);
-        });
-        // Production fused topk-moe collects selected values by expert ID's
-        // logical lane, then performs an ascending-XOR width32 reduction.
-        std::array<float, 32> buckets{};
-        for (int i = 0; i < 10; ++i) buckets[order[i] % 32] += probabilities[order[i]];
-        for (int distance = 1; distance < 32; distance *= 2) {
-            const auto previous = buckets;
-            for (int lane = 0; lane < 32; ++lane)
-                buckets[lane] = previous[lane] + previous[lane ^ distance];
+        std::array<std::int32_t, 3 * 10> ids{};
+        std::array<float, 3 * 10> weights{};
+        for (int t = 0; t < tokens; ++t) {
+            const float* row = probabilities.data() + t * 512;
+            std::array<int, 512> order{}; std::iota(order.begin(), order.end(), 0);
+            std::partial_sort(order.begin(), order.begin() + 10, order.end(), [&](int i, int j) {
+                return row[i] > row[j] || (row[i] == row[j] && i < j);
+            });
+            // Keep the logical ID%32 buckets and ascending-XOR width32 sum,
+            // floor, reciprocal and multiply, exactly as in the qualified N1.
+            std::array<float, 32> buckets{};
+            for (int i = 0; i < 10; ++i) buckets[order[i] % 32] += row[order[i]];
+            for (int distance = 1; distance < 32; distance *= 2) {
+                const auto previous = buckets;
+                for (int lane = 0; lane < 32; ++lane)
+                    buckets[lane] = previous[lane] + previous[lane ^ distance];
+            }
+            const float denominator = std::max(buckets[0], 1.0f / 16384.0f);
+            if (!(denominator > 0) || !std::isfinite(denominator)) throw std::runtime_error("invalid route denominator");
+            const float inverse = 1.0f / denominator;
+            for (int i = 0; i < 10; ++i) {
+                ids[t * 10 + i] = order[i]; weights[t * 10 + i] = row[order[i]] * inverse;
+            }
         }
-        const float denominator = std::max(buckets[0], 1.0f / 16384.0f);
-        if (!(denominator > 0) || !std::isfinite(denominator)) throw std::runtime_error("invalid route denominator");
-        const float inverse = 1.0f / denominator;
         // Dedicated input copy: the common quantization workspace is overwritten
-        // by expert down inputs. Keep the original quantized X for all ten routes.
-        hip(launch_quantize_q8_1(d.f(6), d.q8.get<Q8_1>(), H, 1, d.flag(), d.stream));
-        hip(hipMemcpyAsync(d.f(21), d.q8.get<Q8_1>(), (H / 32) * sizeof(Q8_1), hipMemcpyDeviceToDevice, d.stream));
-        hip(hipMemsetAsync(d.f(20), 0, H * sizeof(float), d.stream));
-        for (int i = 0; i < 10; ++i)
-            experts.run(d, order[i], reinterpret_cast<const Q8_1*>(d.f(21)), probabilities[order[i]] * inverse, stats);
-        shared_gate.apply(d, d.f(6), d.f(16)); shared_up.apply(d, d.f(6), d.f(17));
-        hip(launch_silu_up(d.f(16), d.f(17), 640, d.f(18), d.flag(), d.stream));
-        shared_down.apply(d, d.f(18), d.f(19));
-        blas(launch_dense_linear(d.handle, {shared_weight.get(), H, 1}, d.f(6), 1, d.f(16), d.stream));
-        hip(launch_shared_sigmoid_add(d.f(19), d.f(16), H, d.f(20), d.flag(), d.stream));
+        // by expert down inputs. f(21) reserves ALL original Q8 X columns until
+        // every group finishes. f(23) is separate gathered Q8, not common d.q8.
+        hip(launch_quantize_q8_1(d.f(6), d.q8.get<Q8_1>(), H, tokens, d.flag(), d.stream));
+        hip(hipMemcpyAsync(d.f(21), d.q8.get<Q8_1>(), tokens * (H / 32) * sizeof(Q8_1), hipMemcpyDeviceToDevice, d.stream));
+        hip(hipMemsetAsync(d.f(20), 0, tokens * H * sizeof(float), d.stream));
+        const auto* original = reinterpret_cast<const Q8_1*>(d.f(21));
+        if (tokens == 1) {
+            // Retain N1 physical cache/LRU order and immediate rank-order adds.
+            for (int rank = 0; rank < 10; ++rank) experts.run(d, ids[rank], original, weights[rank], stats);
+        } else {
+            d.routes->prepare(std::span(ids).first(tokens * 10), std::span(weights).first(tokens * 10), tokens);
+            auto* gathered = reinterpret_cast<Q8_1*>(d.f(23));
+            auto* contributions = d.routed_contributions.get();
+            for (int expert = 0; expert < 512; ++expert) {
+                const auto group = d.routes->group(expert);
+                if (group.empty()) continue;
+                const int columns = static_cast<int>(group.size()); // unique per token, <=3
+                for (int c = 0; c < columns; ++c)
+                    hip(hipMemcpyAsync(gathered + c * (H / 32), original + group[c].token * (H / 32),
+                        (H / 32) * sizeof(Q8_1), hipMemcpyDeviceToDevice, d.stream));
+                // One canonical triplet acquisition/upload per group. Every
+                // additional group column is a logical hit, even on a cold miss.
+                experts.run_group(d, expert, gathered, columns, stats);
+                for (int c = 0; c < columns; ++c)
+                    hip(hipMemcpyAsync(contributions + (group[c].token * 10 + group[c].rank) * H,
+                        d.f(19) + c * H, H * sizeof(float), hipMemcpyDeviceToDevice, d.stream));
+                // All scatters precede the next f(16..19)/f(23)/slot reuse on
+                // this same stream. d.q8 contains DOWN input, never original X.
+            }
+            // Execution order may group experts, but numerical reduction cannot:
+            // scatter UNWEIGHTED down results, then left-fold original ranks0..9
+            // with separately rounded normalized-weight MUL and accumulator ADD.
+            for (int t = 0; t < tokens; ++t)
+                for (int rank = 0; rank < 10; ++rank)
+                    hip(launch_scaled_add(contributions + (t * 10 + rank) * H, weights[t * 10 + rank], H,
+                        d.f(20) + t * H, d.flag(), d.stream));
+        }
+        shared_gate.apply(d, d.f(6), d.f(16), tokens); shared_up.apply(d, d.f(6), d.f(17), tokens);
+        hip(launch_silu_up(d.f(16), d.f(17), tokens * 640, d.f(18), d.flag(), d.stream));
+        shared_down.apply(d, d.f(18), d.f(19), tokens);
+        blas(launch_dense_linear(d.handle, {shared_weight.get(), H, 1}, d.f(6), tokens, d.f(16), d.stream));
+        if (tokens == 1) hip(launch_shared_sigmoid_add(d.f(19), d.f(16), H, d.f(20), d.flag(), d.stream));
+        else hip(launch_shared_sigmoid_add_rows(d.f(19), d.f(16), tokens, H, d.f(20), d.flag(), d.stream));
     }
 };
 }
@@ -426,7 +504,10 @@ struct Session::Impl {
     std::vector<float> host_logits;
     struct Pinned {
         float* pointer = nullptr;
-        Pinned() { hip(hipHostMalloc(&pointer, W * sizeof(float), hipHostMallocDefault)); }
+        std::size_t bytes;
+        explicit Pinned(int tokens) : bytes(tokens * W * sizeof(float)) {
+            hip(hipHostMalloc(&pointer, bytes, hipHostMallocDefault));
+        }
         ~Pinned() { if (pointer) cleanup(hipHostFree(pointer)); }
     };
     std::unique_ptr<Pinned> pinned;
@@ -437,10 +518,8 @@ struct Session::Impl {
     std::uint64_t trace_occurrence = 0;
 
     Impl(const std::string& path, SessionConfig cfg)
-        : model(path), config(std::move(cfg)), ple_hash(ple_hash_config(model, 1)),
-          ple_lookup(model, ple_hash.state().config()), host_logits(V) {
-        if (config.capacity < 4 || config.capacity > 131072 || config.capacity % 4 || config.expert_slots < 1 || config.expert_slots > 512)
-            throw std::invalid_argument("Session capacity/slots");
+        : model(path), config(checked_config(std::move(cfg))), ple_hash(ple_hash_config(model, 1)),
+          ple_lookup(model, ple_hash.state().config()), host_logits(config.max_batch_tokens * V) {
         if (!config.trace_directory.empty()) {
             const std::filesystem::path path(config.trace_directory);
             const auto parent = path.has_parent_path() ? path.parent_path() : std::filesystem::path(".");
@@ -462,7 +541,8 @@ struct Session::Impl {
         embedding_type = embedding.type; embedding_stride = static_cast<std::size_t>(embedding.strides[1]);
         embeddings.resize(static_cast<std::size_t>(embedding.byte_size)); model.read_tensor(embedding.name, embeddings);
         int n = 0; hip(hipGetDeviceCount(&n)); if (n != 2) throw std::runtime_error("Session requires two gfx906");
-        devices[0] = std::make_unique<Device>(0); devices[1] = std::make_unique<Device>(1);
+        devices[0] = std::make_unique<Device>(0, config.max_batch_tokens);
+        devices[1] = std::make_unique<Device>(1, config.max_batch_tokens);
         layers.reserve(48);
         for (int l = 0; l < 48; ++l) {
             std::fprintf(stderr, "load layer %d/48\n", l + 1);
@@ -478,7 +558,7 @@ struct Session::Impl {
         hip(hipSetDevice(0)); ple_history = Buffer(92160 * sizeof(float)); ple_stage_history = Buffer(92160 * sizeof(float));
         head_hc = std::make_unique<Hc>(model, *devices[1], "output_hc_", true);
         head = matrix(model, *devices[1], "output.weight", H, V);
-        pinned = std::make_unique<Pinned>(); handoff = pinned->pointer;
+        pinned = std::make_unique<Pinned>(config.max_batch_tokens); handoff = pinned->pointer;
         reset();
     }
     ~Impl() {
@@ -500,7 +580,7 @@ struct Session::Impl {
         result.capacity = config.capacity; result.expert_slots = config.expert_slots;
         result.host_embedding_capacity = embeddings.capacity();
         result.host_logit_capacity = host_logits.capacity() * sizeof(float);
-        result.pinned_handoff = W * sizeof(float);
+        result.pinned_handoff = pinned->bytes;
         for (int id = 0; id < 2; ++id) {
             auto& out = result.devices[id];
             auto& d = *devices[id];
@@ -520,7 +600,7 @@ struct Session::Impl {
             for (const auto& b : d.scratch) add(out.workspace, b);
             for (const auto* b : {&d.q8, &d.error, &d.logits, &d.gathered_k, &d.gathered_v,
                     &d.partial_o, &d.partial_ms, &d.histogram, &d.select_state, &d.candidates,
-                    &d.ids, &d.block_ids, &d.counts}) add(out.workspace, *b);
+                    &d.ids, &d.block_ids, &d.counts, &d.routed_contributions}) add(out.workspace, *b);
             for (const auto& pointer : layers) {
                 const auto& l = *pointer;
                 if (l.index / 24 != id) continue;
@@ -558,7 +638,7 @@ struct Session::Impl {
         result.ownership_verified = true;
         return result;
     }
-    void capture(Device& d, const std::string& name, const float* x, int count, int layer = -1) {
+    void capture(Device& d, const std::string& name, const float* x, int count, int layer = -1, int token_offset = 0) {
         if (!trace_metadata.is_open()) return;
         std::vector<float> values(static_cast<std::size_t>(count));
         hip(hipMemcpyAsync(values.data(), x, values.size() * sizeof(float), hipMemcpyDeviceToHost, d.stream));
@@ -570,95 +650,121 @@ struct Session::Impl {
         if (!output) throw std::runtime_error("trace write");
         // Additional diagnostic layer 2 does not change the frozen allowlist
         // of gate-required/optional named captures in compare_session.py.
-        trace_metadata << "{\"name\":" << std::quoted((layer == 2 || layer == 6 || layer == 8 || layer == 19 || layer == 22) ? "debug_" + name : name) << ",\"layer\":" << layer << ",\"position\":" << statistics.consumed_tokens
+        trace_metadata << "{\"name\":" << std::quoted((layer == 2 || layer == 6 || layer == 8 || layer == 19 || layer == 22) ? "debug_" + name : name) << ",\"layer\":" << layer << ",\"position\":" << statistics.consumed_tokens + static_cast<std::uint64_t>(token_offset)
                        << ",\"type\":\"F32\",\"elements\":" << count << ",\"file\":" << std::quoted(file) << "}\n";
         trace_metadata.flush(); if (!trace_metadata) throw std::runtime_error("trace metadata write");
     }
-    void ple(Device& d, std::int32_t token, float*& residual, float*& alternate) {
-        ple_hash.step(token, ple_rows); ple_lookup.lookup(ple_rows, ple_embedding);
-        hip(hipMemcpyAsync(d.f(9), ple_embedding.data(), sizeof(ple_embedding), hipMemcpyHostToDevice, d.stream));
-        capture(d, "ple_embedding", d.f(9), H, 1);
-        ple_key.apply(d, d.f(9), d.f(10)); ple_value.apply(d, d.f(9), d.f(11));
-        capture(d, "ple_key_raw", d.f(10), W, 1); capture(d, "ple_value_raw", d.f(11), H, 1);
-        hip(launch_group_rms_norm(d.f(10), ple_key_norm.get(), 1, W, H, epsilon, false, d.f(12), d.flag(), d.stream));
-        hip(launch_group_rms_norm(residual, ple_query_norm.get(), 1, W, H, epsilon, false, d.f(13), d.flag(), d.stream));
-        hip(launch_ple_gate(d.f(12), d.f(13), d.f(11), 1, d.f(14), d.flag(), d.stream));
-        capture(d, "ple_gated_value", d.f(14), W, 1);
-        hip(launch_group_rms_norm(d.f(14), ple_conv_norm.get(), 1, W, H, epsilon, false, d.f(15), d.flag(), d.stream));
-        hip(launch_ple_causal_conv(d.f(14), d.f(15), ple_conv.get(), ple_history.get(), 1, nullptr,
+    void capture_batch(Device& d, const std::string& name, const float* x, int width, int tokens, int layer = -1) {
+        if (!trace_metadata.is_open()) return;
+        for (int t = 0; t < tokens; ++t) capture(d, name, x + t * width, width, layer, t);
+    }
+    void ple(Device& d, std::span<const std::int32_t> window, float*& residual, float*& alternate) {
+        const int tokens = static_cast<int>(window.size());
+        // Initial embedding H2D has completed at layer0's check. Borrow the
+        // preallocated pinned staging for chronological selected PLE lookups;
+        // it remains immutable until layer1 finishes, before the split handoff.
+        for (int t = 0; t < tokens; ++t) {
+            ple_hash.step(window[t], ple_rows); ple_lookup.lookup(ple_rows, ple_embedding);
+            std::copy(ple_embedding.begin(), ple_embedding.end(), handoff + t * H);
+        }
+        hip(hipMemcpyAsync(d.f(9), handoff, tokens * H * sizeof(float), hipMemcpyHostToDevice, d.stream));
+        capture_batch(d, "ple_embedding", d.f(9), H, tokens, 1);
+        ple_key.apply(d, d.f(9), d.f(10), tokens); ple_value.apply(d, d.f(9), d.f(11), tokens);
+        capture_batch(d, "ple_key_raw", d.f(10), W, tokens, 1); capture_batch(d, "ple_value_raw", d.f(11), H, tokens, 1);
+        hip(launch_group_rms_norm(d.f(10), ple_key_norm.get(), tokens, W, H, epsilon, false, d.f(12), d.flag(), d.stream));
+        hip(launch_group_rms_norm(residual, ple_query_norm.get(), tokens, W, H, epsilon, false, d.f(13), d.flag(), d.stream));
+        hip(launch_ple_gate(d.f(12), d.f(13), d.f(11), tokens, d.f(14), d.flag(), d.stream));
+        capture_batch(d, "ple_gated_value", d.f(14), W, tokens, 1);
+        hip(launch_group_rms_norm(d.f(14), ple_conv_norm.get(), tokens, W, H, epsilon, false, d.f(15), d.flag(), d.stream));
+        hip(launch_ple_causal_conv(d.f(14), d.f(15), ple_conv.get(), ple_history.get(), tokens, nullptr,
             {d.f(16), ple_stage_history.get(), nullptr}, d.flag(), d.stream));
         hip(launch_publish_ple_history(ple_stage_history.get(), ple_history.get(), d.flag(), d.stream));
-        hip(launch_add(residual, d.f(16), W, alternate, d.flag(), d.stream)); std::swap(residual, alternate);
-        capture(d, "ple_residual", residual, W, 1);
+        hip(launch_add(residual, d.f(16), tokens * W, alternate, d.flag(), d.stream)); std::swap(residual, alternate);
+        capture_batch(d, "ple_residual", residual, W, tokens, 1);
     }
-    std::span<const float> step(std::int32_t token) {
+    std::span<const float> step_batch(std::span<const std::int32_t> window) {
         if (!usable) throw std::runtime_error("Session invalidated; reset required");
-        if (token < 0 || token >= V || statistics.consumed_tokens >= static_cast<std::uint64_t>(config.capacity))
-            throw std::invalid_argument("token ID/capacity");
+        // Entire argument preflight is outside the invalidating execution block:
+        // no stream/flag/hash/cache/stat/logit/capture mutation on a bad suffix.
+        if (window.empty() || window.size() > static_cast<std::size_t>(config.max_batch_tokens) || !window.data())
+            throw std::invalid_argument("Session batch length");
+        if (statistics.consumed_tokens > static_cast<std::uint64_t>(config.capacity) ||
+            window.size() > static_cast<std::uint64_t>(config.capacity) - statistics.consumed_tokens)
+            throw std::invalid_argument("Session batch capacity");
+        for (const auto token : window) if (token < 0 || token >= V) throw std::invalid_argument("token ID");
+        const int tokens = static_cast<int>(window.size());
+        const int position = static_cast<int>(statistics.consumed_tokens);
         const auto begin = std::chrono::steady_clock::now();
         try {
             auto* d = devices[0].get(); hip(hipSetDevice(0)); d->clear();
-            const auto row = std::span(embeddings).subspan(embedding_stride * token, embedding_stride);
-            for (int i = 0; i < H; ++i) {
-                const float x = tensor_element(embedding_type, row, static_cast<std::size_t>(i));
-                if (!std::isfinite(x)) throw std::runtime_error("embedding nonfinite");
-                for (int c = 0; c < 4; ++c) handoff[c * H + i] = x;
+            for (int t = 0; t < tokens; ++t) {
+                const auto row = std::span(embeddings).subspan(embedding_stride * window[t], embedding_stride);
+                for (int i = 0; i < H; ++i) {
+                    const float x = tensor_element(embedding_type, row, static_cast<std::size_t>(i));
+                    if (!std::isfinite(x)) throw std::runtime_error("embedding nonfinite");
+                    for (int c = 0; c < 4; ++c) handoff[t * W + c * H + i] = x;
+                }
             }
             float* residual = d->f(0); float* alternate = d->f(1);
-            hip(hipMemcpyAsync(residual, handoff, W * sizeof(float), hipMemcpyHostToDevice, d->stream));
-            capture(*d, "hc_init", residual, W);
+            hip(hipMemcpyAsync(residual, handoff, tokens * W * sizeof(float), hipMemcpyHostToDevice, d->stream));
+            capture_batch(*d, "hc_init", residual, W, tokens);
             for (int l = 0; l < 48; ++l) {
                 if (l == 24) {
                     d->check("split producer");
-                    hip(hipMemcpyAsync(handoff, residual, W * sizeof(float), hipMemcpyDeviceToHost, d->stream));
+                    hip(hipMemcpyAsync(handoff, residual, tokens * W * sizeof(float), hipMemcpyDeviceToHost, d->stream));
                     hip(hipStreamSynchronize(d->stream));
                     d = devices[1].get(); hip(hipSetDevice(1)); d->clear(); residual = d->f(0); alternate = d->f(1);
-                    hip(hipMemcpyAsync(residual, handoff, W * sizeof(float), hipMemcpyHostToDevice, d->stream));
+                    hip(hipMemcpyAsync(residual, handoff, tokens * W * sizeof(float), hipMemcpyHostToDevice, d->stream));
                 }
                 auto& layer = *layers[l];
-                if (l == 1) ple(*d, token, residual, alternate);
-                layer.attention_hc.mix(*d, residual, epsilon);
+                if (l == 1) ple(*d, window, residual, alternate);
+                layer.attention_hc.mix(*d, residual, epsilon, tokens);
                 if (l == 0 || l == 1 || l == 2 || l == 3 || l == 6 || l == 8 || l == 19 || l == 22 || l == 47) {
-                    capture(*d, "hc_attn_mix", d->f(6), H, l);
-                    capture(*d, "hc_attn_norm", d->f(2), W, l);
-                    capture(*d, "hc_attn_gate_raw", d->f(5), W, l);
-                    capture(*d, "hc_attn_inject_raw", d->f(7), 4, l);
+                    capture_batch(*d, "hc_attn_mix", d->f(6), H, tokens, l);
+                    capture_batch(*d, "hc_attn_norm", d->f(2), W, tokens, l);
+                    capture_batch(*d, "hc_attn_gate_raw", d->f(5), W, tokens, l);
+                    capture_batch(*d, "hc_attn_inject_raw", d->f(7), 4, tokens, l);
                 }
-                layer.attention(static_cast<int>(statistics.consumed_tokens), config.capacity, epsilon,
-                    [&](const char* name, const float* x, int count) {
-                        if (l == 0 || l == 1 || l == 2 || l == 3 || l == 6 || l == 8 || l == 19 || l == 22 || l == 47) capture(*d, name, x, count, l);
+                layer.attention(position, config.capacity, epsilon, tokens,
+                    [&](const char* name, const float* x, int count, int token_offset = -1) {
+                        if (l == 0 || l == 1 || l == 2 || l == 3 || l == 6 || l == 8 || l == 19 || l == 22 || l == 47) {
+                            if (token_offset < 0) capture_batch(*d, name, x, count, tokens, l);
+                            else capture(*d, name, x, count, l, token_offset);
+                        }
                     });
-                hip(launch_hc_combine(residual, d->f(9), d->f(8), 1, alternate, d->flag(), d->stream));
+                hip(launch_hc_combine(residual, d->f(9), d->f(8), tokens, alternate, d->flag(), d->stream));
                 std::swap(residual, alternate);
-                layer.ffn_hc.mix(*d, residual, epsilon);
+                layer.ffn_hc.mix(*d, residual, epsilon, tokens);
                 if (l == 0 || l == 1 || l == 2 || l == 3 || l == 6 || l == 8 || l == 19 || l == 22 || l == 47) {
-                    capture(*d, "hc_ffn_mix", d->f(6), H, l);
-                    capture(*d, "hc_ffn_norm", d->f(2), W, l);
-                    capture(*d, "hc_ffn_gate_raw", d->f(5), W, l);
-                    capture(*d, "hc_ffn_inject_raw", d->f(7), 4, l);
+                    capture_batch(*d, "hc_ffn_mix", d->f(6), H, tokens, l);
+                    capture_batch(*d, "hc_ffn_norm", d->f(2), W, tokens, l);
+                    capture_batch(*d, "hc_ffn_gate_raw", d->f(5), W, tokens, l);
+                    capture_batch(*d, "hc_ffn_inject_raw", d->f(7), 4, tokens, l);
                 }
-                layer.ffn(statistics);
-                if (l == 0 || l == 1 || l == 2 || l == 3 || l == 6 || l == 8 || l == 19 || l == 22 || l == 47) capture(*d, "ffn_out", d->f(20), H, l);
-                hip(launch_hc_combine(residual, d->f(20), d->f(8), 1, alternate, d->flag(), d->stream));
+                layer.ffn(statistics, tokens);
+                if (l == 0 || l == 1 || l == 2 || l == 3 || l == 6 || l == 8 || l == 19 || l == 22 || l == 47) capture_batch(*d, "ffn_out", d->f(20), H, tokens, l);
+                hip(launch_hc_combine(residual, d->f(20), d->f(8), tokens, alternate, d->flag(), d->stream));
                 std::swap(residual, alternate);
                 d->check("layer " + std::to_string(l));
-                capture(*d, "l_last-" + std::to_string(l), residual, W, l);
+                capture_batch(*d, "l_last-" + std::to_string(l), residual, W, tokens, l);
             }
-            head_hc->mix(*d, residual, epsilon, true); capture(*d, "result_norm", d->f(6), H);
-            head.apply(*d, d->f(6), d->logits.get());
-            hip(hipMemcpyAsync(host_logits.data(), d->logits.get(), V * sizeof(float), hipMemcpyDeviceToHost, d->stream));
+            head_hc->mix(*d, residual, epsilon, tokens, true); capture_batch(*d, "result_norm", d->f(6), H, tokens);
+            head.apply(*d, d->f(6), d->logits.get(), tokens);
+            hip(hipMemcpyAsync(host_logits.data(), d->logits.get(), tokens * V * sizeof(float), hipMemcpyDeviceToHost, d->stream));
             d->check("head");
-            for (float v : host_logits) if (!std::isfinite(v)) throw std::runtime_error("logits nonfinite");
-            ++statistics.consumed_tokens;
+            const std::span<const float> result(host_logits.data(), tokens * V);
+            for (float v : result) if (!std::isfinite(v)) throw std::runtime_error("logits nonfinite");
+            statistics.consumed_tokens += static_cast<std::uint64_t>(tokens);
             statistics.last_completed_ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - begin).count();
-            return host_logits;
+            return result;
         } catch (...) { usable = false; throw; }
     }
 };
 
 Session::Session(const std::string& path, SessionConfig config) : impl_(std::make_unique<Impl>(path, std::move(config))) {}
 Session::~Session() = default;
-std::span<const float> Session::step(std::int32_t token) { return impl_->step(token); }
+std::span<const float> Session::step(std::int32_t token) { return step_batch(std::span(&token, 1)); }
+std::span<const float> Session::step_batch(std::span<const std::int32_t> tokens) { return impl_->step_batch(tokens); }
 void Session::reset() { impl_->reset(); }
 SessionStats Session::stats() const { return impl_->statistics; }
 SessionMemory Session::memory() const { return impl_->memory(); }

@@ -13,6 +13,9 @@ struct SessionConfig {
     int expert_slots = 112;
     // Empty disables all synchronous intermediate capture. Diagnostics only.
     std::string trace_directory;
+    // Preallocated short-window capacity, 1..3. Append after the existing fields
+    // so positional aggregate initialization keeps its source contract.
+    int max_batch_tokens = 1;
 };
 
 struct SessionStats {
@@ -46,8 +49,9 @@ struct SessionMemory {
 
 // One exclusive interactive session, static 24/24 layer split. Canonical expert
 // weights stay in RAM; each layer owns an immutable-weight LRU on its device.
-// A failed step invalidates the session until reset(), rather than exposing a
-// partially advanced cross-layer state. Returned logits live until the next call.
+// A failed numeric window invalidates the session until reset(), rather than
+// exposing partially advanced cross-layer state. Argument rejection is atomic.
+// Returned logits live until the next accepted call.
 // No tokenizer/sampler and no linkage to llama/ggml execution.
 class Session {
 public:
@@ -56,6 +60,9 @@ public:
     Session(const Session&) = delete;
     Session& operator=(const Session&) = delete;
     std::span<const float> step(std::int32_t token);
+    // N=1..max_batch_tokens, token-major [N][248320] completed logits. Validate
+    // the entire window's IDs/length/capacity before any state/cache mutation.
+    std::span<const float> step_batch(std::span<const std::int32_t> tokens);
     void reset();
     SessionStats stats() const;
     // Synchronizes both owned streams and restores the caller's current device.

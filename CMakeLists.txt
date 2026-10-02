@@ -90,7 +90,9 @@ if(BUILD_TESTING)
     -s ${CMAKE_CURRENT_SOURCE_DIR}/tests -p session_results_test.py)
   add_test(NAME memory-results COMMAND ${Python3_EXECUTABLE} -B -m unittest discover
     -s ${CMAKE_CURRENT_SOURCE_DIR}/tests -p memory_results_test.py)
-  set_tests_properties(session-comparison session-results memory-results PROPERTIES
+  add_test(NAME batch-results COMMAND ${Python3_EXECUTABLE} -B -m unittest discover
+    -s ${CMAKE_CURRENT_SOURCE_DIR}/tests -p batch_results_test.py)
+  set_tests_properties(session-comparison session-results memory-results batch-results PROPERTIES
     ENVIRONMENT "TMPDIR=${CMAKE_CURRENT_BINARY_DIR}")
 endif()
 if(CORE_WITH_HIP)
@@ -111,6 +113,10 @@ if(CORE_WITH_HIP)
   target_link_libraries(core-session-test PRIVATE qwen-session)
   target_compile_definitions(core-session-test PRIVATE CORE_REVISION="${CORE_REVISION}" CORE_DIRTY=$<BOOL:${CORE_DIRTY}>)
   target_compile_options(core-session-test PRIVATE -Wall -Wextra -Wpedantic -Werror -ffp-contract=off)
+  add_executable(core-session-batch-test src/session_batch_test.cpp)
+  target_link_libraries(core-session-batch-test PRIVATE qwen-session)
+  target_compile_definitions(core-session-batch-test PRIVATE CORE_REVISION="${CORE_REVISION}" CORE_DIRTY=$<BOOL:${CORE_DIRTY}>)
+  target_compile_options(core-session-batch-test PRIVATE -Wall -Wextra -Wpedantic -Werror -ffp-contract=off)
   add_executable(core-memory src/memory_main.hip)
   target_link_libraries(core-memory PRIVATE qwen-session)
   target_compile_definitions(core-memory PRIVATE CORE_REVISION="${CORE_REVISION}" CORE_DIRTY=$<BOOL:${CORE_DIRTY}>)

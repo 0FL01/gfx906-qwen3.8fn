@@ -85,4 +85,9 @@
   Session/cache orchestration and separate diagnostic oracle programs are
   original code; no donor runtime, scheduler or model graph is imported.
 
+- Short-window grouping in `src/session.hip` reuses the qualified canonical
+  multi-column linear primitives above. Stable CPU route grouping, original-rank
+  scatter/fold, same-stream slot lifetime and row-wise shared-gate orchestration
+  are original code; no donor expert scheduler or runtime is imported.
+
 Upstream URLs and rejected donor options: RECON.md section 16.

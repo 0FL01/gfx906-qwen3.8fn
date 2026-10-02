@@ -575,5 +575,52 @@ and A/B/A pass; raw logs are `r4-short-build.log`, `r4-routes.jsonl` and
 `r4-gdn-short-{a1,b,a2}.jsonl`. The `r4a_short_primitives` record preserves the
 compiled revision/dirty flags and exact-fixture extension. N2/3 component latency
 is below both A runs; N1 win is not confirmed, and N128 is unchanged. This closes
-prerequisites only: grouped Session reuse/parity and full chunk prefill remain
-unqualified, with no full-request speed claim.
+prerequisites only; short-window Session qualification follows below. Full chunk
+prefill remains unqualified, with no full-request speed claim.
+
+## R4a: grouped N2/3 Session qualification
+
+`SessionConfig::max_batch_tokens` defaults to one; set it explicitly to three
+before calling `Session::step_batch(ids)`. The returned logits are token-major
+`[N][248320]`. Every ID/window/capacity check precedes state mutation. Failed
+execution requires reset; argument rejection preserves the live logits and stats.
+
+N2/3 use the qualified multi-column projections and stable expert grouping.
+One canonical triplet acquisition serves every assignment in its group; unweighted
+outputs scatter to original token/rank slots before the existing rank-order fold.
+The original Q8 inputs remain separate from gathered inputs and down scratch.
+QSA queries retain per-query causal visibility even after all window keys are
+prepared. PLE/hash/convolution and exact short GDN advance chronologically.
+Explicit batch capacity3 owns larger scratch/Q8/logits, a 122880-byte handoff,
+and contribution buffers; default N1 retains its original allocation sizes/counts.
+
+```sh
+set -C
+docker run --rm --name core-session-batch --device /dev/kfd --device /dev/dri \
+  --group-add video --ipc host --security-opt seccomp=unconfined \
+  --entrypoint /core/build/core-session-batch-test \
+  -v /home/radneon/gfx906-core:/core -v /home/radneon/models-nvme:/models:ro \
+  llama.cpp-gfx906:cmake-4.4.3 /models/qwen38-keep1-Q4_0.gguf \
+  > /home/radneon/gfx906-core/runs/NEW-session-batch.jsonl
+python3 -B /home/radneon/gfx906-core/src/tools/record_batch.py \
+  --raw /home/radneon/gfx906-core/runs/NEW-session-batch.jsonl \
+  --results /home/radneon/gfx906-core/results.jsonl
+```
+
+Check both exit statuses and use a fresh log with no competing GPU workload.
+The verified fixture uses one Session, capacity40/slots1/max-batch3, five schedules
+including a five-token occupied prefix, and 200 output rows. All 39,731,200 replay
+logits match N1 **bitwise**; 28 invalid windows preserve logits/stat timing/ledger,
+and reset/continuation pass. Positive reuse is measured on matching teacher
+suffixes after initial slot contents are overwritten, not assumed cold-cache parity.
+Owners/categories/peak/host capacities and 144 constructor payload reads stay steady.
+Individual-buffer geometry and post-destruction recovery are not fixture claims.
+
+Closure job `1790973650970-503` exited0: strict build, CTest24/24, recorder38 cases,
+default-N1 teacher32 with 7,946,240 finite pairs/error0, and the unchanged capacity131072
+owned-memory ledger. Raw proofs are `r4-session-batch.jsonl`,
+`r4-session-batch-final-build.log`, `r4-memory-default.jsonl` and
+`r4-default-n1-comparison.json`. Compiled provenance is `997e197…`, dirty1;
+the single journal adds one `r4a_grouped_session` after thirteen unchanged records.
+This closes short-window self-parity/reuse, **not large-prompt PP, independent HF
+parity, MTP or an end-to-end speedup**. Canonical bounded DS4/MMQ prefill follows.

@@ -98,6 +98,14 @@ inline constexpr int session_ops_error_arithmetic = 2;
 [[nodiscard]] hipError_t launch_shared_sigmoid_add(const float* input, const float* raw_gate,
         int count, float* accumulator, int* error, hipStream_t stream) noexcept;
 
+// Token-major row broadcast with the SAME direct device sigmoid and separately
+// rounded MUL/ADD as above: input/accumulator [tokens][width], raw_gate[tokens].
+// tokens=1..3, width>0 and tokens*width<=INT_MAX. Capacities input/accumulator=
+// tokens*width, raw_gate=tokens, error=1. Same borrowed stream/error/alias rules;
+// validates the whole shape/ranges before any HIP call, no allocation or sync.
+[[nodiscard]] hipError_t launch_shared_sigmoid_add_rows(const float* input, const float* raw_gate,
+        int tokens, int width, float* accumulator, int* error, hipStream_t stream) noexcept;
+
 // logits/probabilities [N][512], N=1..3; capacities N*512 each. Stable FP32
 // exp(logit-row_max)/sum(exp(...)), one logical width32 group per row on wave64.
 // Per-lane ascending strided sixteen-term sum, then qualified DPP XOR stages

@@ -239,14 +239,16 @@ __global__ void scaled_add(const float* input, float scale, int count,
     report(flags, error);
 }
 
-__global__ void shared_sigmoid_add(const float* input, const float* raw_gate, int count,
+template<bool RowBroadcast>
+__global__ void shared_sigmoid_add(const float* input, const float* raw_gate, int count, int width,
                                  float* accumulator, int* error) {
     const unsigned i = blockIdx.x * blockDim.x + threadIdx.x;
     if (i >= static_cast<unsigned>(count)) return;
     int flags = 0;
     const float x = operand(input[i], flags);
     const float original = operand(accumulator[i], flags);
-    const float gate = operand(raw_gate[0], flags);
+    const unsigned row = RowBroadcast ? i / static_cast<unsigned>(width) : 0;
+    const float gate = operand(raw_gate[row], flags);
     // Expected exp overflow for finite negative gates yields valid +0 sigmoid.
     const float scale = arithmetic(1.0f / (1.0f + expf(-gate)), flags);
     const float contribution = arithmetic(scale * x, flags);
@@ -385,8 +387,20 @@ hipError_t launch_shared_sigmoid_add(const float* input, const float* raw_gate, 
         float* accumulator, int* error, hipStream_t stream) noexcept {
     if (count <= 0 || !valid_ranges(std::array{range(input, count), range(raw_gate, 1),
             range(accumulator, count, true), range(error, 1, true)})) return hipErrorInvalidValue;
-    shared_sigmoid_add<<<ceil_div(count, threads), threads, 0, stream>>>(
-            input, raw_gate, count, accumulator, error);
+    shared_sigmoid_add<false><<<ceil_div(count, threads), threads, 0, stream>>>(
+            input, raw_gate, count, count, accumulator, error);
+    return hipGetLastError();
+}
+
+hipError_t launch_shared_sigmoid_add_rows(const float* input, const float* raw_gate,
+        int tokens, int width, float* accumulator, int* error, hipStream_t stream) noexcept {
+    if (!valid_tokens(tokens) || width <= 0 || width > std::numeric_limits<int>::max() / tokens)
+        return hipErrorInvalidValue;
+    const int count = tokens * width;
+    if (!valid_ranges(std::array{range(input, count), range(raw_gate, tokens),
+            range(accumulator, count, true), range(error, 1, true)})) return hipErrorInvalidValue;
+    shared_sigmoid_add<true><<<ceil_div(count, threads), threads, 0, stream>>>(
+            input, raw_gate, count, width, accumulator, error);
     return hipGetLastError();
 }
 

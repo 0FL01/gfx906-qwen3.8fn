@@ -99,7 +99,9 @@ Final job `1790961285745-474` exit0: strict full build/CTest21/21, reset8steps/c
 
 ## R4. Полноценный prefill
 
-**R4a prerequisites закрыты, не весь R4 (2026-10-02).** N2/3 GDN CPW2 держит state в регистрах и повторяет exact N1 arithmetic; outputs/state/history/все prefixes и continuation совпали побитово на обеих GPU. Stable CPU RouteGroups сохраняет token/rank/raw weight bits без hot allocations. CTest23/23, 491148 route checks и A/B/A GDN прошли. N2/3 component latency ниже обоих A, N1 win не подтверждён; полный grouped Session и PP ещё не квалифицированы.
+**R4a prerequisites закрыты (2026-10-02).** N2/3 GDN CPW2 держит state в регистрах и повторяет exact N1 arithmetic; outputs/state/history/все prefixes и continuation совпали побитово на обеих GPU. Stable CPU RouteGroups сохраняет token/rank/raw weight bits без hot allocations. CTest23/23, 491148 route checks и A/B/A GDN прошли. N2/3 component latency ниже обоих A, N1 win не подтверждён.
+
+**R4a grouped short-window Session закрыт, не весь R4.** `step_batch` N2/3 исполняет multi-column projections и один triplet upload на expert group, затем scatter и original-rank contribution fold. Пять schedules/200 rows дают 39 731 200 bitwise logit comparisons с N1; causal QSA, PLE/GDN chronology, 28 invalid windows, reset/replay и steady owners/read counters проходят. Slot1 matching-suffix reuse подтверждён без предположения одинакового initial cache. Full CTest24/24, default-N1 teacher32 error0 и прежний capacity131072 allocation ledger проходят. Это short-window self-parity/reuse, не квалификация большого PP или end-to-end ускорения; следующий срез — bounded canonical DS4/MMQ и causal chunk PP.
 
 **Действия.** Адаптировать mx staged MMQ и reinstinct sort/gather/grouped tiling/scatter для grouped expert GEMM и загрузки tiles наших Q4_0/Q4_1 экспертов. Не предполагать GPU-resident slab всех экспертов. Сравнить mx chunked GDN и furnace resident-state вариант на реальной геометрии; не делать host loop с тысячами decode launches.
 
