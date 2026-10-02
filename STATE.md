@@ -6,8 +6,8 @@ R0–R3 закрыты (2026-10-02): own48 Session, teacher32/full logits, reset
 
 ## Задача
 
-R3c jobs486/488 exit0: actual memory fixture, strict full build/CTest22/22 и validated canonical append прошли; прежние11 records неизменны, теперь12. Следующий срез: R4 exact N2/3 GDN CPW2 token-loop/route reuse, затем staged grouped MMQ и causal PP; R5 hybrid misses по измерениям.
-Raw runs/: `r3-memory.jsonl/.err/.exit`, `r3-memory-build.log`, `r3-memory-final-build.log`. Canonical journal только `/home/radneon/gfx906-core/results.jsonl`; не создавать src/results.jsonl.
+R4a prerequisites job490 exit0: full CTest23/23, stable RouteGroups CPU/ASan и обе GPU exact CPW2 N2/3 state/history/output/prefix/restore прошли. A/B/A даёт N2/3 component win, N1 win не подтверждён. Grouped short-window Session подготовлен локально, ещё не GPU-qualified; проверить full logits против sequential N1, reuse/invalid windows и ledger перед следующим commit. Затем staged grouped MMQ/causal PP и R5 hybrid misses.
+Raw runs/: `r4-short-build.log`, `r4-routes.jsonl`, `r4-gdn-short-{a1,b,a2}.jsonl/.err`; journal13 records, прежние12 неизменны. Canonical journal только `/home/radneon/gfx906-core/results.jsonl`; не создавать src/results.jsonl.
 
 ## Соединение и рабочие пути
 
@@ -22,7 +22,7 @@ Actual hardware: 16 physical/32 logical allowed CPU cores, один NUMA, AVX2/F
 ## Рабочие команды
 
 После source sync: `docker run --rm --name core-build --entrypoint /bin/sh -v /home/radneon/gfx906-core:/core -e CORE_REVISION=<синхронизированный-commit> -e CORE_DIRTY=OFF llama.cpp-gfx906:cmake-4.4.3 /core/src/tools/build.sh`.
-Memory binaries compiled `c56cfa10a6d741d6ff68c0a57b4f1a3ebc045b28` dirty1; прежние teacher/gen/reset — `e9f1dfe...` dirty1. Будущий commit не подменяет provenance уже записанных artifacts.
+CPW/route binaries compiled `1322fd999d2280f0ad197625a213409247e40e69` dirty1; memory — c56cfa dirty1, teacher/gen/reset — e9f1dfe dirty1. Будущий commit не подменяет provenance уже записанных artifacts.
 Session: `docker run --rm --name core-session --device /dev/kfd --device /dev/dri --group-add video --ipc host --security-opt seccomp=unconfined --entrypoint /core/build/core-session -v /home/radneon/gfx906-core:/core -v /home/radneon/models-nvme:/models:ro llama.cpp-gfx906:cmake-4.4.3 --generate 32 --ignore-eos /models/qwen38-keep1-Q4_0.gguf 248044`.
 Teacher32: тот же entrypoint, `--trace /core/runs/NEW --logits /core/runs/NEW-logits.f32.bin /models/qwen38-keep1-Q4_0.gguf 248044 $(seq 100 130)`; parent runs/ должен существовать, trace/logits/log names свежие. Reset: entrypoint core-session-test, только MODEL. Полные build/fixtures/baseline/repro команды в README.md.
 Oracle: `sh tools/build-oracle.sh` против build/oracle-production-libs; teacher reference использует `--all-layers --hf-gdn-l2-control --hf-qsa-f32-control --warm-cache 12 --cache-inserts 10` (diagnostic-only). compare_session.py сохраняет report/exit1 при failed gate; record_session.py --comparison/--generation/--reset/--results валидирует перед append. Одна GPU-нагрузка; final measurement без тяжёлой сборки/tracing.
@@ -42,7 +42,8 @@ CLI greedy32 diagnostic-only, считать actual generated count; final emitt
 
 ## Следующие действия
 
-1. R4 route grouping → staged grouped Q4_0/Q4_1 MMQ (mx → furnace → reinstinct, RECON §16), causal chunk parity; затем R5 CPU miss против H2D+GPU и overlap на measured shapes. DS4 MMQ144B/K128 не cast четырёх36B Q8; K640 требует checked tail padding. N3 QSA projected buffer36864 floats/Q8 input960 blocks больше текущих32768/512.
+1. Квалифицировать prepared N2/3 Session с explicit batch capacity3: полный causal prefix, PLE/GDN state и grouped expert contribution order; проверить увеличенные scratch/Q8/pinned/logit buffers и owners. DefaultN1 должен сохранять R3 allocation/behavior.
+2. Staged grouped Q4_0/Q4_1 MMQ (mx → furnace → reinstinct, RECON §16), causal PP; затем R5 CPU miss против H2D+GPU/overlap. DS4 MMQ144B/K128 не cast четырёх36B Q8; K640 требует checked tail padding.
 Не менять frozen gates/epsilon/weights. Index raw128 без H/inverse; GDN [V][v][k], h%16; PLE hash/conv reset вместе; RoPE64 j/j+32/absolute position, sections ARRAY INT32.
 
 ## Не повторять без причины

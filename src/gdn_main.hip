@@ -31,6 +31,11 @@ void near(std::span<const float> got,std::span<const float> expected,bool state,
             throw std::runtime_error(state?"GDN recurrent parity":"GDN output parity");
     }
 }
+void exact(std::span<const float> got,std::span<const float> expected,const char *message) {
+    if(got.size()!=expected.size() || std::memcmp(got.data(),expected.data(),got.size_bytes()))
+        throw std::runtime_error(message);
+    for(float x:got) if(!std::isfinite(x)) throw std::runtime_error("GDN nonfinite exact comparison");
+}
 struct Data {
     qwen::GdnConfig c;
     std::vector<float> conv,dt,a,norm,qkv,z,alpha,beta;
@@ -109,18 +114,19 @@ struct Fixture {
         check(hipMemcpyAsync(result.data(),source,n*4,hipMemcpyDeviceToHost,stream));
         check(hipStreamSynchronize(stream)); return result;
     }
-    void initialize(const Data &data) {
+    void initialize(const Data &data,int capacity=128) {
         check(hipSetDevice(device)); hipDeviceProp_t props{}; check(hipGetDeviceProperties(&props,device));
         if(!std::string(props.gcnArchName).starts_with("gfx906") || props.warpSize!=64)
             throw std::runtime_error("GDN requires gfx906 wave64");
         check(hipStreamCreateWithFlags(&stream,hipStreamNonBlocking)); check(hipEventCreate(&begin)); check(hipEventCreate(&end));
         p={allocate<float>(40960),allocate<float>(48),allocate<float>(48),allocate<float>(128),data.c.rms_epsilon};
         put(p.conv_weights,data.conv); put(p.dt_bias,data.dt); put(p.ssm_a,data.a); put(p.norm_weight,data.norm);
-        in={allocate<float>(128*10240),allocate<float>(128*6144),allocate<float>(128*48),allocate<float>(128*48)};
-        w={allocate<float>(128*10240),allocate<float>(786432),allocate<float>(30720),allocate<float>(128*6144),
-           nullptr,nullptr,allocate<int>(1)};
-        state=allocate<float>(786432); history=allocate<float>(30720); output=allocate<float>(128*6144);
-        rp=allocate<float>(4*786432); hp=allocate<float>(4*30720);
+        in={allocate<float>(capacity*10240),allocate<float>(capacity*6144),allocate<float>(capacity*48),allocate<float>(capacity*48)};
+        w={allocate<float>(capacity*10240),allocate<float>(786432),allocate<float>(30720),allocate<float>(capacity*6144),
+            nullptr,nullptr,allocate<int>(1)};
+        state=allocate<float>(786432); history=allocate<float>(30720); output=allocate<float>(capacity*6144);
+        const int slots=std::min(capacity,3)+1;
+        rp=allocate<float>(slots*786432); hp=allocate<float>(slots*30720);
         reset(); check(hipStreamSynchronize(stream));
     }
     void reset() {
@@ -136,10 +142,12 @@ struct Fixture {
         auto work=w; if(prefixes) { work.recurrent_prefixes=rp; work.history_prefixes=hp; }
         qwen::launch_gdn(p,in,n,state,history,output,work,stream);
     }
-    void launch_steps(int n) {
+    void launch_steps(int n,bool prefixes=false) {
         for(int t=0;t<n;++t) {
             const qwen::GdnDeviceInput token{in.qkv+t*10240,in.z+t*6144,in.alpha+t*48,in.beta+t*48};
-            qwen::launch_gdn(p,token,1,state,history,output+t*6144,w,stream);
+            auto work=w;
+            if(prefixes) { work.recurrent_prefixes=rp+t*786432; work.history_prefixes=hp+t*30720; }
+            qwen::launch_gdn(p,token,1,state,history,output+t*6144,work,stream);
         }
     }
     int flag() {
@@ -157,6 +165,59 @@ struct Fixture {
         check(hipMemcpyAsync(history,hp+consumed*30720,30720*4,hipMemcpyDeviceToDevice,stream));
     }
 };
+void exact_short_cases(Fixture &f,const Data &data) {
+    // Part of the existing correctness fixture, not another JSON record/counter.
+    // Exact-size inputs/scratch/output/prefixes exercise the last legal token and
+    // slot; no hidden N128 input tail can mask a short-window indexing error.
+    for(int n:{2,3}) {
+        Fixture short_f(f.device); short_f.initialize(data,n);
+        for(bool occupied:{false,true}) {
+            short_f.reset();
+            if(occupied) { short_f.upload(data.input(0,2)); short_f.launch_steps(2); short_f.valid(); }
+            const auto before=short_f.get(short_f.state,786432),history=short_f.get(short_f.history,30720);
+            short_f.upload(data.input(2,n)); short_f.launch_steps(n,true); short_f.valid();
+            const auto output=short_f.get(short_f.output,n*6144),state=short_f.get(short_f.state,786432);
+            const auto after_history=short_f.get(short_f.history,30720);
+            const auto rp=short_f.get(short_f.rp,(n+1)*786432),hp=short_f.get(short_f.hp,(n+1)*30720);
+            exact(std::span(rp).first(786432),before,"GDN N1 prefix zero state");
+            exact(std::span(hp).first(30720),history,"GDN N1 prefix zero history");
+            exact(std::span(rp).subspan(n*786432,786432),state,"GDN N1 final prefix state");
+            exact(std::span(hp).subspan(n*30720,30720),after_history,"GDN N1 final prefix history");
+            for(bool prefixes:{true,false}) {
+                short_f.put(short_f.state,before); short_f.put(short_f.history,history);
+                // Poison previous results so missing final stores/prefixes
+                // cannot pass by reusing the preceding sequential-N1 run.
+                check(hipMemsetAsync(short_f.w.convolved,0xff,n*10240*4,short_f.stream));
+                check(hipMemsetAsync(short_f.w.recurrent,0xff,786432*4,short_f.stream));
+                check(hipMemsetAsync(short_f.w.history,0xff,30720*4,short_f.stream));
+                check(hipMemsetAsync(short_f.w.output,0xff,n*6144*4,short_f.stream));
+                check(hipMemsetAsync(short_f.output,0xff,n*6144*4,short_f.stream));
+                check(hipMemsetAsync(short_f.rp,0xff,(n+1)*786432*4,short_f.stream));
+                check(hipMemsetAsync(short_f.hp,0xff,(n+1)*30720*4,short_f.stream));
+                short_f.upload(data.input(2,n)); short_f.launch(n,prefixes); short_f.valid();
+                exact(short_f.get(short_f.output,n*6144),output,"GDN short-window exact N1 output");
+                exact(short_f.get(short_f.state,786432),state,"GDN short-window exact N1 state");
+                exact(short_f.get(short_f.history,30720),after_history,"GDN short-window exact N1 history");
+                if(prefixes) {
+                    exact(short_f.get(short_f.rp,(n+1)*786432),rp,"GDN short-window exact N1 state prefixes");
+                    exact(short_f.get(short_f.hp,(n+1)*30720),hp,"GDN short-window exact N1 history prefixes");
+                    // Every accepted/rejected prefix must also replay exactly.
+                    for(int consumed=0;consumed<=n;++consumed) {
+                        short_f.put(short_f.state,std::span(rp).subspan(consumed*786432,786432));
+                        short_f.put(short_f.history,std::span(hp).subspan(consumed*30720,30720));
+                        short_f.upload(data.input(6,1)); short_f.launch(1); short_f.valid();
+                        const auto replay_output=short_f.get(short_f.output,6144),replay_state=short_f.get(short_f.state,786432);
+                        const auto replay_history=short_f.get(short_f.history,30720);
+                        short_f.restore(consumed); short_f.launch(1); short_f.valid();
+                        exact(short_f.get(short_f.output,6144),replay_output,"GDN short-window exact restored output");
+                        exact(short_f.get(short_f.state,786432),replay_state,"GDN short-window exact restored state");
+                        exact(short_f.get(short_f.history,30720),replay_history,"GDN short-window exact restored history");
+                    }
+                }
+            }
+        }
+    }
+}
 void measure(Fixture &f,const Data &base,int n) {
     const Data data=base.expanded(n);
     qwen::GdnCpu cpu(data.c,data.parameters()); std::vector<float> expected(n*6144);
@@ -195,6 +256,7 @@ void measure(Fixture &f,const Data &base,int n) {
     }
 }
 void restore_cases(Fixture &f,const Data &data) {
+    exact_short_cases(f,data);
     qwen::GdnCpu cpu(data.c,data.parameters()); std::vector<float> tmp(3*6144),expected(3*6144);
     std::array<qwen::GdnCheckpoint,4> prefixes{qwen::GdnCheckpoint(data.c),qwen::GdnCheckpoint(data.c),
         qwen::GdnCheckpoint(data.c),qwen::GdnCheckpoint(data.c)};
@@ -229,23 +291,37 @@ void restore_cases(Fixture &f,const Data &data) {
              <<",\"history_byte_parity\":true,\"split_chunk_parity\":true}\n";
 }
 void invalid_cases(Fixture &f,const Data &data) {
+    // Seed all three caller output rows so any partial chunk publication is
+    // observable, including a late invalid control/output gate. Counters still
+    // count the original three QKV + three control rejection families.
+    const std::vector<float> sentinel(3*6144,-123.0f); f.put(f.output,sentinel);
     f.reset(); f.upload(data.input(0,1)); f.launch(1); f.valid();
-    const auto before=f.get(f.state,786432),history=f.get(f.history,30720),out=f.get(f.output,6144);
+    const auto before=f.get(f.state,786432),history=f.get(f.history,30720),out=f.get(f.output,3*6144);
+    auto unchanged=[&] {
+        exact(f.get(f.state,786432),before,"GDN failure was not chunk-atomic: state");
+        exact(f.get(f.history,30720),history,"GDN failure was not chunk-atomic: history");
+        exact(f.get(f.output,3*6144),out,"GDN failure was not chunk-atomic: output");
+    };
     int cases=0;
     for(float bad:{std::numeric_limits<float>::quiet_NaN(),std::numeric_limits<float>::infinity(),std::numeric_limits<float>::max()}) {
-        auto input=data.expanded(3); std::fill(input.qkv.begin()+2*10240,input.qkv.end(),bad);
-        f.upload(input.input(0,3)); f.launch(3,true);
-        if(!(f.flag()&(std::isfinite(bad)?2:1))) throw std::runtime_error("GDN invalid-input flag");
-        if(f.get(f.state,786432)!=before || f.get(f.history,30720)!=history || f.get(f.output,6144)!=out)
-            throw std::runtime_error("GDN failure was not chunk-atomic");
+        for(int n:{2,3}) for(bool prefixes:{false,true}) {
+            auto input=data.expanded(n); std::fill(input.qkv.begin()+(n-1)*10240,input.qkv.end(),bad);
+            f.upload(input.input(0,n)); f.launch(n,prefixes);
+            if(!(f.flag()&(std::isfinite(bad)?2:1))) throw std::runtime_error("GDN invalid-input flag");
+            unchanged();
+        }
         ++cases;
     }
     for(int field=0;field<3;++field) {
-        auto input=data.expanded(1);
-        (field==0?input.z:field==1?input.alpha:input.beta)[0]=std::numeric_limits<float>::quiet_NaN();
-        f.upload(input.input(0,1)); f.launch(1);
-        if(!(f.flag()&1) || f.get(f.state,786432)!=before || f.get(f.history,30720)!=history || f.get(f.output,6144)!=out)
-            throw std::runtime_error("GDN invalid control published state");
+        for(int n:{1,2,3}) for(bool prefixes:{false,true}) {
+            auto input=data.expanded(n); auto &control=field==0?input.z:field==1?input.alpha:input.beta;
+            for(std::size_t index:{std::size_t(0),control.size()-1}) {
+                const float saved=control[index]; control[index]=std::numeric_limits<float>::quiet_NaN();
+                f.upload(input.input(0,n)); f.launch(n,prefixes);
+                if(!(f.flag()&1)) throw std::runtime_error("GDN invalid control flag");
+                unchanged(); control[index]=saved;
+            }
+        }
         ++cases;
     }
     auto rejects=[&](auto call) { try { call(); } catch(const std::invalid_argument&) { ++cases; return; }
@@ -256,8 +332,7 @@ void invalid_cases(Fixture &f,const Data &data) {
     rejects([&] { auto p=f.p; p.rms_epsilon=0; qwen::launch_gdn(p,f.in,1,f.state,f.history,f.output,f.w,f.stream); });
     // Explicit restore + valid reuse following rejected chunks.
     f.reset(); f.upload(data.input(0,1)); f.launch(1); f.valid();
-    if(f.get(f.state,786432)!=before || f.get(f.history,30720)!=history || f.get(f.output,6144)!=out)
-        throw std::runtime_error("GDN recovery after error");
+    unchanged();
     std::cout<<"{\"kind\":\"gdn_invalid\",\"device\":"<<f.device<<",\"rejections\":"<<cases
              <<",\"chunk_atomic\":true,\"reuse\":true}\n";
 }

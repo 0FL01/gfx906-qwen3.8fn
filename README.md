@@ -544,3 +544,36 @@ separately. Expert read counts are logical payload loads, not a physical-SSD sys
 trace. This fixture qualifies capacity and two consumed tokens per pass, **not occupied
 128K history, MTP workspace, prefill or inference speed**. Full measurements/provenance
 remain in the single `results.jsonl` and raw log.
+
+## R4a prerequisites: exact short GDN and stable route groups
+
+The CPW2 GDN kernel now keeps state in registers across N2/3, with the same
+arithmetic as sequential N1. Both GPUs pass bitwise output, recurrent-state,
+raw-history and chronological-prefix comparisons from zero and occupied states,
+including restore/continuation and late-error chunk-atomic publication. N≥4
+still uses the qualified resident LDS kernel.
+
+`RouteGroups` is a constructor-allocated CPU histogram/scan/scatter: ascending
+expert IDs, stable token/rank order within each group, unchanged float weight
+bits and every contribution retained. Invalid inputs leave prior views unchanged;
+successful calls allocate nothing. Strict CPU and ASan/UBSan tests pass
+491148 checks, 87 rejected cases and 184 allocation-checked hot calls.
+
+```sh
+docker run --rm --entrypoint /core/build/routes-test \
+  -v /home/radneon/gfx906-core:/core llama.cpp-gfx906:cmake-4.4.3
+docker run --rm --name core-gdn-short --device /dev/kfd --device /dev/dri \
+  --group-add video --ipc host --security-opt seccomp=unconfined \
+  --entrypoint /core/build/core-gdn \
+  -v /home/radneon/gfx906-core:/core -v /home/radneon/models-nvme:/models:ro \
+  llama.cpp-gfx906:cmake-4.4.3 /models/qwen38-keep1-Q4_0.gguf \
+  > /home/radneon/gfx906-core/runs/NEW-gdn-short.jsonl
+```
+
+Use a fresh log and no competing GPU workload/heavy compilation. Full CTest23/23
+and A/B/A pass; raw logs are `r4-short-build.log`, `r4-routes.jsonl` and
+`r4-gdn-short-{a1,b,a2}.jsonl`. The `r4a_short_primitives` record preserves the
+compiled revision/dirty flags and exact-fixture extension. N2/3 component latency
+is below both A runs; N1 win is not confirmed, and N128 is unchanged. This closes
+prerequisites only: grouped Session reuse/parity and full chunk prefill remain
+unqualified, with no full-request speed claim.

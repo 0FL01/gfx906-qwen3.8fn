@@ -24,7 +24,7 @@
 // The resident design was adapted by furnace from sixvolts/reinstinct
 // 0b79e326351d90d4554a1c18df92da5d0ab692e8 kernels/gdn_recurrent_batched_v2.cpp,
 // Apache-2.0 (third_party/Apache-2.0). Its opposite HBM orientation is NOT used.
-// Modifications: fixed GGUF h%16 mapping, CPU decay-before-dot math, no fast
+// Modifications: fixed GGUF h%16 mapping, verified mx PRE-dot/decay-after math, no fast
 // intrinsics, chronological prefixes, checked causal conv/L2/RMS/sigmoid gate,
 // finite/sanitized staging and chunk-atomic publication. No donor runtime code.
 
@@ -183,11 +183,12 @@ __global__ __launch_bounds__(256) void normalize_qk(float* convolved, int tokens
 
 // ADAPT furnace gated_delta_net_cpw<2>: four waves/block, two V columns/wave,
 // two K components/lane, Q/K reused across the two independent column updates.
-// Unlike the donor's algebraic g*dot(S,K), dot(g*S,K) matches the CPU oracle's
-// FP32 state decay and detects overflow before the dot product.
+// N=1..3 keeps the CPW2 state registers resident across the chronological token
+// loop. Every token uses the qualified N1 PRE-dot/decay-after/FMA arithmetic;
+// Q stays unscaled until the completed read reduction. No tail prefetch.
 template<bool Prefixes>
 __global__ __launch_bounds__(256, 2)
-void recurrent_decode(GdnDeviceParameters p, GdnDeviceInput in,
+void recurrent_decode(GdnDeviceParameters p, GdnDeviceInput in, int tokens,
                       const float* active_recurrent, GdnDeviceWorkspace w) {
     const int h = blockIdx.x, lane = threadIdx.x;
     const int col0 = (blockIdx.z * 4 + threadIdx.y) * 2;
@@ -203,47 +204,57 @@ void recurrent_decode(GdnDeviceParameters p, GdnDeviceInput in,
             if constexpr (Prefixes) w.recurrent_prefixes[index] = state[c][r];
         }
     }
-    float decay = 0.0f, beta = 0.0f;
-    if (lane == 0) {
-        const float bias = input_finite(p.dt_bias[h], flags);
-        const float a = parameter_a(p.ssm_a[h], flags);
-        const Controls cb = controls(in.alpha[h], in.beta[h], bias, a, flags);
-        decay = cb.decay; beta = cb.beta;
-    }
-    decay = __shfl(decay, 0, 64);
-    beta = __shfl(beta, 0, 64);
-    float q[2], k[2];
+    for (int t = 0; t < tokens; ++t) {
+        float decay = 0.0f, beta = 0.0f;
+        if (lane == 0) {
+            const float bias = input_finite(p.dt_bias[h], flags);
+            const float a = parameter_a(p.ssm_a[h], flags);
+            const Controls cb = controls(in.alpha[t * value_heads + h], in.beta[t * value_heads + h], bias, a, flags);
+            decay = cb.decay; beta = cb.beta;
+        }
+        decay = __shfl(decay, 0, 64);
+        beta = __shfl(beta, 0, 64);
+        float q[2], k[2];
 #pragma unroll
-    for (int r = 0; r < 2; ++r) {
-        const int index = (h % key_heads) * head_dim + r * 64 + lane;
-        q[r] = w.convolved[index];
-        k[r] = w.convolved[keys + index];
+        for (int r = 0; r < 2; ++r) {
+            const int index = t * features + (h % key_heads) * head_dim + r * 64 + lane;
+            q[r] = w.convolved[index];
+            k[r] = w.convolved[keys + index];
+        }
+#pragma unroll
+        for (int c = 0; c < 2; ++c) {
+            float predicted = 0.0f;
+#pragma unroll
+            for (int r = 0; r < 2; ++r) {
+                // ADAPT the verified mx recurrent kernel: PRE-state pair dot,
+                // decay after reduction, explicit FMAs under contraction-off.
+                predicted = arithmetic_finite(fmaf(state[c][r], k[r], predicted), flags);
+            }
+            predicted = arithmetic_finite(sum64(predicted), flags);
+            const int col = col0 + c;
+            const float value = w.convolved[t * features + 2 * keys + h * head_dim + col];
+            const float delta = arithmetic_finite(arithmetic_finite(fmaf(-decay, predicted, value), flags) * beta, flags);
+            float read = 0.0f;
+#pragma unroll
+            for (int r = 0; r < 2; ++r) {
+                state[c][r] = arithmetic_finite(fmaf(decay, state[c][r],
+                    arithmetic_finite(k[r] * delta, flags)), flags);
+                read = arithmetic_finite(fmaf(state[c][r], q[r], read), flags);
+                const int index = head_base + col * head_dim + r * 64 + lane;
+                if constexpr (Prefixes) w.recurrent_prefixes[(t + 1) * recurrent_elements + index] = state[c][r];
+            }
+            read = arithmetic_finite(arithmetic_finite(sum64(read), flags) * query_scale, flags);
+            if (lane == 0) w.output[t * values + h * head_dim + col] = read;
+        }
     }
 #pragma unroll
     for (int c = 0; c < 2; ++c) {
-        float predicted = 0.0f;
 #pragma unroll
         for (int r = 0; r < 2; ++r) {
-            // ADAPT the verified mx recurrent kernel: PRE-state pair dot,
-            // decay after reduction, explicit FMAs under contraction-off.
-            predicted = arithmetic_finite(fmaf(state[c][r], k[r], predicted), flags);
-        }
-        predicted = arithmetic_finite(sum64(predicted), flags);
-        const int col = col0 + c;
-        const float value = w.convolved[2 * keys + h * head_dim + col];
-        const float delta = arithmetic_finite(arithmetic_finite(fmaf(-decay, predicted, value), flags) * beta, flags);
-        float read = 0.0f;
-#pragma unroll
-        for (int r = 0; r < 2; ++r) {
-            state[c][r] = arithmetic_finite(fmaf(decay, state[c][r],
-                arithmetic_finite(k[r] * delta, flags)), flags);
-            read = arithmetic_finite(fmaf(state[c][r], q[r], read), flags);
+            const int col = col0 + c;
             const int index = head_base + col * head_dim + r * 64 + lane;
             w.recurrent[index] = state[c][r];
-            if constexpr (Prefixes) w.recurrent_prefixes[recurrent_elements + index] = state[c][r];
         }
-        read = arithmetic_finite(arithmetic_finite(sum64(read), flags) * query_scale, flags);
-        if (lane == 0) w.output[h * head_dim + col] = read;
     }
     report_error(flags, w.error);
 }
@@ -261,7 +272,7 @@ __device__ __forceinline__ float column_sum(float x) {
     return x + __shfl_xor(x, 32, 64);
 }
 
-// ADAPT furnace gated_delta_net_lds_wave64<16>, N>1. 48*8 wave workgroups;
+// ADAPT furnace gated_delta_net_lds_wave64<16>, N>=4. 48*8 wave workgroups;
 // each owns a 16-column state slab for the entire causal loop. State occupies
 // 8 KiB LDS, Q/K another 1 KiB; XOR swizzle avoids the 16-column bank conflict.
 // Only ingress/egress and optional prefixes use the external unswizzled ABI.
@@ -485,9 +496,9 @@ void launch_impl(GdnDeviceParameters p, GdnDeviceInput in, int tokens,
     check_launch(hipGetLastError());
     normalize_qk<<<tokens * (2 * key_heads) / 4, 256, 0, stream>>>(w.convolved, tokens, w.error);
     check_launch(hipGetLastError());
-    if (tokens == 1) {
+    if (tokens <= 3) {
         recurrent_decode<Prefixes><<<dim3(value_heads, 1, head_dim / (4 * 2)), dim3(64, 4), 0, stream>>>(
-            p, in, active_recurrent, w);
+            p, in, tokens, active_recurrent, w);
     } else {
         recurrent_chunk<Prefixes><<<dim3(value_heads, 1, head_dim / 16), 64, 0, stream>>>(
             p, in, tokens, active_recurrent, w);

@@ -33,7 +33,8 @@
   `kernels/gdn_recurrent_batched_v2.cpp` at the Apache-2.0 revision above.
   Modifications: fixed tiled GGUF geometry, canonical FP32/FMA PRE-state dot
   and decay-after-reduction/update ordering, additive Q/K epsilon,
-  chronological prefixes, checked conv/L2/RMS/sigmoid preprocessing,
+  chronological prefixes, N1/2/3 CPW2 resident register-state token loop,
+  checked conv/L2/RMS/sigmoid preprocessing,
   no fast intrinsics, finite staging and chunk-atomic publication.
   No graph/cache/runtime code is imported. CPU dense/GDN oracles are original;
   format and architecture reference revisions are recorded in source comments.

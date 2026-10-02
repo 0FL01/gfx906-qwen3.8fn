@@ -99,6 +99,8 @@ Final job `1790961285745-474` exit0: strict full build/CTest21/21, reset8steps/c
 
 ## R4. Полноценный prefill
 
+**R4a prerequisites закрыты, не весь R4 (2026-10-02).** N2/3 GDN CPW2 держит state в регистрах и повторяет exact N1 arithmetic; outputs/state/history/все prefixes и continuation совпали побитово на обеих GPU. Stable CPU RouteGroups сохраняет token/rank/raw weight bits без hot allocations. CTest23/23, 491148 route checks и A/B/A GDN прошли. N2/3 component latency ниже обоих A, N1 win не подтверждён; полный grouped Session и PP ещё не квалифицированы.
+
 **Действия.** Адаптировать mx staged MMQ и reinstinct sort/gather/grouped tiling/scatter для grouped expert GEMM и загрузки tiles наших Q4_0/Q4_1 экспертов. Не предполагать GPU-resident slab всех экспертов. Сравнить mx chunked GDN и furnace resident-state вариант на реальной геометрии; не делать host loop с тысячами decode launches.
 
 QSA обрабатывает запросы тайлами с per-query causal visibility; не создаёт полноконтекстные промежуточные маски для всего большого чанка. Постоянный K/V остаётся Q4_0; сначала gather + dequantize только выбранных rows в ограниченный FP16 scratch, адаптированный furnace sparse attention с FP32 reductions/softmax. Использовать selected IDs непосредственно, без масочного frontend донора. До 2051 IDs требуют около 4 MiB K/V scratch на query; размер query tile выбирать по фиксированному workspace budget. Не распаковывать всю историю K/V в FP16. Прямой indexed Q4 attention сравнить с gather после корректного первого пути.
