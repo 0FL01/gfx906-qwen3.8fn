@@ -624,3 +624,47 @@ owned-memory ledger. Raw proofs are `r4-session-batch.jsonl`,
 the single journal adds one `r4a_grouped_session` after thirteen unchanged records.
 This closes short-window self-parity/reuse, **not large-prompt PP, independent HF
 parity, MTP or an end-to-end speedup**. Canonical bounded DS4/MMQ prefill follows.
+
+## R4b primitives: canonical Q4 DS4/MMQ qualification
+
+`qwen-mmq-gpu` exposes borrowed-buffer, explicit-stream launchers. DS4 is a
+144-byte K128 block: four original half `(scale, raw_sum)` pairs followed by
+128 signed codes, stored `[k128][column]`. The packer **transposes existing Q8_1
+bytes**, without requantization; it is not a cast of four interleaved 36-byte blocks.
+Q4_0/Q4_1 weights remain canonical. I64/K256/four-wave tiles use J8/16/32/64;
+masked K/row/column tails are owned zeros, never bytes from a neighbour slot.
+
+After source sync/build, run on the target with no competing GPU workload:
+
+```sh
+set -eu
+set -C
+docker run --rm --name core-mmq --device /dev/kfd --device /dev/dri \
+  --group-add video --ipc host --security-opt seccomp=unconfined \
+  --entrypoint /core/build/core-mmq \
+  -v /home/radneon/gfx906-core:/core \
+  -v /home/radneon/models-nvme:/models:ro \
+  llama.cpp-gfx906:cmake-4.4.3 /models/qwen38-keep1-Q4_0.gguf \
+  > /home/radneon/gfx906-core/runs/NEW-mmq.jsonl \
+  2> /home/radneon/gfx906-core/runs/NEW-mmq.err
+python3 -B /home/radneon/gfx906-core/src/tools/record_mmq.py \
+  --raw /home/radneon/gfx906-core/runs/NEW-mmq.jsonl \
+  --results /home/radneon/gfx906-core/results.jsonl
+```
+
+Job `1790977367105-506` passed strict build/CTest25/25 and both GPUs. Each device
+checks 979 matrix cases, Q8/DS4 byte identity, Q4_1 half products, signed extrema,
+poisoned missing subblocks, alignment2 weights and 89 host rejections. The frozen
+full-output gate is `2e-4 + 2e-5*abs(common-Q8 CPU reference)`. All 90 A1/B/A2
+measurements validate 20 individually completed event intervals and full outputs:
+1800 intervals total. Quantization, packing, transfers, allocation, CPU reference
+and readback are outside events. A is **diagnostic sliced N≤3 linear**, not a PP
+production backend. Recorder32 tests passed; raw artifacts are `r4-mmq.jsonl`,
+`r4-mmq-build.log` and `r4-mmq-codegen.log`, compiled `9269138…` dirty1.
+
+The measured result is mixed: routed down wins at N≥8, gate at N128; HC loses at
+every tested N. Standalone gfx906 metadata shows wave64 and private/spills0, not
+a runtime occupancy trace. The journal adds one component record after fourteen
+unchanged records. This closes **Q4 primitive correctness and component A/B/A**,
+not large-prompt PP or a universal speedup. Small-M column parallelism and wide
+Q5/Q8/Q6 projections must be qualified before bounded full-model PP integration.

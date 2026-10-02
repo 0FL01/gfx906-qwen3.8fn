@@ -6,8 +6,8 @@ R0–R3 закрыты (2026-10-02): own48 Session, teacher32/full logits, reset
 
 ## Задача
 
-R4a short-window Session закрыт: N2/3 grouped weight reuse, causal QSA, PLE/GDN chronology, 200 rows/full-logits bitwise replay, invalid/reset/ledger проходят. Job503 exit0: CTest24/24, default-N1 teacher32 error0 и unchanged capacity131072 owned allocation. Следующий срез R4b — подготовленные canonical DS4/MMQ primitives/fixture: прочитать driver, собрать и проверить обе GPU перед включением в bounded causal PP; R5 hybrid misses затем.
-Raw runs/: `r4-session-batch.jsonl`, `r4-session-batch-final-build.log`, `r4-memory-default.jsonl`, `r4-default-n1-comparison.json`; journal14 records, прежние13 неизменны. Canonical journal только `/home/radneon/gfx906-core/results.jsonl`; не создавать src/results.jsonl.
+R4a short-window Session и R4b Q4 MMQ primitives закрыты; большой PP/R5 ещё нет. Job506 exit0: strict build/CTest25/25, обе GPU проходят 979 MMQ matrix cases/device и 1800 validated A/B/A intervals. Следующий узкий эксперимент — column-tile parallelism для small-M/HC, затем Q5/Q8/Q6 wide projections и bounded causal PP.
+Raw runs/: `r4-mmq.jsonl`, `r4-mmq-build.log`, `r4-mmq-codegen.log`; journal15 records, прежние14 неизменны. Canonical journal только `/home/radneon/gfx906-core/results.jsonl`; не создавать src/results.jsonl.
 
 ## Соединение и рабочие пути
 
@@ -22,7 +22,7 @@ Actual hardware: 16 physical/32 logical allowed CPU cores, один NUMA, AVX2/F
 ## Рабочие команды
 
 После source sync: `docker run --rm --name core-build --entrypoint /bin/sh -v /home/radneon/gfx906-core:/core -e CORE_REVISION=<синхронизированный-commit> -e CORE_DIRTY=OFF llama.cpp-gfx906:cmake-4.4.3 /core/src/tools/build.sh`.
-Grouped/regression binaries compiled `997e197ea64e8b5a0c7983bd3cae29f4af379921` dirty1; старые CPW/route — 1322fd9 dirty1, R3 memory — c56cfa dirty1, teacher/gen/reset — e9f1dfe dirty1. Будущий commit не подменяет provenance уже записанных artifacts.
+MMQ binaries compiled `926913892cc45f35b7e92084b5d7795341839f12` dirty1; grouped/regression — 997e197 dirty1, R3 memory — c56cfa dirty1, teacher/gen/reset — e9f1dfe dirty1. Будущий commit не подменяет provenance уже записанных artifacts.
 Session: `docker run --rm --name core-session --device /dev/kfd --device /dev/dri --group-add video --ipc host --security-opt seccomp=unconfined --entrypoint /core/build/core-session -v /home/radneon/gfx906-core:/core -v /home/radneon/models-nvme:/models:ro llama.cpp-gfx906:cmake-4.4.3 --generate 32 --ignore-eos /models/qwen38-keep1-Q4_0.gguf 248044`.
 Teacher32: тот же entrypoint, `--trace /core/runs/NEW --logits /core/runs/NEW-logits.f32.bin /models/qwen38-keep1-Q4_0.gguf 248044 $(seq 100 130)`; parent runs/ должен существовать, trace/logits/log names свежие. Reset: entrypoint core-session-test, только MODEL. Полные build/fixtures/baseline/repro команды в README.md.
 Oracle: `sh tools/build-oracle.sh` против build/oracle-production-libs; teacher reference использует `--all-layers --hf-gdn-l2-control --hf-qsa-f32-control --warm-cache 12 --cache-inserts 10` (diagnostic-only). compare_session.py сохраняет report/exit1 при failed gate; record_session.py --comparison/--generation/--reset/--results валидирует перед append. Одна GPU-нагрузка; final measurement без тяжёлой сборки/tracing.
@@ -42,8 +42,8 @@ CLI greedy32 diagnostic-only, считать actual generated count; final emitt
 
 ## Следующие действия
 
-1. Квалифицировать prepared MMQ на actual gate/down/HC: unchanged Q8→DS4 layout bytes, Q4_1 half products, K640/tile tails и A/B/A против diagnostic sliced-linear; не считать последний production PP.
-2. Bounded grouped Q4_0/Q4_1 staging/causal PP 4K/16K и peak VRAM; затем R5 CPU miss против H2D+GPU/overlap. DS4 MMQ144B/K128 не cast четырёх36B Q8; никогда не брать padding из соседнего cache slot.
+1. Проверить literal small-M column microtiles на том же actual gate/down/HC A/B/A. Down N≥8 быстрее, gate только N128; HC медленнее всех N. Standalone codegen: wave64, private/spills0, VGPR71–108 — не runtime occupancy proof. Не объявлять Q4 baseline универсальным ускорением.
+2. Добавить specialized Q5/Q8/Q6 wide projections, сохранив raw-sum/half-product ABI; затем bounded grouped staging/causal PP 4K/16K и peak VRAM, R5 CPU miss против H2D+GPU/overlap. DS4 MMQ144B/K128 не cast четырёх36B Q8; K640/tile padding только owned zeros, не соседний cache slot.
 Не менять frozen gates/epsilon/weights. Index raw128 без H/inverse; GDN [V][v][k], h%16; PLE hash/conv reset вместе; RoPE64 j/j+32/absolute position, sections ARRAY INT32.
 
 ## Не повторять без причины

@@ -90,4 +90,13 @@
   scatter/fold, same-stream slot lifetime and row-wise shared-gate orchestration
   are original code; no donor expert scheduler or runtime is imported.
 
+- `src/hip/mmq.hip` adapts mx `mmq-load-tiles.cuh`, `mmq-vec-dot.cuh`,
+  `mmq.cuh` and `vecdotq.cuh` canonical Q4 DP4A tile/load/dot/writeback seams
+  at the mx revision above. Modified: literal gfx906 I64/K256/four-wave tiles,
+  borrowed checked buffers, predicated owned-zero tails (including K640),
+  alignment2 canonical loads, explicit FMA/half-product policy and unchanged-Q8
+  byte transposition into DS4. No donor quantizer, allocator, stream-K,
+  scheduler or whole GGML backend is imported.
+  Copyright (c) 2023-2026 The ggml authors; MIT in `mx-LICENSE`.
+
 Upstream URLs and rejected donor options: RECON.md section 16.
