@@ -95,7 +95,9 @@
   at the mx revision above. Modified: literal gfx906 I64/K256/four-wave tiles,
   borrowed checked buffers, predicated owned-zero tails (including K640),
   alignment2 canonical loads, explicit FMA/half-product policy and unchanged-Q8
-  byte transposition into DS4. No donor quantizer, allocator, stream-K,
+  byte transposition into DS4. The measured M≤640 J8 microtile dispatch is an
+  original literal shape-specific adaptation; tile arithmetic is unchanged.
+  No donor quantizer, allocator, stream-K,
   scheduler or whole GGML backend is imported.
   Copyright (c) 2023-2026 The ggml authors; MIT in `mx-LICENSE`.
 

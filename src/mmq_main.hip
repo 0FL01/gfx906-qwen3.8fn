@@ -155,7 +155,7 @@ std::uint16_t half_bits(const std::byte* p) {
 void half_store(std::byte* p, std::uint16_t bits) {
     p[0] = std::byte(bits & 255); p[1] = std::byte(bits >> 8);
 }
-int tile_j(int n) { return n <= 8 ? 8 : n <= 16 ? 16 : n <= 32 ? 32 : 64; }
+int tile_j(int rows, int n) { return qwen::mmq_q4_tile_j(rows, n); }
 struct Error {
     double max_abs = 0, max_bound_ratio = 0;
     void compare(std::span<const float> got, std::span<const float> reference) {
@@ -597,14 +597,14 @@ void measurement(Case& test, int device, std::size_t tensor_index, std::size_t c
         // No reset/upload/quantization/pack/reference/readback in the interval.
         error.merge(test.validate());
     }
-    std::cout << "{\"kind\":\"mmq_measurement\",\"protocol\":1,\"sequence\":" << sequence
+    std::cout << "{\"kind\":\"mmq_measurement\",\"protocol\":2,\"sequence\":" << sequence
         << ",\"device\":" << device << ",\"tensor_index\":" << tensor_index << ",\"column_index\":" << column_index
         << ",\"phase_index\":" << phase_index << ",\"phase\":"; json_string(phases[phase_index]);
     std::cout << ",\"path\":"; json_string(mmq ? "mmq" : "diagnostic_sliced_linear");
     std::cout << ",\"tensor\":"; json_string(test.matrix.name);
     std::cout << ",\"type\":"; json_string(qwen::type_name(test.matrix.type));
     std::cout << ",\"width\":" << test.matrix.width << ",\"rows\":" << test.matrix.rows << ",\"columns\":" << test.n
-        << ",\"tile_j\":" << tile_j(test.n) << ",\"column_tiles\":" << (test.n + tile_j(test.n) - 1) / tile_j(test.n)
+        << ",\"tile_j\":" << tile_j(test.matrix.rows, test.n) << ",\"column_tiles\":" << (test.n + tile_j(test.matrix.rows, test.n) - 1) / tile_j(test.matrix.rows, test.n)
         << ",\"launches_per_repeat\":" << (mmq ? 1 : (test.n + 2) / 3)
         << ",\"repeats\":20,\"validated_intervals\":20,\"elements_per_interval\":" << test.reference.size()
         << ",\"completed_ms\":"; json_ints(intervals);
@@ -632,7 +632,7 @@ void emit_expected() {
 }
 void source(const char* path, const qwen::Model& model, const std::array<Matrix, 3>& actual,
             const std::array<hipDeviceProp_t, 2>& devices) {
-    std::cout << std::setprecision(17) << "{\"kind\":\"mmq_source\",\"protocol\":1,\"revision\":"; json_string(CORE_REVISION);
+    std::cout << std::setprecision(17) << "{\"kind\":\"mmq_source\",\"protocol\":2,\"revision\":"; json_string(CORE_REVISION);
     std::cout << ",\"dirty\":" << CORE_DIRTY << ",\"model\":"; json_string(path);
     std::cout << ",\"model_variant\":\"qwen38-keep1-Q4_0\",\"architecture\":\"qwen4exp\",\"absolute_gate\":0.0002,\"relative_gate\":0.00002"
         ",\"scope\":\"component common-Q8 quantization/DS4 packing/canonical Q4 MMQ; no PP or inference speed claim\""
@@ -644,7 +644,7 @@ void source(const char* path, const qwen::Model& model, const std::array<Matrix,
         ",\"ordering\":\"source; correctness device0,device1 BEFORE performance; measurements device,tensor,column,phase A1/B/A2; complete after all cleanup\""
         ",\"stream\":\"explicit hipStreamNonBlocking\",\"q8_1\":{\"bytes\":36,\"qs_offset\":4,\"sum\":\"original half raw-input sum, not d*sum(codes)\"}"
         ",\"ds4\":{\"bytes\":144,\"alignment\":16,\"ds_offset\":0,\"qs_offset\":16,\"layout\":\"[K128][column]\",\"ds_order\":\"d0,s0,d1,s1,d2,s2,d3,s3\",\"missing_subblocks\":\"zero halves/codes; unused final subblocks alone poisoned before qualification MMQ\"}"
-        ",\"tiles\":{\"rows\":64,\"k\":256,\"block\":[64,4],\"j\":[8,16,32,64],\"selection\":\"smallest J>=N capped64; N65..128 two J64 tiles\"}"
+        ",\"tiles\":{\"rows\":64,\"k\":256,\"block\":[64,4],\"j\":[8,16,32,64],\"selection\":\"M<=640 J8 microtiles; otherwise smallest J>=N capped64\"}"
         ",\"buffers\":{\"exact_payloads\":true,\"weight_pointer_offset\":2,\"weight_alignment\":2,\"q8_alignment\":4,\"packed_alignment\":16,\"output_alignment\":4,\"redzones\":\"prefix/suffix bytes weights2/2, raw4/4, Q8_1 4/4, DS4 16/16, output4/4, flag4/4; half-qNaN poison\"}"
         ",\"coverage\":{\"types\":[\"Q4_0\",\"Q4_1\"],\"cartesian\":true,\"widths\":"; json_ints(widths);
     std::cout << ",\"rows\":"; json_ints(row_counts); std::cout << ",\"columns\":"; json_ints(column_counts);
@@ -683,7 +683,7 @@ void source(const char* path, const qwen::Model& model, const std::array<Matrix,
 }
 void correctness(int device, const Counters& counters) {
     counters.verify();
-    std::cout << "{\"kind\":\"mmq_correctness\",\"protocol\":1,\"device\":" << device << ",\"counters\":";
+    std::cout << "{\"kind\":\"mmq_correctness\",\"protocol\":2,\"device\":" << device << ",\"counters\":";
     emit_expected();
     std::cout << ",\"max_abs\":" << counters.error.max_abs << ",\"max_bound_ratio\":" << counters.error.max_bound_ratio
         << ",\"q8_bytes_exact\":true,\"packed_bytes_exact\":true,\"missing_subblocks_zero\":true,\"poison_masked\":true"
@@ -722,7 +722,7 @@ int main(int argc, char** argv) {
     try {
         require(argc == 2, "usage: core-mmq MODEL.gguf");
         run(argv[1]); // ALL streams/events/buffers/model/host payloads cleaned up
-        std::cout << "{\"kind\":\"mmq_complete\",\"protocol\":1,\"devices\":2,\"correctness_records\":2,\"measurement_records\":90,\"validated_intervals\":1800,\"jsonl_records\":"
+        std::cout << "{\"kind\":\"mmq_complete\",\"protocol\":2,\"devices\":2,\"correctness_records\":2,\"measurement_records\":90,\"validated_intervals\":1800,\"jsonl_records\":"
             << jsonl_records << ",\"cleanup\":true,\"passed\":true}\n";
         std::cout.flush(); require(bool(std::cout), "MMQ JSONL output failure"); return 0;
     } catch (const std::exception& e) { std::cerr << "core-mmq: " << e.what() << '\n'; return 1; }

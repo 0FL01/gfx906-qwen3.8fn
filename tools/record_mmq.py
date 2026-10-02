@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Validate core-mmq JSONL v1 and append one component A/B/A evidence record.
+"""Validate core-mmq JSONL v1/v2 and append one component A/B/A evidence record.
 
 The frozen driver is src/mmq_main.hip. Diagnostic sliced-linear is a fixture
 baseline, not production PP. These measurements imply no universal speedup,
@@ -27,7 +27,7 @@ else:
 MAX_RAW_BYTES = 2 * 1024 * 1024
 REPEATS, RECORDS = 20, 94
 COLUMNS, PHASES = (1, 3, 8, 32, 128), ("A1", "B", "A2")
-# Source v1 emits type NAMES, not GGUF numeric type IDs or donor/HF pins.
+# Both source versions emit type NAMES, not GGUF numeric type IDs or donor/HF pins.
 TENSORS = (
     ("blk.0.ffn_gate_exps.weight", "Q4_0", 2560, 640, 512, 18),
     ("blk.0.ffn_down_exps.weight", "Q4_1", 640, 2560, 512, 20),
@@ -115,6 +115,13 @@ SOURCE_FIXED = {
     "benchmark_columns": list(COLUMNS), "benchmark_phases": list(PHASES), "repeats": REPEATS,
     "expected_per_device": COUNTERS, "expected_protocol": PROTOCOL, "schemas": SCHEMAS,
 }
+# Protocol 2 changes only the literal dispatch and its selection description.
+# Keep the complete frozen protocol-1 source contract for legacy evidence.
+SOURCE_V2_FIXED = {
+    **SOURCE_FIXED, "protocol": 2,
+    "tiles": {**SOURCE_FIXED["tiles"],
+              "selection": "M<=640 J8 microtiles; otherwise smallest J>=N capped64"},
+}
 CORRECTNESS_PROOFS = (
     "q8_bytes_exact", "packed_bytes_exact", "missing_subblocks_zero", "poison_masked",
     "active_subblocks_unchanged", "half_RNE_corners", "rejects_unchanged", "valid_reuse",
@@ -152,7 +159,9 @@ def records(path):
 
 
 def source(obj):
-    expect(obj, SOURCE_FIXED, ("revision", "dirty", "model", "actual", "devices"), "source")
+    protocol = integer(obj.get("protocol"), "source.protocol", 1, 2)
+    fixed = SOURCE_FIXED if protocol == 1 else SOURCE_V2_FIXED
+    expect(obj, fixed, ("revision", "dirty", "model", "actual", "devices"), "source")
     revision = obj["revision"]
     require(type(revision) is str and len(revision) == 40 and
             all(c in "0123456789abcdef" for c in revision), "source: invalid compiled revision")
@@ -191,6 +200,7 @@ def source(obj):
     require(all(a[1] <= b[0] for a, b in zip(ranges, ranges[1:])), "source: overlapping tensor ranges")
     # File size, GGUF alignment, data_offset and relative_offset are NOT emitted.
     # The loader/driver checks them; do not invent journal fields or fixed offsets.
+    return protocol
 
 
 def errors(obj, label, prefix=""):
@@ -199,9 +209,9 @@ def errors(obj, label, prefix=""):
     require(ratio <= 1, label + ": frozen common-Q8 bound ratio exceeded")
 
 
-def correctness(obj, device):
+def correctness(obj, device, protocol):
     label = f"correctness[{device}]"
-    expect(obj, {"kind": "mmq_correctness", "protocol": 1, "device": device, "counters": COUNTERS,
+    expect(obj, {"kind": "mmq_correctness", "protocol": protocol, "device": device, "counters": COUNTERS,
                  **dict.fromkeys(CORRECTNESS_PROOFS, True)}, ("max_abs", "max_bound_ratio"), label)
     errors(obj, label)
 
@@ -215,13 +225,16 @@ def rounded_timing(actual, expected, label):
                          abs_tol=32 * math.ulp(expected)), label + ": inconsistent completed intervals")
 
 
-def measurement(obj, device, tensor_index, column_index, phase_index, sequence):
+def measurement(obj, device, tensor_index, column_index, phase_index, sequence, protocol):
     label = f"measurement[{sequence}]"
     tensor, type_name, width, rows, _, _ = TENSORS[tensor_index]
     n = COLUMNS[column_index]
     tile_j = next((j for j in (8, 16, 32, 64) if n <= j), 64)
+    if protocol == 2 and rows <= 640:
+        tile_j = 8
+    # A1/A2 also describe the candidate's geometry, not their sliced launches.
     expect(obj, {
-        "kind": "mmq_measurement", "protocol": 1, "sequence": sequence, "device": device,
+        "kind": "mmq_measurement", "protocol": protocol, "sequence": sequence, "device": device,
         "tensor_index": tensor_index, "column_index": column_index, "phase_index": phase_index,
         "phase": PHASES[phase_index], "path": "mmq" if phase_index == 1 else "diagnostic_sliced_linear",
         "tensor": tensor, "type": type_name, "width": width, "rows": rows, "columns": n,
@@ -248,8 +261,8 @@ def measurement(obj, device, tensor_index, column_index, phase_index, sequence):
     rounded_timing(mean, expected / REPEATS, label + ".resident_ms")
 
 
-def complete(obj):
-    expect(obj, {"kind": "mmq_complete", "protocol": 1, "devices": 2,
+def complete(obj, protocol):
+    expect(obj, {"kind": "mmq_complete", "protocol": protocol, "devices": 2,
                  "correctness_records": 2, "measurement_records": 90, "validated_intervals": 1800,
                  "jsonl_records": RECORDS, "cleanup": True, "passed": True}, label="complete")
 
@@ -259,17 +272,17 @@ def collect(raw_path):
     raw_path = Path(raw_path).resolve()
     rows = records(raw_path)
     origin, proofs, metrics, footer = rows[0], rows[1:3], rows[3:-1], rows[-1]
-    source(origin)
+    protocol = source(origin)
     for device, proof in enumerate(proofs):
-        correctness(proof, device)
+        correctness(proof, device, protocol)
     sequence = 0
     for device in (0, 1):
         for tensor in range(3):
             for column in range(len(COLUMNS)):
                 for phase in range(len(PHASES)):
-                    measurement(metrics[sequence], device, tensor, column, phase, sequence)
+                    measurement(metrics[sequence], device, tensor, column, phase, sequence, protocol)
                     sequence += 1
-    complete(footer)
+    complete(footer, protocol)
     return {
         "kind": "r4b_mmq_primitives", "timestamp": datetime.datetime.now(datetime.timezone.utc).isoformat(),
         "revision": origin["revision"], "dirty": origin["dirty"], "model": origin["model"],
@@ -281,7 +294,7 @@ def collect(raw_path):
         "fixture_gates": {"absolute": .0002, "relative_cpu_magnitude": .00002,
                           "bound": "absolute+relative_cpu_magnitude*abs(CPU_reference)",
                           "max_bound_ratio_limit": 1, "frozen_before_execution": True},
-        "provenance_limits": "compiled revision/dirty and original model path preserved; no donor/HF pins, file size or GGUF alignment emitted by v1; file-range/alignment gates are driver/loader checks",
+        "provenance_limits": "compiled revision/dirty and original model path preserved; no donor/HF pins, file size or GGUF alignment emitted by v1/v2; file-range/alignment gates are driver/loader checks",
         "source": origin, "correctness": proofs, "measurements": metrics, "complete": footer, "passed": True,
     }
 

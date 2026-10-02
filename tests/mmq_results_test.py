@@ -1,4 +1,4 @@
-"""Independent core-mmq v1 fixtures; stdlib only, no model or GPU execution."""
+"""Independent core-mmq v1/v2 fixtures; stdlib only, no model or GPU execution."""
 
 import copy
 import datetime
@@ -37,7 +37,7 @@ def counters():
     }
 
 
-def fixture():
+def fixture(protocol=1):
     """All 94 driver rows, real tensor geometry, HIP-float times and mixed A/B wins."""
     actual = [
         {"tensor_index": 0, "tensor": "blk.0.ffn_gate_exps.weight", "type": "Q4_0", "rank": 3,
@@ -57,7 +57,7 @@ def fixture():
          "selected_bytes": 1843200, "width": 10240, "rows": 320, "unchanged": True},
     ]
     origin = {
-        "kind": "mmq_source", "protocol": 1, "revision": REVISION, "dirty": 1,
+        "kind": "mmq_source", "protocol": protocol, "revision": REVISION, "dirty": 1,
         "model": '/models/данные "quoted"/qwen38-keep1-Q4_0.gguf',
         "model_variant": "qwen38-keep1-Q4_0", "architecture": "qwen4exp",
         "absolute_gate": .0002, "relative_gate": .00002,
@@ -74,7 +74,8 @@ def fixture():
                 "layout": "[K128][column]", "ds_order": "d0,s0,d1,s1,d2,s2,d3,s3",
                 "missing_subblocks": "zero halves/codes; unused final subblocks alone poisoned before qualification MMQ"},
         "tiles": {"rows": 64, "k": 256, "block": [64, 4], "j": [8, 16, 32, 64],
-                  "selection": "smallest J>=N capped64; N65..128 two J64 tiles"},
+                  "selection": "M<=640 J8 microtiles; otherwise smallest J>=N capped64" if protocol == 2
+                  else "smallest J>=N capped64; N65..128 two J64 tiles"},
         "buffers": {"exact_payloads": True, "weight_pointer_offset": 2, "weight_alignment": 2,
                     "q8_alignment": 4, "packed_alignment": 16, "output_alignment": 4,
                     "redzones": "prefix/suffix bytes weights2/2, raw4/4, Q8_1 4/4, DS4 16/16, output4/4, flag4/4; half-qNaN poison"},
@@ -104,7 +105,7 @@ def fixture():
     rows = [origin]
     for device in (0, 1):
         rows.append({
-            "kind": "mmq_correctness", "protocol": 1, "device": device, "counters": counters(),
+            "kind": "mmq_correctness", "protocol": protocol, "device": device, "counters": counters(),
             "max_abs": 1e-5, "max_bound_ratio": .04,
             "q8_bytes_exact": True, "packed_bytes_exact": True, "missing_subblocks_zero": True,
             "poison_masked": True, "active_subblocks_unchanged": True, "half_RNE_corners": True,
@@ -126,13 +127,15 @@ def fixture():
                     times = [struct.unpack("f", struct.pack("f", base * (1 + (i % 5 - 2) * .003)))[0]
                              for i in range(20)]
                     tile = 8 if n <= 8 else 32 if n <= 32 else 64
+                    if protocol == 2 and tensor["rows"] <= 640:
+                        tile = 8
                     rows.append({
-                        "kind": "mmq_measurement", "protocol": 1, "sequence": sequence, "device": device,
+                        "kind": "mmq_measurement", "protocol": protocol, "sequence": sequence, "device": device,
                         "tensor_index": tensor_index, "column_index": column_index, "phase_index": phase_index,
                         "phase": phase, "path": "mmq" if phase == "B" else "diagnostic_sliced_linear",
                         "tensor": tensor["tensor"], "type": tensor["type"], "width": tensor["width"],
                         "rows": tensor["rows"], "columns": n, "tile_j": tile,
-                        "column_tiles": 2 if n == 128 else 1,
+                        "column_tiles": (n + tile - 1) // tile,
                         "launches_per_repeat": 1 if phase == "B" else (n + 2) // 3,
                         "repeats": 20, "validated_intervals": 20, "elements_per_interval": n * tensor["rows"],
                         "completed_ms": times, "completed_ms_total": sum(times), "resident_ms": sum(times) / 20,
@@ -141,7 +144,7 @@ def fixture():
                         "finite": True, "canary": True, "readonly": True, "q8_bytes_exact": True,
                         "packed_bytes_exact": True, "passed": True,
                     })
-    rows.append({"kind": "mmq_complete", "protocol": 1, "devices": 2, "correctness_records": 2,
+    rows.append({"kind": "mmq_complete", "protocol": protocol, "devices": 2, "correctness_records": 2,
                  "measurement_records": 90, "validated_intervals": 1800, "jsonl_records": 94,
                  "cleanup": True, "passed": True})
     # Literal schema ordering follows the emitter. Derive the fixture's lists
@@ -183,13 +186,15 @@ def leaves(value, path=()):
 
 
 class MmqResultsTest(unittest.TestCase):
+    protocol = 1
+
     def setUp(self):
         directory = tempfile.TemporaryDirectory(prefix="mmq-results-test-")
         self.addCleanup(directory.cleanup)
         self.root = Path(directory.name)
         self.raw = self.root / "mmq.jsonl"
         self.results = self.root / "results.jsonl"
-        self.rows = fixture()
+        self.rows = fixture(self.protocol)
         self.raw.write_bytes(encoded(self.rows))
 
     def collect(self, rows=None):
@@ -248,6 +253,38 @@ class MmqResultsTest(unittest.TestCase):
         emitter = driver[driver.index("void emit_expected()"):driver.index("void source(")]
         decoded = "".join(json.loads(literal) for literal in re.findall(r'"(?:\\.|[^"\\])*"', emitter))
         self.assertEqual(json.loads(decoded), counters())
+
+    def test_mixed_protocols_rejected_at_every_row(self):
+        other = fixture(3 - self.protocol)
+        for index in range(94):
+            self.reject_change(index, ("protocol",), other[index]["protocol"])
+        # A valid source of the other version cannot authorize this log's rows.
+        rows = self.rows.copy()
+        rows[0] = other[0]
+        self.reject(rows)
+
+    def test_unrecognized_protocol_versions_and_types(self):
+        for index in REPRESENTATIVE:
+            for bad in (0, -1, 3, 20, None, True, False, 1.0, 2.0, "1", "2", {}, []):
+                self.reject_change(index, ("protocol",), bad)
+
+    def test_tile_selection_is_exact_and_version_bound(self):
+        other = fixture(3 - self.protocol)[0]["tiles"]["selection"]
+        selection = self.rows[0]["tiles"]["selection"]
+        for bad in (other, "always J8", "M<640 J8 microtiles; otherwise smallest J>=N capped64",
+                    selection + " ", selection.lower(), "", None):
+            self.reject_change(0, ("tiles", "selection"), bad)
+
+    def test_other_protocol_geometry_rejected_even_with_consistent_column_tiles(self):
+        other = fixture(3 - self.protocol)
+        for index in range(3, 93):
+            row, wrong = self.rows[index], other[index]
+            if row["tile_j"] == wrong["tile_j"]:
+                continue
+            rows = self.rows.copy()
+            rows[index] = {**row, "tile_j": wrong["tile_j"], "column_tiles": wrong["column_tiles"]}
+            with self.subTest(row=index, rows=row["rows"], columns=row["columns"], phase=row["phase"]):
+                self.reject(rows)
 
     def test_component_scope_and_timing_exclusions_make_no_speedup_claim(self):
         result = self.collect()
@@ -719,6 +756,43 @@ class MmqResultsTest(unittest.TestCase):
         with mock.patch.object(MODULE, "append_result") as append, mock.patch.object(sys, "stderr"):
             self.assertEqual(MODULE.main(["--raw", str(self.raw), "--results", str(self.results)]), 1)
             append.assert_not_called()
+
+
+class MmqV2ResultsTest(MmqResultsTest):
+    # Run the entire legacy guard suite against protocol 2 as well.
+    protocol = 2
+
+    def test_v2_literal_small_m_geometry_for_all_devices_columns_and_phases(self):
+        result = self.collect()
+        self.assertTrue(all(row["protocol"] == 2 for row in self.rows))
+        self.assertEqual(result["source"]["tiles"]["selection"],
+                         "M<=640 J8 microtiles; otherwise smallest J>=N capped64")
+        tiles = ((8, 8, 8, 8, 8), (8, 8, 8, 32, 64), (8, 8, 8, 8, 8))
+        counts = ((1, 1, 1, 4, 16), (1, 1, 1, 1, 2), (1, 1, 1, 4, 16))
+        for row in result["measurements"]:
+            tensor, column = row["tensor_index"], row["column_index"]
+            self.assertEqual(row["tile_j"], tiles[tensor][column])
+            self.assertEqual(row["column_tiles"], counts[tensor][column])
+
+    def test_v2_large_m_cannot_use_small_m_microtiles(self):
+        for index in range(3, 93):
+            row = self.rows[index]
+            if row["tensor_index"] != 1 or row["columns"] <= 8:
+                continue
+            rows = self.rows.copy()
+            rows[index] = {**row, "tile_j": 8, "column_tiles": row["columns"] // 8}
+            with self.subTest(row=index, phase=row["phase"]):
+                self.reject(rows)
+
+    def test_v2_tile_and_column_count_rejected_independently(self):
+        for index in range(3, 93):
+            row = self.rows[index]
+            if row["columns"] <= 8:
+                continue
+            small_m = row["tensor_index"] in (0, 2)
+            wrong_j = (32 if row["columns"] == 32 else 64) if small_m else 8
+            self.reject_change(index, ("tile_j",), wrong_j)
+            self.reject_change(index, ("column_tiles",), (row["columns"] + wrong_j - 1) // wrong_j)
 
 
 if __name__ == "__main__":

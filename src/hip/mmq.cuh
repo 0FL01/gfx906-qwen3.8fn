@@ -55,8 +55,9 @@ static_assert(alignof(Q8MmqBlock) == 16 && sizeof(Q8MmqBlock) == 144 &&
 // No external workspace. All row/column/K256 tails are checked and zero-filled
 // into owned LDS; even unused block32 contents of the last input K128 are masked.
 //
-// GCN DP4A: I64, J8/16/32/64, dim3(64,4), K256, no stream-K. Select the
-// smallest listed J >= columns, capped at64 (columns65..128 use two J64 tiles).
+// GCN DP4A: I64, J8/16/32/64, dim3(64,4), K256, no stream-K.
+// For rows<=640 use J8 column microtiles to expose more independent workgroups;
+// otherwise select the smallest listed J >= columns, capped at64.
 // Lane owns one row, wave owns columns wave+4*t. A weight tile is shared across
 // columns via LDS, activation words via LDS/quad DPP; no cross-lane FP sum.
 // Ascending full-block32 dots (eight signed SDOT4 with unsigned Q4 nibbles):
@@ -69,5 +70,10 @@ static_assert(alignof(Q8MmqBlock) == 16 && sizeof(Q8MmqBlock) == 144 &&
 [[nodiscard]] hipError_t launch_mmq_q4(QuantizedDeviceMatrix matrix,
         const Q8MmqBlock* input, int columns, float* output,
         hipStream_t stream) noexcept;
+
+// Literal gfx906 dispatch, shared with diagnostic metadata (not autotuning).
+inline constexpr int mmq_q4_tile_j(int rows, int columns) noexcept {
+    return rows <= 640 ? 8 : columns <= 8 ? 8 : columns <= 16 ? 16 : columns <= 32 ? 32 : 64;
+}
 
 } // namespace qwen

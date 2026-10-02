@@ -666,5 +666,40 @@ The measured result is mixed: routed down wins at N≥8, gate at N128; HC loses 
 every tested N. Standalone gfx906 metadata shows wave64 and private/spills0, not
 a runtime occupancy trace. The journal adds one component record after fourteen
 unchanged records. This closes **Q4 primitive correctness and component A/B/A**,
-not large-prompt PP or a universal speedup. Small-M column parallelism and wide
-Q5/Q8/Q6 projections must be qualified before bounded full-model PP integration.
+not large-prompt PP or a universal speedup. The following slice qualifies small-M
+dispatch; wide Q5/Q8/Q6 projections still precede bounded full-model PP integration.
+
+## R4b tuning: measured small-M column microtiles
+
+`mmq_q4_tile_j` selects **J8 for M≤640**, otherwise the original smallest
+J8/16/32/64 covering N, capped at 64. This changes dispatch only: canonical
+weights, original Q8/DS4 bytes, dot arithmetic, masked tails and public validation
+are unchanged. `core-mmq` protocol2 records the new selection and tile counts;
+`record_mmq.py` still validates historical protocol1 without weakening its schema.
+
+Job `1790979910034-519` ran three complete fixtures sequentially: saved owned
+`build/core-mmq-microtile-baseline`, candidate `build/core-mmq`, baseline again.
+The outer comparison uses only each fixture's **MMQ phase B**, not its internal
+diagnostic sliced-linear phases. All three fixtures pass both GPUs and the same
+full-output/byte/tail/canary gates. Raw files are
+`runs/r4-mmq-microtile-{a1,b,a2}.jsonl`; candidate provenance is `e7686cd…`, dirty1,
+while both baselines retain `9269138…`, dirty1.
+
+For the eight changed actual gate/HC cases at N32/128, the candidate beats both
+baselines on both devices: approximately **2.1/3.1× gate** and **2.2/3.6× HC**
+resident speedup. These are paired component results, not full-request or PP
+speedups. Unchanged down N128 varied approximately 6–8%; no universal improvement
+or causal explanation for that variation is inferred.
+
+Final strict Release build/CTest25/25 and all 75 recorder tests pass; the log is
+`runs/r4-mmq-microtile-final-build.log`. The single canonical journal adds one
+`r4b_mmq_microtiles` record after fifteen unchanged records, preserving all three
+validated fixtures and thirty paired MMQ coordinates. Eight changed coordinates
+must beat both baselines. One-shot append metadata fixes did not change numeric
+code, raw data or any gate; the append was performed only once after validation.
+
+For a fresh candidate run, use the previous section's `core-mmq` command and
+`record_mmq.py`; filenames must be new. A paired replay uses the saved baseline
+entrypoint, then current `core-mmq`, then the same baseline, with one GPU workload
+at a time and no heavy compilation during events. Keep revisions/protocols from
+their actual binaries. Wide-format and bounded full-model PP qualification follows.

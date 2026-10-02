@@ -325,9 +325,10 @@ void enqueue(QuantizedDeviceMatrix matrix, const Q8MmqBlock* input,
 template<TensorType Type>
 void enqueue_type(QuantizedDeviceMatrix matrix, const Q8MmqBlock* input,
                   int columns, float* output, hipStream_t stream) noexcept {
-    if (columns <= 8) enqueue<Type, 8>(matrix, input, columns, output, stream);
-    else if (columns <= 16) enqueue<Type, 16>(matrix, input, columns, output, stream);
-    else if (columns <= 32) enqueue<Type, 32>(matrix, input, columns, output, stream);
+    const int j = mmq_q4_tile_j(matrix.output, columns);
+    if (j == 8) enqueue<Type, 8>(matrix, input, columns, output, stream);
+    else if (j == 16) enqueue<Type, 16>(matrix, input, columns, output, stream);
+    else if (j == 32) enqueue<Type, 32>(matrix, input, columns, output, stream);
     else enqueue<Type, 64>(matrix, input, columns, output, stream);
 }
 
