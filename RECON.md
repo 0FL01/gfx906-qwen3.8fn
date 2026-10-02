@@ -2,7 +2,7 @@
 
 Дата проверки открытых источников: 2026-10-01.
 
-Это архитектурное решение и разведка по исходникам с read-only remote RECON от 2026-10-01. Последующие R0 build/probe/baseline, R1 loader/expert, R2a–R2e primitives и R3a dense/LM head fixtures также выполнены. Own48-layer Session реализован и прошёл teacher32 logits/intermediates; R3b закрыт с final reset/greedy32. Результаты и ограничения — STATE.md, README.md и results.jsonl; полноценный prefill/MTP/длинный контекст ещё впереди.
+Это архитектурное решение и разведка по исходникам с read-only remote RECON от 2026-10-01. Последующие R0–R3 fixtures выполнены: own48-layer Session прошёл teacher32 logits/intermediates, reset/greedy32 и capacity131072 owner/allocation ledger. Результаты и ограничения — STATE.md, README.md и results.jsonl; полноценный prefill/MTP/занятый длинный контекст ещё впереди.
 
 ## 1. Решение и границы
 
@@ -304,7 +304,9 @@ HC не является обычным residual-add. Есть четыре ве
 
 Attention теперь использует canonical ascending dot/value accumulation и chronological bounded gather при том же selected multiset, включая repeated IDs; публичные ranked IDs неизменны. Шесть launches, read-only caches и invalid-flag publication contract сохранены. `expf` заменён внутренним double `exp` от FP32 difference с округлением результата в FP32 — явное accuracy change, не смена весов/KV или ослабление gates. Парное A/B/A оказалось примерно2× медленнее прежней attention topology; acceleration claim отсутствует. MMVQ FMA/two-wave и MMVF decode A/B/A квалифицируют компоненты, не полный inference. Для GDN canonical PRE-state dot, decay-after-reduction и FMA update вместе с direct-logf softplus совпали с actual beta/log-decay/PRE/POST. Отрицательные softplus-on-old-topology/prediction-FMA probes оставляли failed full output byte-identical; не повторять их без новой гипотезы.
 
-Final job `1790961285745-474` exit0: strict full build/CTest21/21, reset8steps/capacity4/slots1/invalid-ID/capacity/bitwise replay, greedy32 с trace off и recorder прошли. Одна R3b запись добавлена после неизменённых десяти прежних; случайный новый src/results journal проверен и удалён. Короткий полный запрос/load timings и original provenance сохранены в results.jsonl, не steady TG/PP/A/B claim. Per-GPU/category allocation ledger остаётся следующей R3 acceptance проверкой. Команды и pending-token semantics — README.md.
+Final job `1790961285745-474` exit0: strict full build/CTest21/21, reset8steps/capacity4/slots1/invalid-ID/capacity/bitwise replay, greedy32 с trace off и recorder прошли. Одна R3b запись добавлена после неизменённых десяти прежних; случайный новый src/results journal проверен и удалён. Короткий полный запрос/load timings и original provenance сохранены в results.jsonl, не steady TG/PP/A/B claim. Команды и pending-token semantics — README.md.
+
+**R3c, 2026-10-02:** `Session::memory()` сверяет полный category traversal с независимыми live-Buffer RAII counters/owners и actual total/free VRAM. Capacity131072/112 slots, static24/24, Q4 KV/FP32 index/GDN/PLE geometry, steady allocations/read counters после step/reset/replay и recovery всех owned bytes после destruction без device reset проходят. Logical144 expert payload loads остаются только в RAM-loader; это не physical-SSD syscall trace. Private HIP/rocBLAS memory исключена из owned categories, но видна в total/free. Job486/488 exit0, full CTest22/22 и collector31 проходят; одна R3c запись после прежних11 неизменных records. Allocations/headroom/RSS/recovery/provenance — results.jsonl. Это capacity proof с двумя consumed tokens/pass, не occupied128K/MTP/prefill/performance; R3 закрыт, R4–R8 остаются.
 
 ## 11. MTP2
 

@@ -2,12 +2,12 @@
 
 ## Статус
 
-R0, R1, R2a–R2e, R3a и R3b закрыты (2026-10-02). Own48-layer Session: teacher32 logits/intermediates, final reset/replay и greedy32 прошли. R3 ещё требует per-GPU/category allocation ledger; R4–R8 и целевые скорости не закрыты.
+R0–R3 закрыты (2026-10-02): own48 Session, teacher32/full logits, reset/replay/greedy32 и capacity131072 owner/allocation ledger проходят. R4–R8 и целевые скорости не закрыты.
 
 ## Задача
 
-Commit/push verified R3b, затем R3 per-GPU ownership/allocation ledger и capacity131072 headroom; далее R4 grouped PP/R5 hybrid misses. Full job474 exit0, CTest21/21 (comparison31/recorder24), reset8steps/invalid-ID/capacity/replay и greedy32 passed.
-Raw runs/: `r3-session-closure-portable-build.log`, `r3-session-reset-final.jsonl/.err`, `r3-generation-final.jsonl/.err`. Canonical results содержит11 records, прежние10 неизменны. Missing remote fixture/controller TMP path исправлены без gate changes; случайный src/results record проверен против canonical append и удалён, failed logs сохранены.
+R3c jobs486/488 exit0: actual memory fixture, strict full build/CTest22/22 и validated canonical append прошли; прежние11 records неизменны, теперь12. Следующий срез: R4 exact N2/3 GDN CPW2 token-loop/route reuse, затем staged grouped MMQ и causal PP; R5 hybrid misses по измерениям.
+Raw runs/: `r3-memory.jsonl/.err/.exit`, `r3-memory-build.log`, `r3-memory-final-build.log`. Canonical journal только `/home/radneon/gfx906-core/results.jsonl`; не создавать src/results.jsonl.
 
 ## Соединение и рабочие пути
 
@@ -22,7 +22,7 @@ Actual hardware: 16 physical/32 logical allowed CPU cores, один NUMA, AVX2/F
 ## Рабочие команды
 
 После source sync: `docker run --rm --name core-build --entrypoint /bin/sh -v /home/radneon/gfx906-core:/core -e CORE_REVISION=<синхронизированный-commit> -e CORE_DIRTY=OFF llama.cpp-gfx906:cmake-4.4.3 /core/src/tools/build.sh`.
-Текущие numerical binaries compiled `e9f1dfe57cf8fdc0abd9ba10ab91cfbe01d9e0db` dirty1; для этого source CORE_DIRTY=ON. Будущий commit не подменяет provenance уже записанных artifacts.
+Memory binaries compiled `c56cfa10a6d741d6ff68c0a57b4f1a3ebc045b28` dirty1; прежние teacher/gen/reset — `e9f1dfe...` dirty1. Будущий commit не подменяет provenance уже записанных artifacts.
 Session: `docker run --rm --name core-session --device /dev/kfd --device /dev/dri --group-add video --ipc host --security-opt seccomp=unconfined --entrypoint /core/build/core-session -v /home/radneon/gfx906-core:/core -v /home/radneon/models-nvme:/models:ro llama.cpp-gfx906:cmake-4.4.3 --generate 32 --ignore-eos /models/qwen38-keep1-Q4_0.gguf 248044`.
 Teacher32: тот же entrypoint, `--trace /core/runs/NEW --logits /core/runs/NEW-logits.f32.bin /models/qwen38-keep1-Q4_0.gguf 248044 $(seq 100 130)`; parent runs/ должен существовать, trace/logits/log names свежие. Reset: entrypoint core-session-test, только MODEL. Полные build/fixtures/baseline/repro команды в README.md.
 Oracle: `sh tools/build-oracle.sh` против build/oracle-production-libs; teacher reference использует `--all-layers --hf-gdn-l2-control --hf-qsa-f32-control --warm-cache 12 --cache-inserts 10` (diagnostic-only). compare_session.py сохраняет report/exit1 при failed gate; record_session.py --comparison/--generation/--reset/--results валидирует перед append. Одна GPU-нагрузка; final measurement без тяжёлой сборки/tracing.
@@ -32,6 +32,7 @@ Oracle: `sh tools/build-oracle.sh` против build/oracle-production-libs; te
 Teacher32 IDs `[248044,100..130]`: all7 946 240 finite logits numerical error0, argmax32/32; required intermediates проходят unchanged gates `.02+.002|ref|` logits/`.002+.002|ref|` intermediates/hc_init exact. Raw `runs/r3-session32-attention-order.jsonl`, одноимённый trace dir, `r3-session32-attention-order-logits.f32.bin`; report `r3-compare32-attention-order.json`.
 Independent `r3-oracle32-hf-a`: production source/image-attested dcd685463d597d31f5ca759d32c94592a2740fa4, HF a005fc82babfe8871d87746decad2dbee100a125; opt-in additive-GDN-L2/FP32 gathered-QSA corrections. Не bitwise HF/unchanged-math/performance baseline; default production oracle неизменён.
 Final reset8steps/capacity4/slots1/invalidIDs+capacity+bitwise replay passed. Greedy32/trace off: request2985.195379ms, load69364.627872ms отдельно; final token pending. Это short request, не steady TG/PP/sampling/A/B; полные numerics/provenance — results.jsonl/raw logs.
+Capacity131072/slots112: min free VRAM6.67/6.23GiB, owned bytes восстановлены после destruction; no steady Buffer/read-counter growth. Это2 consumed tokens/pass, не occupied128K. Лог `r3-memory.jsonl`; full categories/RSS/private-memory limits — results.jsonl.
 
 ## Контракт и найденное ограничение
 
@@ -41,8 +42,7 @@ CLI greedy32 diagnostic-only, считать actual generated count; final emitt
 
 ## Следующие действия
 
-1. Сверить фактические per-GPU/category allocations и headroom с capacity131072/R3 geometry; сохранить actual owner/steady allocation proof.
-2. R4 route grouping → staged grouped Q4_0/Q4_1 MMQ (mx → furnace → reinstinct, RECON §16), causal chunk parity; затем R5 CPU miss против H2D+GPU и overlap на measured shapes. DS4 MMQ144B/K128 не cast четырёх36B Q8; K640 требует checked tail padding. N3 QSA projected buffer36864 floats/Q8 input960 blocks больше текущих32768/512.
+1. R4 route grouping → staged grouped Q4_0/Q4_1 MMQ (mx → furnace → reinstinct, RECON §16), causal chunk parity; затем R5 CPU miss против H2D+GPU и overlap на measured shapes. DS4 MMQ144B/K128 не cast четырёх36B Q8; K640 требует checked tail padding. N3 QSA projected buffer36864 floats/Q8 input960 blocks больше текущих32768/512.
 Не менять frozen gates/epsilon/weights. Index raw128 без H/inverse; GDN [V][v][k], h%16; PLE hash/conv reset вместе; RoPE64 j/j+32/absolute position, sections ARRAY INT32.
 
 ## Не повторять без причины

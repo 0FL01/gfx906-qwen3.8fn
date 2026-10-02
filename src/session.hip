@@ -40,24 +40,36 @@ void cleanup(hipError_t e) noexcept {
 
 class Buffer {
 public:
+    inline static std::array<std::uint64_t, 2> live_bytes{}, peak_bytes{}, live_buffers{};
     Buffer() = default;
     explicit Buffer(std::size_t bytes) : bytes_(bytes) {
-        hip(hipGetDevice(&device_)); hip(hipMalloc(&pointer_, bytes));
+        hip(hipGetDevice(&device_));
+        if (device_ < 0 || device_ >= 2) throw std::runtime_error("Session buffer owner");
+        hip(hipMalloc(&pointer_, bytes));
+        live_bytes[device_] += bytes_; ++live_buffers[device_];
+        peak_bytes[device_] = std::max(peak_bytes[device_], live_bytes[device_]);
     }
-    ~Buffer() { if (pointer_) { cleanup(hipSetDevice(device_)); cleanup(hipFree(pointer_)); } }
+    ~Buffer() { release(); }
     Buffer(const Buffer&) = delete;
     Buffer& operator=(const Buffer&) = delete;
-    Buffer(Buffer&& b) noexcept : pointer_(std::exchange(b.pointer_, nullptr)), bytes_(b.bytes_), device_(b.device_) {}
+    Buffer(Buffer&& b) noexcept : pointer_(std::exchange(b.pointer_, nullptr)), bytes_(std::exchange(b.bytes_, 0)), device_(b.device_) {}
     Buffer& operator=(Buffer&& b) noexcept {
         if (this != &b) {
-            if (pointer_) { cleanup(hipSetDevice(device_)); cleanup(hipFree(pointer_)); }
-            pointer_ = std::exchange(b.pointer_, nullptr); bytes_ = b.bytes_; device_ = b.device_;
+            release();
+            pointer_ = std::exchange(b.pointer_, nullptr); bytes_ = std::exchange(b.bytes_, 0); device_ = b.device_;
         }
         return *this;
     }
     template<class T = float> T* get() const { return static_cast<T*>(pointer_); }
     std::size_t bytes() const { return bytes_; }
+    int owner() const { return device_; }
 private:
+    void release() noexcept {
+        if (!pointer_) return;
+        cleanup(hipSetDevice(device_)); cleanup(hipFree(pointer_));
+        live_bytes[device_] -= bytes_; --live_buffers[device_];
+        pointer_ = nullptr; bytes_ = 0;
+    }
     void* pointer_ = nullptr;
     std::size_t bytes_ = 0;
     int device_ = 0;
@@ -192,6 +204,7 @@ struct Experts {
     Buffer slots;
     std::vector<Slot> map;
     std::uint64_t clock = 0;
+    std::uint64_t payload_reads = 0, payload_bytes_read = 0;
     Experts(const Model& m, Device& d, const std::string& prefix, int nslots) : down_type(TensorType::Q4_0) {
         const std::array<std::string, 3> names{prefix + "ffn_gate_exps.weight", prefix + "ffn_up_exps.weight", prefix + "ffn_down_exps.weight"};
         for (int i = 0; i < 3; ++i) {
@@ -204,6 +217,7 @@ struct Experts {
             }
             bytes[i] = static_cast<std::size_t>(t.strides[2]);
             ram[i].resize(static_cast<std::size_t>(t.byte_size)); m.read_tensor(names[i], ram[i]);
+            ++payload_reads; payload_bytes_read += ram[i].size();
         }
         hip(hipSetDevice(d.id)); slots = Buffer(total() * static_cast<std::size_t>(nslots)); map.resize(nslots);
     }
@@ -476,6 +490,74 @@ struct Session::Impl {
         for (auto& d : devices) { hip(hipSetDevice(d->id)); d->clear(); hip(hipStreamSynchronize(d->stream)); }
         ple_hash.reset(); statistics = {}; usable = true;
     }
+    SessionMemory memory() const {
+        int previous = 0; hip(hipGetDevice(&previous));
+        struct RestoreDevice {
+            int device;
+            ~RestoreDevice() { cleanup(hipSetDevice(device)); }
+        } restore{previous};
+        SessionMemory result;
+        result.capacity = config.capacity; result.expert_slots = config.expert_slots;
+        result.host_embedding_capacity = embeddings.capacity();
+        result.host_logit_capacity = host_logits.capacity() * sizeof(float);
+        result.pinned_handoff = W * sizeof(float);
+        for (int id = 0; id < 2; ++id) {
+            auto& out = result.devices[id];
+            auto& d = *devices[id];
+            out.device = id; out.first_layer = id * 24; out.last_layer = id * 24 + 23;
+            auto add = [&](std::uint64_t& category, const Buffer& b) {
+                if (!b.bytes()) {
+                    if (b.get<void>()) throw std::runtime_error("zero-byte Session allocation");
+                    return;
+                }
+                if (!b.get<void>() || b.owner() != id) throw std::runtime_error("Session allocation owner mismatch");
+                category += b.bytes(); out.owned_bytes += b.bytes(); ++out.owned_buffers;
+            };
+            auto weight = [&](const Matrix& m) { add(out.weights, m.data); };
+            auto hc = [&](const Hc& h) {
+                weight(h.down); weight(h.up); weight(h.inject); add(out.weights, h.norm);
+            };
+            for (const auto& b : d.scratch) add(out.workspace, b);
+            for (const auto* b : {&d.q8, &d.error, &d.logits, &d.gathered_k, &d.gathered_v,
+                    &d.partial_o, &d.partial_ms, &d.histogram, &d.select_state, &d.candidates,
+                    &d.ids, &d.block_ids, &d.counts}) add(out.workspace, *b);
+            for (const auto& pointer : layers) {
+                const auto& l = *pointer;
+                if (l.index / 24 != id) continue;
+                if (l.device.id != id) throw std::runtime_error("Session layer owner mismatch");
+                hc(l.attention_hc); hc(l.ffn_hc);
+                for (const auto* m : {&l.router, &l.shared_gate, &l.shared_up, &l.shared_down,
+                        &l.qkv, &l.z, &l.alpha, &l.beta, &l.attn_output, &l.key, &l.value,
+                        &l.index_q, &l.index_k}) weight(*m);
+                for (const auto* b : {&l.shared_weight, &l.conv, &l.dt, &l.a, &l.gdn_norm,
+                        &l.q_norm, &l.k_norm, &l.iq_norm, &l.ik_norm, &l.frequencies}) add(out.weights, *b);
+                add(out.expert_slots, l.experts.slots);
+                for (const auto& ram : l.experts.ram) {
+                    result.ram_expert_capacity += ram.capacity(); result.ram_expert_payload += ram.size();
+                }
+                result.expert_payload_reads += l.experts.payload_reads;
+                result.expert_payload_bytes_read += l.experts.payload_bytes_read;
+                add(out.qsa_kv, l.kv_k); add(out.qsa_kv, l.kv_v);
+                add(out.qsa_index, l.pooled); add(out.qsa_index, l.tail);
+                add(out.gdn_state, l.recurrent); add(out.gdn_state, l.history);
+                add(out.workspace, l.stage_recurrent); add(out.workspace, l.stage_history);
+                if ((l.index + 1) % 4) ++out.gdn_layers; else ++out.qsa_layers;
+            }
+            if (id == 0) {
+                weight(ple_key); weight(ple_value);
+                for (const auto* b : {&ple_key_norm, &ple_query_norm, &ple_conv_norm, &ple_conv}) add(out.weights, *b);
+                add(out.ple_state, ple_history); add(out.workspace, ple_stage_history);
+            } else { hc(*head_hc); weight(head); }
+            if (out.owned_bytes != Buffer::live_bytes[id] || out.owned_buffers != Buffer::live_buffers[id])
+                throw std::runtime_error("Session allocation ledger omitted a live Buffer");
+            out.owned_peak_bytes = Buffer::peak_bytes[id];
+            hip(hipSetDevice(id)); hip(hipStreamSynchronize(d.stream));
+            std::size_t free = 0, total = 0; hip(hipMemGetInfo(&free, &total));
+            out.total_vram = total; out.free_vram = free;
+        }
+        result.ownership_verified = true;
+        return result;
+    }
     void capture(Device& d, const std::string& name, const float* x, int count, int layer = -1) {
         if (!trace_metadata.is_open()) return;
         std::vector<float> values(static_cast<std::size_t>(count));
@@ -579,5 +661,6 @@ Session::~Session() = default;
 std::span<const float> Session::step(std::int32_t token) { return impl_->step(token); }
 void Session::reset() { impl_->reset(); }
 SessionStats Session::stats() const { return impl_->statistics; }
+SessionMemory Session::memory() const { return impl_->memory(); }
 
 }

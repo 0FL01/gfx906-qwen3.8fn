@@ -515,3 +515,32 @@ records. The initial accidental `src/results.jsonl` record was validated against
 the canonical append, then removed; no historical measurement was replaced.
 R3b is closed; the per-GPU allocation/category ledger remains a separate R3
 acceptance check before grouped prefill and hybrid scheduling.
+## R3c: capacity/owner memory qualification
+
+`core-memory MODEL.gguf` constructs one trace-free Session with capacity131072/112 slots,
+checks both GPU allocation categories against independent live-Buffer RAII totals,
+then consumes `[248044,100]`, resets and bitwise replays them. It checks steady
+allocations/payload-read counters, at least 1 GiB free per GPU, current-device/stat/logit
+preservation and recovery of all owned bytes after destruction without device reset.
+
+```sh
+docker run --rm --name core-memory --device /dev/kfd --device /dev/dri \
+  --group-add video --ipc host --security-opt seccomp=unconfined \
+  --entrypoint /core/build/core-memory \
+  -v /home/radneon/gfx906-core:/core -v /home/radneon/models-nvme:/models:ro \
+  llama.cpp-gfx906:cmake-4.4.3 /models/qwen38-keep1-Q4_0.gguf \
+  > /home/radneon/gfx906-core/runs/NEW-memory.jsonl
+python3 -B /home/radneon/gfx906-core/src/tools/record_memory.py \
+  --raw /home/radneon/gfx906-core/runs/NEW-memory.jsonl \
+  --results /home/radneon/gfx906-core/results.jsonl
+```
+Use a fresh raw-log name and check both exit statuses. The verified full build runs
+22 CTest gates; collector tests31 and the actual eight-row fixture pass.
+
+`Session::memory()` synchronizes both streams outside the hot path. Categories cover
+every owned GPU Buffer; total/free VRAM also sees HIP/rocBLAS private allocations.
+Host capacities cover reported payload buffers, not full RAM; peak RSS is observed
+separately. Expert read counts are logical payload loads, not a physical-SSD syscall
+trace. This fixture qualifies capacity and two consumed tokens per pass, **not occupied
+128K history, MTP workspace, prefill or inference speed**. Full measurements/provenance
+remain in the single `results.jsonl` and raw log.
