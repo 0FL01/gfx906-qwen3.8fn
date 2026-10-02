@@ -19,9 +19,9 @@
 // ggml/src/ggml-cuda/fattn.cu::fattn_dec_chunk<256,12> / fattn_dec_combine<256>.
 // Entire related gather/dispatch/chunk/merge section, lines 744..1154, read from
 // runs/donors/furnace-fattn.cu before port. Retain: 256 threads/four wave64,
-// lane=key/wave=quarter-dim scores shared across 12 GQA heads, float4 Q/weights,
-// FP32 chunk-local max/sum/unnormalized output, 16 V loads in flight per dim,
-// then numerically stable split-K merge. WRITE OURS: direct selected-ID/count
+// lane=key, LDS float4 Q reuse across 12 GQA heads, FP32 chunk-local
+// max/sum/unnormalized output, 16 V loads in flight per dim, then numerically
+// stable split-K merge. WRITE OURS: direct selected-ID/count
 // frontend, canonical unchanged Q4_0 cache, bounded selected-only RNE gather,
 // all-input preflight, borrowed ranges, sticky errors, conditional publication.
 // Changes: one query Q24/KV2/D256 only; 64 keys and <=33 chunks; no masks,
@@ -29,12 +29,21 @@
 // allocations or synchronization. Packed half operands are loaded as their
 // declared uint16 type (no alignment/type-punning assumptions on gather buffers).
 // PORT max wave64 shuffle fallback from mx common.cuh::warp_reduce_max;
-// reductions use ascending XOR distances, normal expf and contraction OFF.
+// max/merge reductions use ascending XOR distances, normal expf and contraction OFF.
 // Checked reinstinct 0b79e326351d90d4554a1c18df92da5d0ab692e8,
 // kernels/attn_partial_q8.cpp / attn_merge.cpp: KEEP split-K algebra reference;
 // do NOT port int8 Q/KV quantization or fast __expf (different precision/ABI).
 // Frozen parity gate belongs to the fixture: common-gather output error
 // <=2e-4 + 2e-4*abs(reference); no tolerance is encoded/relaxed here.
+// Disposition: ADAPT arithmetic-control candidate; qualification pending real
+// HIP build, exact-same-input attention witness and R2d core-qsa before Session;
+// A/B timing only if accepted. Ascending grouping is intentional: each wave
+// owns three heads and completes each D256 dot before applying 0.0625f; chunk
+// denominator and weighted-V additions follow selected-member order, with
+// separately rounded FP32 products/additions. src/attention.cpp normalizes AFTER
+// the unnormalized weighted-V sum, not each probability before its V product.
+// Keep that partial-output convention for every count and the stable split-K
+// merge; a single chunk reduces to numerator * (1 / ascending denominator).
 //
 // Copyright (c) 2023-2026 The ggml authors
 //
@@ -123,12 +132,17 @@ __device__ __forceinline__ float max64(float value) {
     return value;
 }
 
-// No Q4/cache load here. This kernel completes validation of ALL selected IDs
-// and ALL Q operands before the next stream-ordered kernel touches cache rows.
+// No Q4/cache load here. Complete validation before any cache row is touched.
+// ADAPT mx argsort.cu's bounded LDS bitonic network: chronological selected-ID
+// order reproduces masked attention's cache traversal without changing the
+// selected multiset, its ranked public IDs/counts, or repeated-ID semantics.
+// Reuse the first 4096 words of partial-output scratch only until gather ends;
+// the later partial-output kernel overwrites them in stream order.
 __global__ __launch_bounds__(threads)
 void validate_inputs(const float* query, const std::int32_t* ids, const int* counts,
-                     int visible, int* error) {
+                     int visible, std::int32_t* ordered_ids, int* error) {
     __shared__ int active;
+    __shared__ std::int32_t ordered[4096];
     if (threadIdx.x == 0) active = ready(counts, visible, error);
     __syncthreads();
     if (!active) return;
@@ -139,6 +153,30 @@ void validate_inputs(const float* query, const std::int32_t* ids, const int* cou
     for (int i = threadIdx.x; i < static_cast<int>(attention_query_elements); i += threads)
         if (!isfinite(query[i])) flags |= attention_error_invalid;
     report(flags, error);
+    __syncthreads();
+    if (threadIdx.x == 0) active = __atomic_load_n(error, __ATOMIC_RELAXED) == 0;
+    __syncthreads();
+    if (!active) return;
+    int width = 1;
+    while (width < n) width *= 2;
+    for (int i = threadIdx.x; i < width; i += threads)
+        ordered[i] = i < n ? ids[i] : INT32_MAX;
+    __syncthreads();
+    for (int span = 2; span <= width; span *= 2) {
+        for (int stride = span / 2; stride > 0; stride /= 2) {
+            for (int i = threadIdx.x; i < width; i += threads) {
+                const int other = i ^ stride;
+                if (i < other) {
+                    const auto a = ordered[i], b = ordered[other];
+                    if (((i & span) == 0 && a > b) || ((i & span) != 0 && a < b)) {
+                        ordered[i] = b; ordered[other] = a;
+                    }
+                }
+            }
+            __syncthreads();
+        }
+    }
+    for (int i = threadIdx.x; i < n; i += threads) ordered_ids[i] = ordered[i];
 }
 
 // Check bits, not half arithmetic. A late invalid V scale prevents ALL scale
@@ -202,10 +240,10 @@ void gather_selected(const Q4_0* keys, const Q4_0* values, const std::int32_t* i
 __global__ __launch_bounds__(threads)
 void fattn_dec_chunk(const float* query, const int* counts, int visible,
                      AttentionQ4DeviceWorkspace w) {
-    constexpr int DW = D / 4;
+    constexpr int H = G / 4;
     __shared__ float4 qs[G][D / 4];
-    __shared__ float sp[4][G][C];
     __shared__ float ps[G][C];
+    __shared__ float maxima[G];
     __shared__ int cells[C];
     __shared__ int active;
     if (threadIdx.x == 0) active = ready(counts, visible, w.error);
@@ -214,13 +252,12 @@ void fattn_dec_chunk(const float* query, const int* counts, int visible,
     const int n = counts[0];
     const int chunk = blockIdx.x, g = blockIdx.y;
     if (chunk >= (n + C - 1) / C) return;
+    const int chunk_count = n - chunk * C < C ? n - chunk * C : C;
     const int tid = threadIdx.x, lane = tid % 64, wave = tid / 64;
     int flags = 0;
     for (int i = tid; i < G * D / 4; i += threads) {
         const int h = i / (D / 4), d4 = i % (D / 4);
-        const float4 q = reinterpret_cast<const float4*>(query + (g * G + h) * D)[d4];
-        qs[h][d4] = make_float4(q.x * attention_query_coefficient, q.y * attention_query_coefficient,
-                               q.z * attention_query_coefficient, q.w * attention_query_coefficient);
+        qs[h][d4] = reinterpret_cast<const float4*>(query + (g * G + h) * D)[d4];
     }
     if (tid < C) {
         const int j = chunk * C + tid;
@@ -228,16 +265,17 @@ void fattn_dec_chunk(const float* query, const int* counts, int visible,
     }
     __syncthreads();
 
-    // Lane=key, wave=quarter of D. Eight K components in flight, reused across
-    // all 12 Q heads. Grouped eight-term addition retains donor arithmetic.
+    // Lane=key, each wave owns h=wave+4*i for i=0..2. Eight K components in
+    // flight are reused across those three heads, but EVERY product is added to
+    // the full dot separately in ascending d order; no eight-term/quarter tree.
     {
         const int cell = cells[lane];
-        float s[G];
+        float s[H];
 #pragma unroll
-        for (int h = 0; h < G; ++h) s[h] = 0.0f;
-        const auto* kr = w.gathered_keys + static_cast<std::size_t>(cell >= 0 ? cell : 0) * row_values + g * D + wave * DW;
+        for (int h = 0; h < H; ++h) s[h] = 0.0f;
+        const auto* kr = w.gathered_keys + static_cast<std::size_t>(cell >= 0 ? cell : 0) * row_values + g * D;
 #pragma unroll
-        for (int c = 0; c < DW / 8; ++c) {
+        for (int c = 0; c < D / 8; ++c) {
             const float k0 = cell >= 0 ? half_value(kr[8 * c + 0]) : 0.0f;
             const float k1 = cell >= 0 ? half_value(kr[8 * c + 1]) : 0.0f;
             const float k2 = cell >= 0 ? half_value(kr[8 * c + 2]) : 0.0f;
@@ -247,36 +285,49 @@ void fattn_dec_chunk(const float* query, const int* counts, int visible,
             const float k6 = cell >= 0 ? half_value(kr[8 * c + 6]) : 0.0f;
             const float k7 = cell >= 0 ? half_value(kr[8 * c + 7]) : 0.0f;
 #pragma unroll
-            for (int h = 0; h < G; ++h) {
-                const float4 qa = qs[h][wave * (DW / 4) + 2 * c];
-                const float4 qb = qs[h][wave * (DW / 4) + 2 * c + 1];
-                const float dot8 = qa.x*k0 + qa.y*k1 + qa.z*k2 + qa.w*k3 + qb.x*k4 + qb.y*k5 + qb.z*k6 + qb.w*k7;
-                s[h] = checked(s[h] + checked(dot8, flags), flags);
+            for (int h = 0; h < H; ++h) {
+                const float4 qa = qs[wave + 4 * h][2 * c];
+                const float4 qb = qs[wave + 4 * h][2 * c + 1];
+                s[h] = checked(s[h] + checked(qa.x * k0, flags), flags);
+                s[h] = checked(s[h] + checked(qa.y * k1, flags), flags);
+                s[h] = checked(s[h] + checked(qa.z * k2, flags), flags);
+                s[h] = checked(s[h] + checked(qa.w * k3, flags), flags);
+                s[h] = checked(s[h] + checked(qb.x * k4, flags), flags);
+                s[h] = checked(s[h] + checked(qb.y * k5, flags), flags);
+                s[h] = checked(s[h] + checked(qb.z * k6, flags), flags);
+                s[h] = checked(s[h] + checked(qb.w * k7, flags), flags);
             }
         }
 #pragma unroll
-        for (int h = 0; h < G; ++h) sp[wave][h][lane] = s[h];
+        for (int i = 0; i < H; ++i) {
+            const int h = wave + 4 * i;
+            const float score = cell >= 0 ? checked(s[i] * attention_query_coefficient, flags) : -INFINITY;
+            const float m = max64(score);
+            // Accuracy experiment: round the transcendental result back to FP32.
+            // One-ULP output differences remain on the same-input witness;
+            // widened evaluation is explicit, not an unchanged-precision speedup.
+            const float difference = cell >= 0 ? checked(score - m, flags) : 0.0f;
+            ps[h][lane] = cell >= 0 ? checked(static_cast<float>(exp(static_cast<double>(difference))), flags) : 0.0f;
+            if (lane == 0) maxima[h] = m;
+        }
     }
     __syncthreads();
 
-    // Chunk-local softmax; each wave handles three of the twelve heads.
-    for (int h = wave; h < G; h += 4) {
-        const int cell = cells[lane];
-        const float v = cell >= 0 ? checked((sp[0][h][lane] + sp[1][h][lane]) +
-                                           (sp[2][h][lane] + sp[3][h][lane]), flags) : -INFINITY;
-        const float m = max64(v);
-        const float p = cell >= 0 ? checked(expf(checked(v - m, flags)), flags) : 0.0f;
-        const float l = sum64(p);
-        ps[h][lane] = p;
-        if (lane == 0) w.partial_max_sum[(chunk * attention_kv_heads + g) * G + h] = make_float2(m, l);
+    // LDS weights are complete before leaders sum ONLY actual members, in
+    // ascending selected-position order. Keep exp weights unnormalized, matching
+    // the CPU numerator-then-inverse equations and the existing split-K ABI.
+    if (lane == 0) for (int h = wave; h < G; h += 4) {
+        float l = 0.0f;
+        for (int j = 0; j < chunk_count; ++j) l = checked(l + ps[h][j], flags);
+        if (!(l > 0.0f)) flags |= attention_error_arithmetic;
+        w.partial_max_sum[(chunk * attention_kv_heads + g) * G + h] = make_float2(maxima[h], l);
     }
-    __syncthreads();
 
     // Thread=dim, sixteen V loads in flight, all twelve heads share those loads.
     float o[G];
 #pragma unroll
     for (int h = 0; h < G; ++h) o[h] = 0.0f;
-    for (int j0 = 0; j0 < C; j0 += 16) {
+    for (int j0 = 0; j0 < chunk_count; j0 += 16) {
         float v[16];
 #pragma unroll
         for (int jj = 0; jj < 16; ++jj) {
@@ -286,12 +337,9 @@ void fattn_dec_chunk(const float* query, const int* counts, int visible,
 #pragma unroll
         for (int h = 0; h < G; ++h) {
 #pragma unroll
-            for (int q4 = 0; q4 < 4; ++q4) {
-                const int j = j0 + 4 * q4;
-                const float4 weight = make_float4(ps[h][j], ps[h][j + 1], ps[h][j + 2], ps[h][j + 3]);
-                const float term = weight.x*v[4*q4] + weight.y*v[4*q4 + 1] + weight.z*v[4*q4 + 2] + weight.w*v[4*q4 + 3];
-                o[h] = checked(o[h] + checked(term, flags), flags);
-            }
+            for (int jj = 0; jj < 16; ++jj)
+                if (j0 + jj < chunk_count)
+                    o[h] = checked(o[h] + checked(ps[h][j0 + jj] * v[jj], flags), flags);
         }
     }
 #pragma unroll
@@ -364,11 +412,12 @@ hipError_t launch_attention_q4(const float* query, const Q4_0* keys, const Q4_0*
             range(w.partial_output, attention_partial_elements, true), range(w.partial_max_sum, attention_partial_ml_elements, true),
             range(w.staged_output, attention_query_elements, true), range(w.error, 1, true)}))
         return hipErrorInvalidValue;
-    validate_inputs<<<1, threads, 0, stream>>>(query, ids, counts, visible, w.error);
+    auto* ordered_ids = reinterpret_cast<std::int32_t*>(w.partial_output);
+    validate_inputs<<<1, threads, 0, stream>>>(query, ids, counts, visible, ordered_ids, w.error);
     auto status = hipGetLastError(); if (status != hipSuccess) return status;
     validate_scales<<<1, threads, 0, stream>>>(keys, values, ids, counts, visible, w.error);
     status = hipGetLastError(); if (status != hipSuccess) return status;
-    gather_selected<<<(attention_max_selected + 3) / 4, threads, 0, stream>>>(keys, values, ids, counts, visible, w);
+    gather_selected<<<(attention_max_selected + 3) / 4, threads, 0, stream>>>(keys, values, ordered_ids, counts, visible, w);
     status = hipGetLastError(); if (status != hipSuccess) return status;
     fattn_dec_chunk<<<dim3(attention_max_chunks, attention_kv_heads), threads, 0, stream>>>(query, counts, visible, w);
     status = hipGetLastError(); if (status != hipSuccess) return status;

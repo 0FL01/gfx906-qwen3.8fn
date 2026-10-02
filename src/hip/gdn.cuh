@@ -62,7 +62,8 @@ struct GdnDeviceWorkspace {
 // External recurrent[(h*128+v)*128+k] has K contiguous. History[feature*3+age]
 // is oldest -> newest RAW projection, not activated/convolved values.
 // Convolution uses SiLU; output is RMSNorm(epsilon supplied) * sigmoid(z).
-// Q/K L2 epsilon is independently fixed to 1e-6; normalized Q includes 1/sqrt(128).
+// Q/K L2 epsilon is independently fixed to 1e-6; private normalized Q is
+// unscaled, with 1/sqrt(128) applied after the completed output dot.
 //
 // Chunk-atomic numeric failure: only a final error==0 kernel publishes active
 // recurrent/history and caller output. This is stronger than CPU per-token
@@ -73,5 +74,13 @@ struct GdnDeviceWorkspace {
 void launch_gdn(GdnDeviceParameters parameters, GdnDeviceInput input, int tokens,
                 float* active_recurrent, float* active_history, float* output,
                 GdnDeviceWorkspace workspace, hipStream_t stream);
+
+// Diagnostic only: recompute the first token's controls with the SAME private
+// scalar helper, not by reading recurrence registers or emulating on the CPU.
+// Uses only alpha/beta and dt_bias/ssm_a (48 floats each). Output capacity144:
+// [log_decay48][sigmoid_beta48][exp_log_decay48]. No state mutation/alloc/sync.
+// Same sticky error bits, borrowed stream/lifetime and range/alias checks.
+void launch_gdn_control_witness(GdnDeviceParameters parameters, GdnDeviceInput input,
+                                float* output, int* error, hipStream_t stream);
 
 }

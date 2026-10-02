@@ -1,8 +1,8 @@
 # Qwen3.8-Flash-Next core for 2×gfx906
 
-Standalone C++20/HIP core under implementation. The model is **not yet runnable**
-in this core; `core-probe` is R0 hardware/build and `core-expert` is R1 execution
-of one real routed expert, not the full network.
+Standalone C++20/HIP core under implementation. `core-session` now executes the
+own 48-layer model with Q4_0 K/V on both gfx906 GPUs. The 32-token teacher-forced
+logits gate and final build/reset/generation pass. Prefill/MTP/serving remain in progress.
 Scope and acceptance are in [PLAN.md](PLAN.md); current evidence in [STATE.md](STATE.md).
 
 ## Remote build and R0 probe
@@ -372,8 +372,8 @@ Remote CTest18/18 and local common-Q8 ASan/UBSan pass. Measurements are means of
 20 individually completed resident HIP-event intervals with each result validated;
 quantization/projections where absent, transfers, resets, references and validation
 are excluded. This is component qualification, **not** a full projected HC/PLE
-block, A/B speedup or request throughput. F32/BF16 projection and the 48-layer Session
-remain next. Numerical evidence/provenance live in the single `results.jsonl`.
+block, A/B speedup or request throughput. Subsequent projection and Session
+qualification are described below. Numerical evidence/provenance live in the single `results.jsonl`.
 ## R3a: unchanged dense projection and full actual LM head
 
 ```sh
@@ -416,5 +416,102 @@ Both GPU gates were frozen before execution: dense `2e-4+2e-4*abs(ref)`, head
 20 repetitions validated; upload, quantization, reset, CPU oracle and readback
 are outside the resident linear measurement. No A/B or inference speed claim.
 Compiled provenance is ce05879/dirty1, preserved in results.jsonl; CTest19/19
-and 37 recorder tests passed. The next slice is direct 48-layer Session with
-teacher-forced intermediate/logits comparison, not another component milestone.
+and 37 recorder tests passed. Direct 48-layer Session evidence follows.
+
+## R3b: verified own 48-layer Session
+
+`src/session.hpp` exposes `Session::step`, `reset` and `stats`; `src/session_main.cpp`
+provides the token-ID CLI. Its direct graph preserves widened 4×2560 residuals,
+zero-indexed PLE layer1, 36 GDN/12 QSA layers, softmax over all 512 experts with
+top10 routing, all routed contributions plus the shared expert, route weights
+after down projection, and root HC followed by the full 248320-row Q6_K head.
+There are no extra ordinary attention/FFN/final norms. Canonical experts stay in
+RAM; each layer has 112 immutable-weight GPU slots with same-stream reader,
+upload and reuse ordering. The static 24/24 split passes the full 40 KiB residual
+through pinned host memory. Q4_0 K/V, FP32 pooled index with raw-Q4 roundtrip,
+FP32 GDN state and PLE hash/convolution history persist across steps. The runtime
+links own HIP/static libraries and rocBLAS; `llama_decode` is only in separate
+`tools/oracle.cpp`.
+
+Verified teacher IDs `[248044, 100, ..., 130]`: **all 7,946,240 finite logit pairs
+have zero numerical error**, with 32/32 argmax agreement. Required intermediates
+also pass unchanged gates: logits `0.02 + 0.002*abs(ref)`, intermediates
+`0.002 + 0.002*abs(ref)`, and exact `hc_init`. Remote artifacts under
+`/home/radneon/gfx906-core/runs/` are `r3-session32-attention-order.jsonl`, trace
+directory `r3-session32-attention-order`, `r3-session32-attention-order-logits.f32.bin`
+and report `r3-compare32-attention-order.json`. Independent oracle
+`r3-oracle32-hf-a` uses source/image-attested production
+`dcd685463d597d31f5ca759d32c94592a2740fa4` and HF reference
+`a005fc82babfe8871d87746decad2dbee100a125`, with opt-in additive GDN L2 and
+FP32 gathered-QSA diagnostic corrections. This proves parity with that declared
+oracle, not bitwise HF, unchanged production math or baseline performance;
+the default production oracle remains unchanged.
+
+The numerical binaries were compiled as `e9f1dfe57cf8fdc0abd9ba10ab91cfbe01d9e0db`,
+dirty1; a later commit must not relabel those artifacts. Canonical attention
+ordering and widened internal exponent evaluation are explicit accuracy changes;
+the attention A/B/A was about 2× slower than the old topology. MMVQ/MMVF A/B/A
+results qualify components only. This is ordered N=1 decode, before grouped
+prefill, CPU miss-worker overlap, MTP2, user sampling, HTTP and long-context
+qualification. `--generate 32 --ignore-eos` is greedy diagnosis: count actual
+emitted tokens, and leave the final emitted token pending. The primary sampling
+series remains temperature1.0/top-p0.95/top-k20.
+
+Reproduction on the GPU host, using fresh names in the existing `runs/` parent
+(`/core` is the container mount, not controller execution):
+
+```sh
+set -C  # Refuse overwriting redirected logs; trace/logits paths must also be fresh.
+docker run --rm --name core-session-teacher --device /dev/kfd --device /dev/dri \
+  --group-add video --ipc host --security-opt seccomp=unconfined \
+  --entrypoint /core/build/core-session \
+  -v /home/radneon/gfx906-core:/core -v /home/radneon/models-nvme:/models:ro \
+  llama.cpp-gfx906:cmake-4.4.3 \
+  --trace /core/runs/r3-session-repro32 \
+  --logits /core/runs/r3-session-repro32-logits.f32.bin \
+  /models/qwen38-keep1-Q4_0.gguf 248044 $(seq 100 130) \
+  > /home/radneon/gfx906-core/runs/r3-session-repro32.jsonl \
+  2> /home/radneon/gfx906-core/runs/r3-session-repro32.err
+python3 -B /home/radneon/gfx906-core/src/tools/compare_session.py \
+  --session-log /home/radneon/gfx906-core/runs/r3-session-repro32.jsonl \
+  --session-logits /home/radneon/gfx906-core/runs/r3-session-repro32-logits.f32.bin \
+  --session-trace /home/radneon/gfx906-core/runs/r3-session-repro32 \
+  --oracle-dir /home/radneon/gfx906-core/runs/r3-oracle32-hf-a \
+  --output /home/radneon/gfx906-core/runs/r3-compare-repro32.json
+docker run --rm --name core-session-reset --device /dev/kfd --device /dev/dri \
+  --group-add video --ipc host --security-opt seccomp=unconfined \
+  --entrypoint /core/build/core-session-test \
+  -v /home/radneon/gfx906-core:/core -v /home/radneon/models-nvme:/models:ro \
+  llama.cpp-gfx906:cmake-4.4.3 /models/qwen38-keep1-Q4_0.gguf \
+  > /home/radneon/gfx906-core/runs/r3-session-reset-repro.jsonl \
+  2> /home/radneon/gfx906-core/runs/r3-session-reset-repro.err
+docker run --rm --name core-session-generate --device /dev/kfd --device /dev/dri \
+  --group-add video --ipc host --security-opt seccomp=unconfined \
+  --entrypoint /core/build/core-session \
+  -v /home/radneon/gfx906-core:/core -v /home/radneon/models-nvme:/models:ro \
+  llama.cpp-gfx906:cmake-4.4.3 --generate 32 --ignore-eos \
+  /models/qwen38-keep1-Q4_0.gguf 248044 \
+  > /home/radneon/gfx906-core/runs/r3-generation-repro.jsonl \
+  2> /home/radneon/gfx906-core/runs/r3-generation-repro.err
+```
+
+Check each exit status before the next command. `core-session-test` exercises
+eight teacher steps, capacity4/slots1, invalid IDs/capacity rejection and bitwise
+reset replay. Final closure job `1790961285745-474` exited0: strict build and
+CTest21/21, comparison31 and recorder24 cases, final reset and 32 actual greedy
+output tokens passed. Temporary fixtures respect TMPDIR; CTest uses its existing
+build directory. Earlier failed logs remain preserved.
+
+Generation completed in 2985.195379 ms with model load 69364.627872 ms recorded
+separately; tracing was off, one input was consumed and the final emitted token
+remained pending. This short greedy full-request observation is not steady TG,
+prefill, user-sampling qualification or an A/B speedup. Raw logs are
+`r3-session-closure-portable-build.log`, `r3-session-reset-final.jsonl` and
+`r3-generation-final.jsonl` under the remote runs directory.
+`tools/record_session.py --comparison ... --generation ... --reset ...
+--results /home/radneon/gfx906-core/results.jsonl` validates before append.
+The canonical journal contains one R3b record after the unchanged ten previous
+records. The initial accidental `src/results.jsonl` record was validated against
+the canonical append, then removed; no historical measurement was replaced.
+R3b is closed; the per-GPU allocation/category ledger remains a separate R3
+acceptance check before grouped prefill and hybrid scheduling.

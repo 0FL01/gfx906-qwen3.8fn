@@ -2,53 +2,49 @@
 
 ## Статус
 
-R0, R1, R2a–R2e и R3a закрыты: primitives, dense projections/LM head (2026-10-02). R2–R8 целиком ещё не закрыты; модель новым core ещё не исполняется. Скорости PLAN.md остаются целями.
+R0, R1, R2a–R2e, R3a и R3b закрыты (2026-10-02). Own48-layer Session: teacher32 logits/intermediates, final reset/replay и greedy32 прошли. R3 ещё требует per-GPU/category allocation ledger; R4–R8 и целевые скорости не закрыты.
 
 ## Задача
 
-R3b: прямой Session/48 layers с embeddings/LM head, layer split/cache и token-ID CLI; intermediates/teacher-forced logits. Все GPU projection/pointwise helpers integrated/qualified, не полный forward. No extra attention/FFN/final norm; Q/gate interleaved по512/head; MoE weights после down. Donor-first — PLAN.md/RECON.md §16. Основной KV target/MTP — Q4_0, expert layout canonical.
+Commit/push verified R3b, затем R3 per-GPU ownership/allocation ledger и capacity131072 headroom; далее R4 grouped PP/R5 hybrid misses. Full job474 exit0, CTest21/21 (comparison31/recorder24), reset8steps/invalid-ID/capacity/replay и greedy32 passed.
+Raw runs/: `r3-session-closure-portable-build.log`, `r3-session-reset-final.jsonl/.err`, `r3-generation-final.jsonl/.err`. Canonical results содержит11 records, прежние10 неизменны. Missing remote fixture/controller TMP path исправлены без gate changes; случайный src/results record проверен против canonical append и удалён, failed logs сохранены.
 
 ## Соединение и рабочие пути
 
-Удалённое подключение: MCP `mi50-llama-remote`, хост `amude`, пользователь `radneon`; связь проверена 2026-10-01.
-Controller repository: текущая рабочая директория OpenCode.
+MCP `mi50-llama-remote`, хост `amude`, пользователь `radneon`. Controller repository — текущий Git checkout; сборка/GPU/final CPU measurements только remote. При обрыве проверить существующий процесс/лог после восстановления связи; не запускать второй экземпляр вслепую.
 Основная модель: `/home/radneon/models-nvme/qwen38-keep1-Q4_0.gguf` (75 399 121 792 байт), источник по указанию пользователя: https://huggingface.co/Cyronius/Qwen3.8-Flash-Next-131B-A6B-GGUF.
 MTP sidecar: `/home/radneon/models-nvme/mtp-Qwen3.8-Flash-Next-shared-Q8_0.gguf` (2 786 568 256 байт); источник загрузки не установлен.
 Baseline image: `llama.cpp-gfx906:pp-stream-dcd685463d`; source: `/home/radneon/src/worktrees/qwen38-pp-trace-75`, revision `dcd685463d597d31f5ca759d32c94592a2740fa4`.
-Baseline config: `/home/radneon/llama/docker-compose.yml`, `/home/radneon/llama/models.ini` (не менялись). Remote mirror/build/runs: `/home/radneon/gfx906-core/{src,build,runs}`, один results.jsonl в корне. Build image `llama.cpp-gfx906:cmake-4.4.3`: CMake 4.4.3, Clang 23, HIP 7.14.60850, rocBLAS 5.5; оба GEMM работают на gfx906. Runtime image не содержит CMake.
+Baseline config: `/home/radneon/llama/docker-compose.yml`, `/home/radneon/llama/models.ini` (не менялись); наш baseline-контейнер остановлен.
+Remote mirror/build/runs: `/home/radneon/gfx906-core/{src,build,runs}`, один results.jsonl в корне. Build image `llama.cpp-gfx906:cmake-4.4.3`: CMake4.4.3/Clang23/HIP7.14.60850/rocBLAS5.5, gfx906 GEMM проверены; runtime image не содержит CMake.
+Actual hardware: 16 physical/32 logical allowed CPU cores, один NUMA, AVX2/FMA/F16C; обе gfx906 wave64/CU60, VRAM по17 163 091 968 bytes. Не повторять RECON без изменения машины/стека.
 
 ## Рабочие команды
 
 После source sync: `docker run --rm --name core-build --entrypoint /bin/sh -v /home/radneon/gfx906-core:/core -e CORE_REVISION=<синхронизированный-commit> -e CORE_DIRTY=OFF llama.cpp-gfx906:cmake-4.4.3 /core/src/tools/build.sh`.
-Probe: `docker run --rm --name core-probe --device /dev/kfd --device /dev/dri --group-add video --ipc host --security-opt seccomp=unconfined --entrypoint /core/build/core-probe -v /home/radneon/gfx906-core:/core llama.cpp-gfx906:cmake-4.4.3`.
-Baseline: `sh /home/radneon/gfx906-core/src/tools/baseline-server.sh`, затем `python3 -B /home/radneon/gfx906-core/src/tools/baseline.py --runs-dir /home/radneon/gfx906-core/runs --results /home/radneon/gfx906-core/results.jsonl --revision dcd685463d597d31f5ca759d32c94592a2740fa4`.
-Полные команды/log capture в README.md. Для dirty source задавать CORE_DIRTY=ON. Не совмещать model baseline и probe/тяжёлую сборку. Наш baseline-контейнер сейчас остановлен.
-Expert: как probe, но entrypoint `/core/build/core-expert`, добавить `-v /home/radneon/models-nvme:/models:ro` и аргумент `/models/qwen38-keep1-Q4_0.gguf`; stdout → runs/r1-expert-final.jsonl. Inventory: core-inspect на обоих файлах без GPU devices. README.md содержит полные команды.
-KV: как probe, entrypoint `/core/build/core-kv`; stdout → runs/r2-kv.jsonl. qsa-test без GPU → runs/r2-qsa-boundaries.jsonl; tools/record_kv.py валидирует/добавляет одну запись. Полные команды в README.md.
-GDN: как expert, entrypoint `/core/build/core-gdn`, target GGUF; stdout → runs/r2-gdn.jsonl, stderr → runs/r2-gdn.err; tools/record_gdn.py --raw ... --results ... . Полная команда в README.md.
-HC/PLE: CPU hc-test/ple-test --model target GGUF → runs/r2-hc-ple.jsonl; tools/record_hc_ple.py --raw ... --results ... . Команда в README.md.
-QSA: как expert, entrypoint `/core/build/core-qsa`; stdout → runs/r2-qsa-gpu.jsonl, stderr → runs/r2-qsa-gpu.err; tools/record_qsa.py --raw ... --results ... . Не использовать имя CPU boundary log.
-Linear/blocks: как expert, entrypoint `/core/build/core-linear` затем `/core/build/core-blocks`; logs runs/r2-linear-final.jsonl и r2-blocks.jsonl; tools/record_helpers.py --linear ... --blocks ... --results ... . Не запускать одновременно; полные команды README.md.
-Dense/head: как expert, entrypoint core-dense затем core-head; logs runs/r3-dense.jsonl/r3-head.jsonl; tools/record_dense.py --dense ... --head ... --results ... . Команды README.md.
+Текущие numerical binaries compiled `e9f1dfe57cf8fdc0abd9ba10ab91cfbe01d9e0db` dirty1; для этого source CORE_DIRTY=ON. Будущий commit не подменяет provenance уже записанных artifacts.
+Session: `docker run --rm --name core-session --device /dev/kfd --device /dev/dri --group-add video --ipc host --security-opt seccomp=unconfined --entrypoint /core/build/core-session -v /home/radneon/gfx906-core:/core -v /home/radneon/models-nvme:/models:ro llama.cpp-gfx906:cmake-4.4.3 --generate 32 --ignore-eos /models/qwen38-keep1-Q4_0.gguf 248044`.
+Teacher32: тот же entrypoint, `--trace /core/runs/NEW --logits /core/runs/NEW-logits.f32.bin /models/qwen38-keep1-Q4_0.gguf 248044 $(seq 100 130)`; parent runs/ должен существовать, trace/logits/log names свежие. Reset: entrypoint core-session-test, только MODEL. Полные build/fixtures/baseline/repro команды в README.md.
+Oracle: `sh tools/build-oracle.sh` против build/oracle-production-libs; teacher reference использует `--all-layers --hf-gdn-l2-control --hf-qsa-f32-control --warm-cache 12 --cache-inserts 10` (diagnostic-only). compare_session.py сохраняет report/exit1 при failed gate; record_session.py --comparison/--generation/--reset/--results валидирует перед append. Одна GPU-нагрузка; final measurement без тяжёлой сборки/tracing.
 
-## Исходный baseline пользователя
+## Последний подтверждённый результат
 
-2×16 GiB gfx906, Q4_0 keep1, layer split, cache112/inserts2, streaming+D2D, batch/ubatch1024, MTP2, q4_0 K/V, capacity131072.
-512 input: PP 123.3 / TG 24.7; 4096 input: PP 220.7 / TG 23.7; 16384 input: PP 209.7 / TG 19.2.
-Замеры сообщены пользователем, не перепроверены этим RECON. 32K/64K/128K в прежнем сообщении были экстраполяцией.
+Teacher32 IDs `[248044,100..130]`: all7 946 240 finite logits numerical error0, argmax32/32; required intermediates проходят unchanged gates `.02+.002|ref|` logits/`.002+.002|ref|` intermediates/hc_init exact. Raw `runs/r3-session32-attention-order.jsonl`, одноимённый trace dir, `r3-session32-attention-order-logits.f32.bin`; report `r3-compare32-attention-order.json`.
+Independent `r3-oracle32-hf-a`: production source/image-attested dcd685463d597d31f5ca759d32c94592a2740fa4, HF a005fc82babfe8871d87746decad2dbee100a125; opt-in additive-GDN-L2/FP32 gathered-QSA corrections. Не bitwise HF/unchanged-math/performance baseline; default production oracle неизменён.
+Final reset8steps/capacity4/slots1/invalidIDs+capacity+bitwise replay passed. Greedy32/trace off: request2985.195379ms, load69364.627872ms отдельно; final token pending. Это short request, не steady TG/PP/sampling/A/B; полные numerics/provenance — results.jsonl/raw logs.
 
-## Последний подтверждённый результат нового движка
+## Контракт и найденное ограничение
 
-R0 hardware: actual 16 physical/32 logical cores, один NUMA, AVX2/FMA/F16C; две wave64/CU60 gfx906 по17 163 091 968 bytes; copies/P2P/events/rocBLAS прошли. R1 target1224/sidecar32/expert прошли; CPU inlined/F16C принят A/B/A, GPU canonical. R2a Q4/Hadamard bytes exact; при2052 CPU source-emulation fork имеет3 extra IDs, не baseline GPU/logits доказательство. R2b GDN state/history/chunk/restore и R2c CPU actual HC/PLE gates прошли; hash baseline bug не найден. Подробные числа/сырые logs — один results.jsonl и README.md, не speed claims полного inference.
-Новая baseline-серия, не оригинальные prompts: 4096+512 PP197.68/TG14.48, HTTP56.102s; sampling1/.95/20, MTP2/Q4 KV, один повтор без reuse. Occupancy/structured acceptance неизвестны; artifacts runs/r0-20261001T154816Z-4sffu3gz.
-R2d: обе GPU прошли 62-row fixture: Q4/tail bytes, pooled/score gates, same-score exact IDs/counts, causal/future/unselected poison, chronological rollback/error/reuse. Pooled max error7.15e-7, scores4.77e-6, attention1.21e-5 (frozen gates2e-4+2e-4|ref|). Resident 128K score~95us/select~112us; attention2048~1.1ms — bottleneck, не ускорение. CPU raw-FP32 synthetic projections/caches, не occupied128K inference. Remote CTest16/16 и local ASan/UBSan прошли. Raw r2-qsa-gpu*, boundaries r2-qsa-boundaries.jsonl; CPU log recovered by exact deterministic replay после filename collision, отмечен в result. Compiled c100866 dirty1, не подменять новым commit.
-R2e: обе GPU прошли 214+20-row common-Q8 linear/HC/PLE fixtures, gates unchanged. Remote CTest18/18/local common-Q8 ASan/UBSan; exact-byte producer/identical-input history и bounded parallel RMS. Это не full projection/inference; raw r2-linear-final/r2-blocks, compiled fa4ce49 dirty1. Ошибки fixture исправлены без изменения gates: read_slice по имени; tiny-scale max в каждом block; formatter переименован из-за std::quoted ADL.
-R3a: dense/head обе GPU прошли, CTest19/19, recorder37. Gates unchanged; full dense output и head sampled oracle/finite/prefix bytes, не all-layer logits. Compiled ce05879 dirty1; raw r3-dense/r3-head. Числа в results.jsonl. SGEMM small shapes ~0.17ms — кандидат для профиля R3/R5, не переключать до full forward.
+Own Session: RAM experts/GPU112 slots на слой, same-stream upload/reader/reuse ordering, static24/24, pinned40KiB handoff, Q4 KV/FP32 index/GDN/PLE persistent. Exact graph без ordinary attention/FFN/final norm; llama_decode только tools/oracle.cpp. Это orderedN1 decode, не grouped PP/CPU-worker overlap/MTP/sampling/HTTP/long-context qualification.
+Canonical ascending attention dot/value + chronological bounded gather и внутренний double-exp→FP32 — явные accuracy changes, selected multiset/repeatedIDs/public rankedIDs unchanged. A/B/A ~2× медленнее old topology, не speedup; MMVQ/MMVF — component qualification. GDN canonical recurrence+direct-logf softplus совпали с actual beta/log-decay/PRE/POST; старые softplus/prediction-FMA probes результата не меняли (RECON.md §10).
+CLI greedy32 diagnostic-only, считать actual generated count; final emitted token остаётся pending. Primary series sampling temperature1.0/top-p0.95/top-k20 ещё впереди.
 
 ## Следующие действия
 
-R3 Session/48 layers и separate baseline oracle. GDN own/HF L2 uses sum+1e-6, mx max(sum,eps²): диагностировать численную разницу отдельно от wiring. QSA block-selection difference отдельно от pure speedup. GDN [V][v][k], h%16, chronological slot n; PLE hash/conv возвращать совместно. RoPE64 split-half парыj/j+32, text pos абсолютный; sections ARRAY INT32. Source excerpts runs/donors; views r1-inventory.log. Worker pool/cold DDR/DMA — R3/R5.
+1. Сверить фактические per-GPU/category allocations и headroom с capacity131072/R3 geometry; сохранить actual owner/steady allocation proof.
+2. R4 route grouping → staged grouped Q4_0/Q4_1 MMQ (mx → furnace → reinstinct, RECON §16), causal chunk parity; затем R5 CPU miss против H2D+GPU и overlap на measured shapes. DS4 MMQ144B/K128 не cast четырёх36B Q8; K640 требует checked tail padding. N3 QSA projected buffer36864 floats/Q8 input960 blocks больше текущих32768/512.
+Не менять frozen gates/epsilon/weights. Index raw128 без H/inverse; GDN [V][v][k], h%16; PLE hash/conv reset вместе; RoPE64 j/j+32/absolute position, sections ARRAY INT32.
 
 ## Не повторять без причины
 
-Не скачивать весь BF16 checkpoint на заполненный SSD. Не менять рабочий ROCm. Не трактовать «MI50 32 GB» в fastfetch как VRAM. Не переносить wave32 assumptions. Не считать QSA fork эквивалентным HF без граничного теста. Router /health не означает loaded model: ждать /models.current.status=loaded и передавать model=current. После неудачной completion не повторять её вслепую. MCP transfer local_root ограничен checkout; временные source excerpts сохранять в runs/, не обходить запрет.
+Не скачивать full BF16 checkpoint на заполненный SSD/не менять рабочий ROCm/не переносить wave32 assumptions. Не считать QSA fork эквивалентным HF без boundary fixture. Router /health не значит loaded model: ждать /models.current.status=loaded, model=current. MCP transfer local_root ограничен checkout; не обходить запрет.

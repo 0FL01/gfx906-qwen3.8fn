@@ -10,17 +10,24 @@
 // ADAPT: mx-llama.cpp, dcd685463d597d31f5ca759d32c94592a2740fa4,
 // ggml/src/ggml-cuda/vecdotq.cuh::vec_dot_q{4_0,4_1,5_0,8_0,6_K}_q8_1,
 // their *_impl helpers, common.cuh::ggml_cuda_dp4a / gfx906 DPP reductions,
-// and quantize.cu::quantize_q8_1. Copyright (c) 2023-2026 The ggml authors;
-// MIT license, complete notice in third_party/mx-LICENSE. Q4 tiles are extracted
-// from this repo's R1-qualified hip/expert.hip (canonical, 2 rows / 3 columns).
+// mmvq.cu::mul_mat_vec_q (670..737), calc_nwarps / calc_rows_per_block /
+// should_use_small_k, and quantize.cu::quantize_q8_1.
+// Copyright (c) 2023-2026 The ggml authors; MIT license, complete notice in
+// third_party/mx-LICENSE. Adapt only canonical primitives, no GGML runtime/types.
 // KEEP: canonical on-disk bytes and our quant.hpp 36-byte raw-sum Q8_1 ABI.
-// ADAPT: multi-column weight register reuse; Q6_K's canonical MMVQ word slices.
+// ADAPT: MMVQ fragments, two cooperating wave64s per row for N=1/2/3,
+// production row tiling/reduction order, multi-column weight register reuse.
 // WRITE OURS: borrowed-buffer API, range validation and numeric error handling.
 // Donor order/decision: mx above; furnace
 // 905021dbad71c5056ef51f9fd45d545403fc989c repack-gcn is a different repacked
 // consumer, not a canonical replacement; reinstinct
 // 0b79e326351d90d4554a1c18df92da5d0ab692e8 matvec multi-N pattern was inspected
 // in R1. Its 40-byte activation ABI / quantized-sum correction are not imported.
+// Modified FP contract: explicit fmaf reproduces the pinned gfx906 MMVQ native
+// contractions (Q4/Q5 inner+acc, Q4_1 inner only, Q8 acc, Q6 pair+acc), while
+// -ffp-contract=off and Q4_1 half-RNE products remain mandatory. Qualification:
+// existing common-Q8 gate 2e-4+2e-5*|ref|, matched-input production MMVQ, then
+// unchanged Session gates (logits .02+.002*|ref|, intermediates .002+.002*|ref|).
 
 #if defined(__FAST_MATH__) || (defined(__FINITE_MATH_ONLY__) && __FINITE_MATH_ONLY__ != 0)
 #error "linear.hip requires strict floating-point arithmetic (no fast-math)"
@@ -117,22 +124,21 @@ __global__ void quantize(const float* input, Q8_1* output, int elements, int* er
     }
 }
 
-// A complete block32, decoded into eight SDOT4 operands once per weight row.
+// Canonical MMVQ vdr=2, not a full block32 integer dot before scaling:
+// Q4/Q5 iqs=0,2 each cover eight low + eight high nibbles (four SDOT4s);
+// Q8 iqs=0,2,4,6 each cover eight contiguous signed codes (two SDOT4s).
 // Integer dots are exact even for caller-supplied activation code -128.
-// Q5 uses vec_dot_q5_0_q8_1_impl with vdr=4; Q8 uses the float scale
-// specialization with vdr=8. Compared with MMVQ wrapper fragments this combines
-// integer dots before scaling, as the qualified Q4 path does, not after scaling.
 struct Tile32 {
-    std::uint32_t codes[8];
+    std::uint32_t codes[4];
     float d, m;
 };
 
 template<TensorType Type>
-__device__ __forceinline__ Tile32 load32(const std::uint8_t* block) {
+__device__ __forceinline__ Tile32 load32(const std::uint8_t* block, int iqs) {
     Tile32 tile{};
     tile.d = from_half(*reinterpret_cast<const std::uint16_t*>(block));
     if constexpr (Type == TensorType::Q8_0) {
-        for (int j = 0; j < 8; ++j) tile.codes[j] = word2(block + 2, j);
+        for (int j = 0; j < 2; ++j) tile.codes[j] = word2(block + 2, iqs + j);
     } else {
         constexpr int offset = Type == TensorType::Q4_0 ? 2 :
                                Type == TensorType::Q4_1 ? 4 : 6;
@@ -140,13 +146,13 @@ __device__ __forceinline__ Tile32 load32(const std::uint8_t* block) {
             tile.m = from_half(*reinterpret_cast<const std::uint16_t*>(block + 2));
         std::uint32_t high = 0;
         if constexpr (Type == TensorType::Q5_0) high = word2(block + 2, 0);
-        for (int j = 0; j < 4; ++j) {
-            const auto packed = word2(block + offset, j);
+        for (int j = 0; j < 2; ++j) {
+            const auto packed = word2(block + offset, iqs + j);
             auto low = packed & 0x0f0f0f0fu;
             auto upper = (packed >> 4) & 0x0f0f0f0fu;
             if constexpr (Type == TensorType::Q5_0) {
                 // ADAPT vec_dot_q5_0_q8_1_impl: qh bit i belongs to element i.
-                const auto h = high >> (4 * j);
+                const auto h = high >> (4 * (iqs + j));
                 low |= (h << 4) & 0x00000010u;
                 low |= (h << 11) & 0x00001000u;
                 low |= (h << 18) & 0x00100000u;
@@ -156,65 +162,90 @@ __device__ __forceinline__ Tile32 load32(const std::uint8_t* block) {
                 upper |= (h << 2) & 0x00100000u;
                 upper |= (h << 9) & 0x10000000u;
             }
-            tile.codes[j] = low;
-            tile.codes[j + 4] = upper;
+            tile.codes[2 * j] = low;
+            tile.codes[2 * j + 1] = upper;
         }
     }
     return tile;
 }
 
 template<TensorType Type>
-__device__ __forceinline__ float dot32(const Tile32& tile, const int* q8,
-                                     float dx, float sx) {
+__device__ __forceinline__ float accumulate32(const Tile32& tile, const int* q8,
+                                             float dx, float sx, float acc) {
     int dot = 0;
-    for (int j = 0; j < 8; ++j)
+    constexpr int words = Type == TensorType::Q8_0 ? 2 : 4;
+    for (int j = 0; j < words; ++j)
         dot = __builtin_amdgcn_sdot4(tile.codes[j], q8[j], dot, false);
     if constexpr (Type == TensorType::Q4_1) {
+        // FAST_FP16_AVAILABLE is true on gfx906: __hmul2 in the donor rounds
+        // both products to half RNE. Products of two finite halves are exact
+        // in FP32 before this conversion. Split m*s equally over two fragments.
         const float dd = from_half(to_half(tile.d * dx));
         const float ms = from_half(to_half(tile.m * sx));
-        return float(dot) * dd + ms;
+        // Native v_pk_mul_f16 -> inner FMA -> separate accumulator v_add_f32.
+        return acc + fmaf(float(dot), dd, ms * 0.5f);
     } else if constexpr (Type == TensorType::Q8_0) {
         // vec_dot_q8_0_q8_1_impl<float>: FP32 product, NOT half-rounded.
-        return (tile.d * dx) * float(dot);
+        return fmaf(tile.d * dx, float(dot), acc);
     } else {
-        constexpr float correction = Type == TensorType::Q4_0 ? 8.0f : 16.0f;
-        return tile.d * (float(dot) * dx - correction * sx);
+        constexpr float correction = Type == TensorType::Q4_0 ? 4.0f : 8.0f;
+        // Raw half s is multiplied by an exact power of two; each fragment
+        // subtracts half the block correction. Both native contractions matter.
+        const float corrected = fmaf(float(dot), dx, -correction * sx);
+        return fmaf(tile.d, corrected, acc);
     }
 }
 
-// Four wave64s, each producing two rows and 1..3 columns. Weights/scales are
-// loaded once and reused across columns, activations reused across both rows.
-template<TensorType Type, int Columns>
-__global__ void matrix32(const std::uint8_t* weights, const Q8_1* input,
-                         float* output, int blocks, int rows) {
+// Production GCN topology: dim3(64,2), both waves cooperate on every row.
+// kbx=tid/(qi/vdr), kqs=vdr*(tid%(qi/vdr)), stride=vdr*128/qi.
+// Merge wave1 into wave0 lane-wise BEFORE ascending-XOR DPP sum64; a sum of
+// separately reduced waves would have a different floating-point order.
+template<TensorType Type, int Columns, int Rows>
+__global__ __launch_bounds__(128, 1)
+void matrix32(const std::uint8_t* weights, const Q8_1* input,
+              float* output, int blocks, int rows) {
     constexpr int bytes = Type == TensorType::Q4_0 ? 18 :
                           Type == TensorType::Q4_1 ? 20 :
                           Type == TensorType::Q5_0 ? 22 : 34;
-    const int lane = threadIdx.x % 64;
-    const int row0 = blockIdx.x * 8 + (threadIdx.x / 64) * 2;
-    float acc[2][Columns]{};
-    for (int k = lane; k < blocks; k += 64) {
-        Tile32 tile[2]{};
-        for (int r = 0; r < 2; ++r) {
+    constexpr int fragments = Type == TensorType::Q8_0 ? 4 : 2;
+    const int lane = threadIdx.x, tid = 64 * threadIdx.y + lane;
+    const int row0 = blockIdx.x * Rows, iqs = 2 * (tid % fragments);
+    float acc[Columns][Rows]{};
+    for (int k = tid / fragments; k < blocks; k += 128 / fragments) {
+        Tile32 tile[Rows]{};
+        for (int r = 0; r < Rows; ++r) {
             if (row0 + r < rows)
                 tile[r] = load32<Type>(weights +
-                        (std::size_t(row0 + r) * blocks + k) * bytes);
+                        (std::size_t(row0 + r) * blocks + k) * bytes, iqs);
         }
         for (int c = 0; c < Columns; ++c) {
             const auto& x = input[std::size_t(c) * blocks + k];
             const float dx = from_half(x.d), sx = from_half(x.s);
             // Q8_1 base alignment is checked as 4, and sizeof(Q8_1) is 36.
             const auto* q8 = reinterpret_cast<const int*>(x.qs);
-            int codes[8];
-            for (int j = 0; j < 8; ++j) codes[j] = q8[j];
-            for (int r = 0; r < 2; ++r)
-                if (row0 + r < rows) acc[r][c] += dot32<Type>(tile[r], codes, dx, sx);
+            int codes[4];
+            for (int j = 0; j < 2; ++j) {
+                if constexpr (Type == TensorType::Q8_0) {
+                    codes[j] = q8[iqs + j];
+                } else {
+                    codes[2 * j] = q8[iqs + j];
+                    codes[2 * j + 1] = q8[iqs + j + 4];
+                }
+            }
+            for (int r = 0; r < Rows; ++r)
+                if (row0 + r < rows)
+                    acc[c][r] = accumulate32<Type>(tile[r], codes, dx, sx, acc[c][r]);
         }
     }
-    // All lanes participate even when blocks<64 or the last tile has odd rows.
-    for (int r = 0; r < 2; ++r) for (int c = 0; c < Columns; ++c) {
-        const float value = sum64(acc[r][c]);
-        if (lane == 0 && row0 + r < rows)
+    __shared__ float partial[Columns][Rows][64];
+    if (threadIdx.y == 1)
+        for (int c = 0; c < Columns; ++c) for (int r = 0; r < Rows; ++r)
+            partial[c][r][lane] = acc[c][r];
+    __syncthreads(); // All 128 threads, including idle fragments / invalid last row.
+    if (threadIdx.y == 1) return;
+    for (int c = 0; c < Columns; ++c) for (int r = 0; r < Rows; ++r) {
+        const float value = sum64(acc[c][r] + partial[c][r][lane]);
+        if (lane == r && row0 + r < rows)
             output[std::size_t(c) * rows + row0 + r] = value;
     }
 }
@@ -248,18 +279,18 @@ __device__ __forceinline__ Tile6 load6(const std::uint8_t* block, int iqs) {
     return tile;
 }
 
-template<int Columns>
-__global__ void matrix6(const std::uint8_t* weights, const Q8_1* input,
-                        float* output, int blocks, int rows) {
-    const int lane = threadIdx.x % 64;
-    const int row0 = blockIdx.x * 8 + (threadIdx.x / 64) * 2;
-    float acc[2][Columns]{};
-    // 32 word slices per block256; one wave covers two weight blocks per pass.
-    for (int work = lane; work < blocks * 32; work += 64) {
-        const int k = work / 32, iqs = work % 32;
+template<int Columns, int Rows>
+__global__ __launch_bounds__(128, 1)
+void matrix6(const std::uint8_t* weights, const Q8_1* input,
+             float* output, int blocks, int rows) {
+    const int lane = threadIdx.x, tid = 64 * threadIdx.y + lane;
+    const int row0 = blockIdx.x * Rows, iqs = tid % 32;
+    float acc[Columns][Rows]{};
+    // qi=32, vdr=1: 32 slices/block256; two waves cover four blocks/pass.
+    for (int k = tid / 32; k < blocks; k += 4) {
         const int q8_offset = 4 * (iqs / 16) + (iqs % 16) / 8;
-        Tile6 tile[2]{};
-        for (int r = 0; r < 2; ++r)
+        Tile6 tile[Rows]{};
+        for (int r = 0; r < Rows; ++r)
             if (row0 + r < rows)
                 tile[r] = load6(weights + (std::size_t(row0 + r) * blocks + k) * 210, iqs);
         for (int c = 0; c < Columns; ++c) {
@@ -269,7 +300,7 @@ __global__ void matrix6(const std::uint8_t* weights, const Q8_1* input,
                 codes[i] = reinterpret_cast<const int*>(x[2 * i].qs)[iqs % 8];
                 dx[i] = from_half(x[2 * i].d);
             }
-            for (int r = 0; r < 2; ++r) {
+            for (int r = 0; r < Rows; ++r) {
                 if (row0 + r >= rows) continue;
                 // Keep vec_dot_q6_K_q8_1_impl_mmvq grouping exactly: scale
                 // multiplies the integer dot BEFORE FP32 d8, then d6 multiplies
@@ -277,40 +308,72 @@ __global__ void matrix6(const std::uint8_t* weights, const Q8_1* input,
                 float sum = 0.0f;
                 for (int i = 0; i < 2; ++i) {
                     const int dot = __builtin_amdgcn_sdot4(tile[r].codes[i], codes[i], 0, false);
-                    sum += dx[i] * float(dot * tile[r].scales[i]);
+                    sum = fmaf(dx[i], float(dot * tile[r].scales[i]), sum);
                 }
-                acc[r][c] += tile[r].d * sum;
+                acc[c][r] = fmaf(tile[r].d, sum, acc[c][r]);
             }
         }
     }
-    for (int r = 0; r < 2; ++r) for (int c = 0; c < Columns; ++c) {
-        const float value = sum64(acc[r][c]);
-        if (lane == 0 && row0 + r < rows)
+    __shared__ float partial[Columns][Rows][64];
+    if (threadIdx.y == 1)
+        for (int c = 0; c < Columns; ++c) for (int r = 0; r < Rows; ++r)
+            partial[c][r][lane] = acc[c][r];
+    __syncthreads();
+    if (threadIdx.y == 1) return;
+    for (int c = 0; c < Columns; ++c) for (int r = 0; r < Rows; ++r) {
+        const float value = sum64(acc[c][r] + partial[c][r][lane]);
+        if (lane == r && row0 + r < rows)
             output[std::size_t(c) * rows + row0 + r] = value;
+    }
+}
+
+template<TensorType Type, int Columns, int Rows>
+void enqueue_rows(QuantizedDeviceMatrix matrix, const Q8_1* input, float* output,
+                  hipStream_t stream) noexcept {
+    const dim3 grid((matrix.output + Rows - 1) / Rows), threads(64, 2);
+    const auto* weights = static_cast<const std::uint8_t*>(matrix.weights);
+    if constexpr (Type == TensorType::Q6_K)
+        matrix6<Columns, Rows><<<grid, threads, 0, stream>>>(weights, input, output, matrix.input / 256, matrix.output);
+    else
+        matrix32<Type, Columns, Rows><<<grid, threads, 0, stream>>>(weights, input, output, matrix.input / 32, matrix.output);
+}
+
+template<TensorType Type, int Columns>
+void enqueue_type(QuantizedDeviceMatrix matrix, const Q8_1* input, float* output,
+                  hipStream_t stream) noexcept {
+    if constexpr (Columns == 1) {
+        // mmvq.cu::should_use_small_k, strict '<', for these five GCN types:
+        // Q4/Q5 K<2048, Q8 K<1024, Q6 K<1024 use two rows/block; else one.
+        constexpr int elements = Type == TensorType::Q6_K ? 256 : 32;
+        constexpr int blocks_per_iter = Type == TensorType::Q6_K ? 4 :
+                                        Type == TensorType::Q8_0 ? 32 : 64;
+        if (matrix.input / elements < blocks_per_iter)
+            enqueue_rows<Type, Columns, 2>(matrix, input, output, stream);
+        else
+            enqueue_rows<Type, Columns, 1>(matrix, input, output, stream);
+    } else {
+        enqueue_rows<Type, Columns, 2>(matrix, input, output, stream);
     }
 }
 
 template<int Columns>
 void enqueue(QuantizedDeviceMatrix matrix, const Q8_1* input, float* output,
              hipStream_t stream) noexcept {
-    const dim3 grid((matrix.output + 7) / 8);
-    const auto* weights = static_cast<const std::uint8_t*>(matrix.weights);
-    const int blocks = matrix.input / 32;
     switch (matrix.type) {
     case TensorType::Q4_0:
-        matrix32<TensorType::Q4_0, Columns><<<grid, 256, 0, stream>>>(weights, input, output, blocks, matrix.output);
+        enqueue_type<TensorType::Q4_0, Columns>(matrix, input, output, stream);
         break;
     case TensorType::Q4_1:
-        matrix32<TensorType::Q4_1, Columns><<<grid, 256, 0, stream>>>(weights, input, output, blocks, matrix.output);
+        enqueue_type<TensorType::Q4_1, Columns>(matrix, input, output, stream);
         break;
     case TensorType::Q5_0:
-        matrix32<TensorType::Q5_0, Columns><<<grid, 256, 0, stream>>>(weights, input, output, blocks, matrix.output);
+        enqueue_type<TensorType::Q5_0, Columns>(matrix, input, output, stream);
         break;
     case TensorType::Q8_0:
-        matrix32<TensorType::Q8_0, Columns><<<grid, 256, 0, stream>>>(weights, input, output, blocks, matrix.output);
+        enqueue_type<TensorType::Q8_0, Columns>(matrix, input, output, stream);
         break;
     case TensorType::Q6_K:
-        matrix6<Columns><<<grid, 256, 0, stream>>>(weights, input, output, matrix.input / 256, matrix.output);
+        enqueue_type<TensorType::Q6_K, Columns>(matrix, input, output, stream);
         break;
     default: break; // Unsupported types were rejected before enqueue.
     }

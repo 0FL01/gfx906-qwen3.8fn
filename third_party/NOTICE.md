@@ -31,7 +31,8 @@
   Copyright (c) 2023-2026 The ggml authors; MIT in `mx-LICENSE`.
   Furnace's resident design derives from reinstinct
   `kernels/gdn_recurrent_batched_v2.cpp` at the Apache-2.0 revision above.
-  Modifications: fixed tiled GGUF geometry, decay-before-dot FP32 ordering,
+  Modifications: fixed tiled GGUF geometry, canonical FP32/FMA PRE-state dot
+  and decay-after-reduction/update ordering, additive Q/K epsilon,
   chronological prefixes, checked conv/L2/RMS/sigmoid preprocessing,
   no fast intrinsics, finite staging and chunk-atomic publication.
   No graph/cache/runtime code is imported. CPU dense/GDN oracles are original;
@@ -48,23 +49,39 @@
   invalid-input rejection and conditional publication, not expanded positions.
 - `src/hip/attention.hip` adapts furnace `fattn.cu` D256/G12 64-key chunk and
   stable split-K merge. Modified: direct selected IDs, bounded canonical Q4_0
-  to RNE FP16 gather, no full mask/history copy, finite checks and conditional
+  to RNE FP16 chronological gather (bounded mx `argsort.cu` bitonic pattern),
+  ascending within-chunk dot/value arithmetic and explicit internally widened
+  exponential evaluation, no full mask/history copy, finite checks and conditional
   output publication. Copyright (c) 2023-2026 The ggml authors; full MIT notices
   appear inline and in `mx-LICENSE`. Reinstinct partial/merge at the revision
   above is a design/algebra reference, not an imported Q8 backend.
 
 - `src/hip/linear.hip` adapts mx canonical Q4_0/Q4_1/Q5_0/Q8_0/Q6_K
   `vecdotq.cuh`, Q8_1 `quantize.cu` and qualified R1 register-reuse/DPP patterns.
-  Modifications: borrowed checked buffers, N1/2/3 two-row reuse, full-block32
-  Q4/Q5/Q8 integer dots, canonical Q6 MMVQ slices, raw-sum/half-product ABI,
+  Modifications: borrowed checked buffers, N1/2/3 reuse, mx `mmvq.cu` two-wave
+  topology and format-specific fragments with explicit FMA, canonical Q6 MMVQ
+  slices, unchanged raw-sum/half-product ABI,
   representable-scale and finite activation errors. `linear_reference.cpp`
   is an original independently decoded common-Q8 scalar oracle.
 - `src/hip/blocks.hip` adapts mx `norm.cu` strided/wave/LDS reductions and
   furnace `dsv4-hc.cu` coalesced pre/post patterns at the revisions above.
   Modifications: Qwen C4 sigmoid/SiLU/direct-gamma equations (not DeepSeek
-  Sinkhorn), strict finite arithmetic and provisional outputs. PLE gate,
-  dilation3 state/prefix staging and conditional history publication are original.
+  Sinkhorn), canonical logical reductions/direct unary expressions, strict finite
+  arithmetic and provisional outputs. PLE dot/reduction/scale adapts mx
+  `sumrows.cu`, `reduce_rows.cuh`, `scale.cu`; dilation3 state/prefix staging and
+  conditional history publication are original.
   Reinstinct RMS is a layout/design reference, not an imported runtime.
   Copyright (c) 2023-2026 The ggml authors; MIT in `mx-LICENSE`.
+
+- `src/hip/dense.hip` adapts mx `mmvf.cu` pairwise FMA accumulation and padded
+  two-stage DPP/LDS reductions for aligned even-K N1/2/3; other shapes retain
+  the existing rocBLAS dependency. BF16 values are decoded exactly to F32.
+  Copyright (c) 2023-2026 The ggml authors; MIT in `mx-LICENSE`, same mx pin above.
+- `src/hip/session_ops.hip` adapts mx `rope.cu`, `topk-moe.cu`, `common.cuh`
+  and direct `unary.cu`/`unary.cuh` arithmetic. Modified: supplied text geometry,
+  checked borrowed buffers, logical32 router and sticky-error sanitization.
+  Copyright (c) 2023-2026 The ggml authors; MIT in `mx-LICENSE`.
+  Session/cache orchestration and separate diagnostic oracle programs are
+  original code; no donor runtime, scheduler or model graph is imported.
 
 Upstream URLs and rejected donor options: RECON.md section 16.

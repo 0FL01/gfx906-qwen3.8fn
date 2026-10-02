@@ -63,15 +63,17 @@ __device__ __forceinline__ void report_error(int flags, int* error) {
 }
 
 __device__ __forceinline__ float sigmoid(float x) {
-    const float e = expf(-fabsf(x));
-    return x >= 0.0f ? 1.0f / (1.0f + e) : e / (1.0f + e);
+    // ADAPT production unary.cu: direct division, including valid +0 when
+    // exp(-x) overflows for a finite negative operand. Final values are checked
+    // by the caller; expected exponential overflow is not a numeric failure.
+    return 1.0f / (1.0f + expf(-x));
 }
 
 __device__ __forceinline__ float softplus(float x) {
-    return x > 20.0f ? x : log1pf(expf(x));
+    return x > 20.0f ? x : logf(1.0f + expf(x));
 }
 
-struct Controls { float decay; float beta; };
+struct Controls { float decay; float beta; float log_decay; };
 
 __device__ __forceinline__ Controls controls(float alpha, float beta, float bias,
                                             float a, int& flags) {
@@ -80,13 +82,29 @@ __device__ __forceinline__ Controls controls(float alpha, float beta, float bias
     const float dt = arithmetic_finite(alpha + bias, flags);
     const float sp = arithmetic_finite(softplus(dt), flags);
     const float log_decay = arithmetic_finite(a * sp, flags);
-    return {arithmetic_finite(expf(log_decay), flags), sigmoid(beta)};
+    return {arithmetic_finite(expf(log_decay), flags), sigmoid(beta), log_decay};
 }
 
 __device__ __forceinline__ float parameter_a(float a, int& flags) {
     a = input_finite(a, flags);
     if (a > 0.0f) { flags |= 1; return 0.0f; }
     return a;
+}
+
+// Trace-only recomputation through the SAME scalar helper. This is not a
+// capture of recurrence registers and never changes active state/output.
+__global__ void control_witness(GdnDeviceParameters p, GdnDeviceInput in,
+                               float* output, int* error) {
+    const int h = threadIdx.x;
+    if (h >= value_heads) return;
+    int flags = 0;
+    const float bias = input_finite(p.dt_bias[h], flags);
+    const float a = parameter_a(p.ssm_a[h], flags);
+    const Controls cb = controls(in.alpha[h], in.beta[h], bias, a, flags);
+    output[h] = cb.log_decay;
+    output[value_heads + h] = cb.beta;
+    output[2 * value_heads + h] = cb.decay;
+    report_error(flags, error);
 }
 
 // One feature/thread, with the causal token loop in registers. All history and
@@ -111,11 +129,14 @@ __global__ void convolve(GdnDeviceParameters p, GdnDeviceInput in, int tokens,
     }
     for (int t = 0; t < tokens; ++t) {
         const float raw = input_finite(in.qkv[t * features + f], flags);
-        float x = arithmetic_finite(h0 * w0, flags);
-        x = arithmetic_finite(x + arithmetic_finite(h1 * w1, flags), flags);
-        x = arithmetic_finite(x + arithmetic_finite(h2 * w2, flags), flags);
-        x = arithmetic_finite(x + arithmetic_finite(raw * w3, flags), flags);
-        w.convolved[t * features + f] = arithmetic_finite(x * sigmoid(x), flags);
+        // ADAPT mx ssm-conv.cu's compiled chronological FMA chain. This is
+        // GDN's raw-projection convolution, not PLE's separate MUL/ADD graph.
+        // Stored state/history/weights remain FP32; check each fused result.
+        float x = arithmetic_finite(fmaf(h0, w0, 0.0f), flags);
+        x = arithmetic_finite(fmaf(h1, w1, x), flags);
+        x = arithmetic_finite(fmaf(h2, w2, x), flags);
+        x = arithmetic_finite(fmaf(raw, w3, x), flags);
+        w.convolved[t * features + f] = arithmetic_finite(x / (1.0f + expf(-x)), flags);
         h0 = h1; h1 = h2; h2 = raw;
         if constexpr (Prefixes) {
             const int base = (t + 1) * history_elements + f * 3;
@@ -130,7 +151,11 @@ __global__ void convolve(GdnDeviceParameters p, GdnDeviceInput in, int tokens,
     report_error(flags, w.error);
 }
 
-// One wave64 owns a Q or K vector, with K components lane and lane+64.
+// One wave64 owns a Q or K vector. Keep the independent additive-L2 oracle's
+// ascending separately-rounded FP32 sum and division for deterministic rounding
+// at downstream Q8 thresholds; epsilon remains the HF 1e-6, never the fork floor.
+// This D128-only reduction is deliberately serial in lane 0, with coalesced
+// readback/stores. Performance is measured separately from correctness.
 __global__ __launch_bounds__(256) void normalize_qk(float* convolved, int tokens, int* error) {
     const int row = blockIdx.x * 4 + threadIdx.x / 64;
     if (row >= tokens * (2 * key_heads)) return; // wave-uniform
@@ -139,17 +164,18 @@ __global__ __launch_bounds__(256) void normalize_qk(float* convolved, int tokens
     const int base = t * features + h * head_dim + lane;
     int flags = 0;
     const float x0 = convolved[base], x1 = convolved[base + 64];
-    float sum = arithmetic_finite(arithmetic_finite(x0 * x0, flags) +
-                                  arithmetic_finite(x1 * x1, flags), flags);
-    sum = arithmetic_finite(sum64(sum), flags);
-    const float norm = arithmetic_finite(sum + 1.0e-6f, flags);
-    const float inverse = arithmetic_finite(1.0f / sqrtf(norm), flags);
-    float y0 = arithmetic_finite(x0 * inverse, flags);
-    float y1 = arithmetic_finite(x1 * inverse, flags);
-    if (h < key_heads) {
-        y0 = arithmetic_finite(y0 * query_scale, flags);
-        y1 = arithmetic_finite(y1 * query_scale, flags);
+    float denominator = 0.0f;
+    if (lane == 0) {
+        float sum = 0.0f;
+        for (int j = 0; j < head_dim; ++j) {
+            const float x = convolved[t * features + h * head_dim + j];
+            sum = arithmetic_finite(sum + arithmetic_finite(x * x, flags), flags);
+        }
+        denominator = arithmetic_finite(sqrtf(arithmetic_finite(sum + 1.0e-6f, flags)), flags);
     }
+    denominator = __shfl(denominator, 0, 64);
+    const float y0 = arithmetic_finite(x0 / denominator, flags);
+    const float y1 = arithmetic_finite(x1 / denominator, flags);
     convolved[base] = y0;
     convolved[base + 64] = y1;
     report_error(flags, error);
@@ -198,24 +224,25 @@ void recurrent_decode(GdnDeviceParameters p, GdnDeviceInput in,
         float predicted = 0.0f;
 #pragma unroll
         for (int r = 0; r < 2; ++r) {
-            state[c][r] = arithmetic_finite(decay * state[c][r], flags);
-            predicted = arithmetic_finite(predicted +
-                arithmetic_finite(state[c][r] * k[r], flags), flags);
+            // ADAPT the verified mx recurrent kernel: PRE-state pair dot,
+            // decay after reduction, explicit FMAs under contraction-off.
+            predicted = arithmetic_finite(fmaf(state[c][r], k[r], predicted), flags);
         }
         predicted = arithmetic_finite(sum64(predicted), flags);
         const int col = col0 + c;
         const float value = w.convolved[2 * keys + h * head_dim + col];
-        const float delta = arithmetic_finite(arithmetic_finite(value - predicted, flags) * beta, flags);
+        const float delta = arithmetic_finite(arithmetic_finite(fmaf(-decay, predicted, value), flags) * beta, flags);
         float read = 0.0f;
 #pragma unroll
         for (int r = 0; r < 2; ++r) {
-            state[c][r] = arithmetic_finite(state[c][r] + arithmetic_finite(k[r] * delta, flags), flags);
-            read = arithmetic_finite(read + arithmetic_finite(state[c][r] * q[r], flags), flags);
+            state[c][r] = arithmetic_finite(fmaf(decay, state[c][r],
+                arithmetic_finite(k[r] * delta, flags)), flags);
+            read = arithmetic_finite(fmaf(state[c][r], q[r], read), flags);
             const int index = head_base + col * head_dim + r * 64 + lane;
             w.recurrent[index] = state[c][r];
             if constexpr (Prefixes) w.recurrent_prefixes[recurrent_elements + index] = state[c][r];
         }
-        read = arithmetic_finite(sum64(read), flags);
+        read = arithmetic_finite(arithmetic_finite(sum64(read), flags) * query_scale, flags);
         if (lane == 0) w.output[h * head_dim + col] = read;
     }
     report_error(flags, w.error);
@@ -309,21 +336,22 @@ void recurrent_chunk(GdnDeviceParameters p, GdnDeviceInput in, int tokens,
 #pragma unroll
         for (int l = 0; l < per_group; ++l) {
             const int k = l * groups + group;
-            const float s = arithmetic_finite(state_col[k ^ swizzle] * decay, flags);
+            const float s = state_col[k ^ swizzle];
             state[l] = s;
-            predicted = arithmetic_finite(predicted + arithmetic_finite(s * k_lds[k], flags), flags);
+            predicted = arithmetic_finite(fmaf(s, k_lds[k], predicted), flags);
         }
         predicted = arithmetic_finite(column_sum(predicted), flags);
-        const float delta = arithmetic_finite(arithmetic_finite(value - predicted, flags) * beta, flags);
+        const float delta = arithmetic_finite(arithmetic_finite(fmaf(-decay, predicted, value), flags) * beta, flags);
         float read = 0.0f;
 #pragma unroll
         for (int l = 0; l < per_group; ++l) {
             const int k = l * groups + group;
-            const float s = arithmetic_finite(state[l] + arithmetic_finite(k_lds[k] * delta, flags), flags);
+            const float s = arithmetic_finite(fmaf(decay, state[l],
+                arithmetic_finite(k_lds[k] * delta, flags)), flags);
             state_col[k ^ swizzle] = s;
-            read = arithmetic_finite(read + arithmetic_finite(s * q_lds[k], flags), flags);
+            read = arithmetic_finite(fmaf(s, q_lds[k], read), flags);
         }
-        read = arithmetic_finite(column_sum(read), flags);
+        read = arithmetic_finite(arithmetic_finite(column_sum(read), flags) * query_scale, flags);
         if (group == 0) w.output[t * values + h * head_dim + col] = read;
 
         if constexpr (Prefixes) {
@@ -345,32 +373,41 @@ void recurrent_chunk(GdnDeviceParameters p, GdnDeviceInput in, int tokens,
     report_error(flags, w.error);
 }
 
-// One wave/head/token, two V components/lane. Validates every z projection and
-// shared norm weight even when an earlier stage has already raised an error.
+// ADAPT mx norm.cu::rms_norm_f32<256>, verified in the production gfx906 binary:
+// logical32 partials, eight LDS totals (four zero), padded second sum32, rsqrt.
+// One block/head/token. Preserve direct gamma and separate output/gate products;
+// validate every Z/gamma even when an earlier stage raised a sticky error.
 __global__ __launch_bounds__(256)
-void normalize_output(GdnDeviceParameters p, GdnDeviceInput in, int tokens,
-                      GdnDeviceWorkspace w) {
-    const int row = blockIdx.x * 4 + threadIdx.x / 64;
-    if (row >= tokens * value_heads) return; // wave-uniform
-    const int lane = threadIdx.x % 64;
-    const int base = row * head_dim + lane;
+void normalize_output(GdnDeviceParameters p, GdnDeviceInput in, GdnDeviceWorkspace w) {
+    __shared__ float totals[64];
+    __shared__ float inverse;
+    const int row = blockIdx.x, tid = threadIdx.x;
+    const int base = row * head_dim + tid;
     int flags = 0;
-    const float x0 = w.output[base], x1 = w.output[base + 64];
-    const float z0 = input_finite(in.z[base], flags);
-    const float z1 = input_finite(in.z[base + 64], flags);
-    const float weight0 = input_finite(p.norm_weight[lane], flags);
-    const float weight1 = input_finite(p.norm_weight[lane + 64], flags);
-    float sum = arithmetic_finite(arithmetic_finite(x0 * x0, flags) +
-                                  arithmetic_finite(x1 * x1, flags), flags);
-    sum = arithmetic_finite(sum64(sum), flags);
-    const float norm = arithmetic_finite(sum / float(head_dim) + p.rms_epsilon, flags);
-    const float inverse = arithmetic_finite(1.0f / sqrtf(norm), flags);
-    float y0 = arithmetic_finite(arithmetic_finite(x0 * inverse, flags) * weight0, flags);
-    float y1 = arithmetic_finite(arithmetic_finite(x1 * inverse, flags) * weight1, flags);
-    y0 = arithmetic_finite(y0 * sigmoid(z0), flags);
-    y1 = arithmetic_finite(y1 * sigmoid(z1), flags);
-    w.output[base] = y0;
-    w.output[base + 64] = y1;
+    float x = 0.0f, z = 0.0f, gamma = 0.0f, sum = 0.0f;
+    if (tid < 64) totals[tid] = 0.0f;
+    __syncthreads();
+    if (tid < head_dim) {
+        x = arithmetic_finite(w.output[base], flags);
+        z = input_finite(in.z[base], flags);
+        gamma = input_finite(p.norm_weight[tid], flags);
+        sum = arithmetic_finite(fmaf(x, x, 0.0f), flags);
+    }
+    sum = arithmetic_finite(sum32(sum), flags);
+    if (tid % 32 == 0) totals[tid / 32] = sum;
+    __syncthreads();
+    if (tid < 32) {
+        const float total = arithmetic_finite(sum32(totals[tid]), flags);
+        if (tid == 0) {
+            const float norm = arithmetic_finite(total / float(head_dim) + p.rms_epsilon, flags);
+            inverse = arithmetic_finite(rsqrtf(norm), flags);
+        }
+    }
+    __syncthreads();
+    if (tid < head_dim) {
+        float y = arithmetic_finite(arithmetic_finite(x * inverse, flags) * gamma, flags);
+        w.output[base] = arithmetic_finite(y * sigmoid(z), flags);
+    }
     report_error(flags, w.error);
 }
 
@@ -456,7 +493,7 @@ void launch_impl(GdnDeviceParameters p, GdnDeviceInput in, int tokens,
             p, in, tokens, active_recurrent, w);
     }
     check_launch(hipGetLastError());
-    normalize_output<<<tokens * value_heads / 4, 256, 0, stream>>>(p, in, tokens, w);
+    normalize_output<<<tokens * value_heads, 256, 0, stream>>>(p, in, w);
     check_launch(hipGetLastError());
     // At N<=128 the recurrent range is at least as large as the output range.
     publish<<<(recurrent_elements + 255) / 256, 256, 0, stream>>>(
@@ -474,6 +511,23 @@ void launch_gdn(GdnDeviceParameters parameters, GdnDeviceInput input, int tokens
         launch_impl<true>(parameters, input, tokens, active_recurrent, active_history, output, workspace, stream);
     else
         launch_impl<false>(parameters, input, tokens, active_recurrent, active_history, output, workspace, stream);
+}
+
+void launch_gdn_control_witness(GdnDeviceParameters parameters, GdnDeviceInput input,
+                                float* output, int* error, hipStream_t stream) {
+    const std::array<BufferRange, 6> buffers{
+        buffer_range(parameters.dt_bias, value_heads * sizeof(float), false),
+        buffer_range(parameters.ssm_a, value_heads * sizeof(float), false),
+        buffer_range(input.alpha, value_heads * sizeof(float), false),
+        buffer_range(input.beta, value_heads * sizeof(float), false),
+        buffer_range(output, 3 * value_heads * sizeof(float), true),
+        buffer_range(error, sizeof(int), true)};
+    for (std::size_t i = 0; i < buffers.size(); ++i)
+        for (std::size_t j = i + 1; j < buffers.size(); ++j)
+            if ((buffers[i].writable || buffers[j].writable) && overlaps(buffers[i], buffers[j]))
+                throw std::invalid_argument("GDN control witness writable buffer overlap");
+    control_witness<<<1, 64, 0, stream>>>(parameters, input, output, error);
+    check_launch(hipGetLastError());
 }
 
 }

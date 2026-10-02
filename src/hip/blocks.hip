@@ -18,11 +18,15 @@
 // QSA H256 (checked against pinned source, not selected by similar model name):
 // ADAPT mx dcd685463d597d31f5ca759d32c94592a2740fa4, ggml/src/ggml-cuda/
 // norm.cu::rms_norm_f32 and common.cuh::block_reduce / gfx906 DPP reductions.
-// Keep strided register accumulation -> wave sum -> LDS partial reduction;
-// use existing dpp.cuh's PORT with its mandatory VALU/DPP waits. H2560 uses
-// four wave64 per group/256 threads/10 components per thread; H128/256 uses
-// one wave per group, four independent groups per block. Direct folded gamma,
-// CPU 1/sqrt rather than donor rsqrt, checked separately rounded operations.
+// RMS: one group/block, H2560 uses 1024 threads/16 wave64 (stride 1024),
+// H128/256 uses 256 threads/four wave64 (stride 256). ADAPT norm.cu:128-152,
+// 304-322 and common.cuh:765-782: explicit square-accumulation FMA, ascending
+// DPP sum64, then padded sum64 of LDS wave totals, sum/Group and rsqrtf(mean+eps).
+// Confirmed in the production libggml-hip.so gfx906 code object: RMS square
+// accumulation is v_fmac_f32 (1024-thread plain/fused: 0x9400/0x9d10);
+// plain scale uses v_rsq_f32 at 0x95e8. Use existing dpp.cuh's PORT with its
+// mandatory VALU/DPP waits. Folded gamma is direct; x*scale then *gamma stays
+// separately rounded. PLE dot retains its existing four-wave/pairwise reduction.
 // ADAPT furnace 905021dbad71c5056ef51f9fd45d545403fc989c, same directory,
 // dsv4-hc.cu::dsv4_hc_pre_f32<true> and dsv4_hc_post_f32<false,false>:
 // coalesced feature layout, ascending four-branch sigmoid mix/residual add.
@@ -111,65 +115,64 @@ __device__ __forceinline__ void report(int flags, int* error) {
 }
 
 __device__ __forceinline__ float sigmoid(float x, int& flags) {
-    const float e = arithmetic(expf(-fabsf(x)), flags);
-    const float denominator = arithmetic(1.0f + e, flags);
-    return arithmetic((x >= 0.0f ? 1.0f : e) / denominator, flags);
+    // ADAPT pinned mx unary.cu: finite negative exponential overflow gives +0,
+    // not a numeric error. Callers validate operands; check the final result.
+    return arithmetic(1.0f / (1.0f + expf(-x)), flags);
 }
 
 __device__ __forceinline__ float silu(float x, int& flags) {
-    return arithmetic(x * sigmoid(x, flags), flags);
-}
-
-// ADAPT mx block_reduce: four wave64 partials in LDS. All 256 threads call;
-// no inactive workgroup thread may return before this barrier. Partial storage
-// is single-use here, so no second barrier is needed to protect its reuse.
-__device__ __forceinline__ float reduce_group2560(float partial, float* wave_sums,
-                                                 int& flags) {
-    const int lane = threadIdx.x % 64;
-    const int wave = threadIdx.x / 64;
-    partial = arithmetic(sum64(partial), flags);
-    if (lane == 0) wave_sums[wave] = partial;
-    __syncthreads();
-    // Broadcast the same pairwise four-wave total into each lane. Four small
-    // LDS broadcasts replace a padded second full-wave reduction.
-    const float a = arithmetic(wave_sums[0] + wave_sums[1], flags);
-    const float b = arithmetic(wave_sums[2] + wave_sums[3], flags);
-    return arithmetic(a + b, flags);
+    // ADAPT unary.cuh division: preserve -0 for finite negative saturation.
+    return arithmetic(x / (1.0f + expf(-x)), flags);
 }
 
 template<int Group>
-__global__ __launch_bounds__(256)
+__global__ __launch_bounds__(Group == hidden ? 1024 : 256)
 void group_rms_norm(const float* input, const float* gamma, int width, int rows,
                     float epsilon, bool shared_gamma, float* output, int* error) {
-    constexpr int stride = Group == hidden ? 256 : 64;
-    constexpr int components = Group / stride;
-    __shared__ float wave_sums[4];
-    const int row = Group == hidden ? static_cast<int>(blockIdx.x) :
-                                    static_cast<int>(blockIdx.x) * 4 + threadIdx.x / 64;
-    if (row >= rows) return; // block-uniform for H2560, wave-uniform otherwise
-    const int local = Group == hidden ? threadIdx.x : threadIdx.x % 64;
+    constexpr int stride = Group == hidden ? 1024 : 256;
+    constexpr int components = (Group + stride - 1) / stride;
+    __shared__ float wave_sums[64];
+    __shared__ float group_scale;
+    const int row = static_cast<int>(blockIdx.x), local = threadIdx.x;
+    const int lane = local % 64, wave = local / 64;
     const int base = row * Group;
     const int gamma_base = shared_gamma ? 0 : base % width;
     int flags = 0;
-    float x[components], g[components];
+    float x[components]{}, g[components]{};
     float squares = 0.0f;
+    // Initialize every LDS lane, including padding beyond the 16/four totals.
+    // All block threads participate in every barrier, even without a feature.
+    if (local < 64) wave_sums[local] = 0.0f;
+    __syncthreads();
 #pragma unroll
     for (int k = 0; k < components; ++k) {
         const int d = local + k * stride;
-        x[k] = operand(input[base + d], flags);
-        g[k] = operand(gamma[gamma_base + d], flags);
-        const float term = arithmetic(x[k] * x[k], flags);
-        squares = arithmetic(squares + term, flags);
+        if (row < rows && d < Group) {
+            x[k] = operand(input[base + d], flags);
+            g[k] = operand(gamma[gamma_base + d], flags);
+            squares = arithmetic(fmaf(x[k], x[k], squares), flags);
+        }
     }
-    if constexpr (Group == hidden) squares = reduce_group2560(squares, wave_sums, flags);
-    else squares = arithmetic(sum64(squares), flags);
-    const float mean = arithmetic(squares / static_cast<float>(Group), flags);
-    const float norm = arithmetic(mean + epsilon, flags);
-    const float inverse = arithmetic(1.0f / sqrtf(norm), flags);
+    squares = arithmetic(sum64(squares), flags);
+    if (lane == 0) wave_sums[wave] = squares;
+    __syncthreads();
+    if (wave == 0) {
+        const float total = arithmetic(sum64(wave_sums[lane]), flags);
+        if (lane == 0) {
+            // Donor mean is division by ncols, not multiplication by its inverse.
+            const float mean = arithmetic(total / static_cast<float>(Group), flags);
+            const float norm = arithmetic(mean + epsilon, flags);
+            group_scale = arithmetic(rsqrtf(norm), flags);
+        }
+    }
+    __syncthreads();
 #pragma unroll
     for (int k = 0; k < components; ++k) {
-        const float scaled = arithmetic(x[k] * inverse, flags);
-        output[base + local + k * stride] = arithmetic(scaled * g[k], flags);
+        const int d = local + k * stride;
+        if (row < rows && d < Group) {
+            const float scaled = arithmetic(x[k] * group_scale, flags);
+            output[base + d] = arithmetic(scaled * g[k], flags);
+        }
     }
     report(flags, error);
 }
@@ -231,33 +234,55 @@ __global__ void hc_combine(const float* residual, const float* block, const floa
     report(flags, error);
 }
 
-__global__ __launch_bounds__(256)
+// ADAPT pinned mx SUM_ROWS(MUL(key,query)): eight independent accumulators,
+// their ascending fold, logical sum32 and a zero-padded second sum32. Products
+// remain separately rounded; this is not an FMA dot. The 60-CU target selects
+// block512 for short decode rows, block128 for >=120 rows. Keep the source SCALE
+// reciprocal multiply after the completed sum, rather than divide by sqrt(H).
+template<int Block>
+__global__ __launch_bounds__(Block)
 void ple_gate(const float* key, const float* query, const float* value,
               float* output, int* error) {
-    __shared__ float wave_sums[4];
+    __shared__ float group_sums[32];
+    __shared__ float group_gate;
     const int row = blockIdx.x, local = threadIdx.x;
+    const int lane = local % 32, group = local / 32;
     const int base = row * hidden, value_base = (row / branches) * hidden;
     int flags = 0;
-    float values[10];
+    float partials[8]{};
+    if (local < 32) group_sums[local] = 0.0f;
+    __syncthreads();
+    for (int offset = local; offset < hidden; offset += 8 * Block) {
+#pragma unroll
+        for (int j = 0; j < 8; ++j) {
+            const int d = offset + j * Block;
+            if (d < hidden) {
+                const float a = operand(key[base + d], flags);
+                const float b = operand(query[base + d], flags);
+                partials[j] = arithmetic(partials[j] + arithmetic(a * b, flags), flags);
+            }
+        }
+    }
     float dot = 0.0f;
 #pragma unroll
-    for (int k = 0; k < 10; ++k) {
-        const int d = local + k * 256;
-        const float a = operand(key[base + d], flags);
-        const float b = operand(query[base + d], flags);
-        values[k] = operand(value[value_base + d], flags);
-        dot = arithmetic(dot + arithmetic(a * b, flags), flags);
+    for (int j = 0; j < 8; ++j) dot = arithmetic(dot + partials[j], flags);
+    dot = arithmetic(sum32(dot), flags);
+    if (lane == 0) group_sums[group] = dot;
+    __syncthreads();
+    if (group == 0) {
+        const float total = arithmetic(sum32(group_sums[lane]), flags);
+        if (lane == 0) {
+            const float s = arithmetic(fmaf(total, 0.019764235243201256f, 0.0f), flags);
+            const float sign = s > 0.0f ? 1.0f : s < 0.0f ? -1.0f : 0.0f;
+            const float root = arithmetic(sqrtf(fmaxf(fabsf(s), 1.0e-6f)), flags);
+            group_gate = sigmoid(arithmetic(sign * root, flags), flags);
+        }
     }
-    dot = reduce_group2560(dot, wave_sums, flags);
-    // Match the CPU ordering: divide the completed dot by sqrt(H), then
-    // signed root with an abs floor. Sign zero remains zero, not +1 or -1.
-    const float s = arithmetic(dot / sqrtf(static_cast<float>(hidden)), flags);
-    const float sign = s > 0.0f ? 1.0f : s < 0.0f ? -1.0f : 0.0f;
-    const float root = arithmetic(sqrtf(fmaxf(fabsf(s), 1.0e-6f)), flags);
-    const float gate = sigmoid(arithmetic(sign * root, flags), flags);
-#pragma unroll
-    for (int k = 0; k < 10; ++k)
-        output[base + local + k * 256] = arithmetic(gate * values[k], flags);
+    __syncthreads();
+    for (int d = local; d < hidden; d += Block) {
+        const float v = operand(value[value_base + d], flags);
+        output[base + d] = arithmetic(group_gate * v, flags);
+    }
     report(flags, error);
 }
 
@@ -338,13 +363,13 @@ hipError_t launch_group_rms_norm(const float* input, const float* gamma, int tok
         return hipErrorInvalidValue;
     const int rows = count / group_size;
     if (group_size == hidden) {
-        group_rms_norm<hidden><<<rows, threads, 0, stream>>>(input, gamma, width, rows,
+        group_rms_norm<hidden><<<rows, 1024, 0, stream>>>(input, gamma, width, rows,
                 epsilon, shared_gamma, output, error);
     } else if (group_size == 128) {
-        group_rms_norm<128><<<ceil_div(rows, 4), threads, 0, stream>>>(input, gamma,
+        group_rms_norm<128><<<rows, threads, 0, stream>>>(input, gamma,
                 width, rows, epsilon, shared_gamma, output, error);
     } else {
-        group_rms_norm<256><<<ceil_div(rows, 4), threads, 0, stream>>>(input, gamma,
+        group_rms_norm<256><<<rows, threads, 0, stream>>>(input, gamma,
                 width, rows, epsilon, shared_gamma, output, error);
     }
     return hipGetLastError();
@@ -403,8 +428,11 @@ hipError_t launch_ple_gate(const float* norm_key, const float* norm_query, const
     if (!valid_ranges(std::array{range(norm_key, count), range(norm_query, count),
                                   range(shared_value, tokens * hidden), range(output, count, true),
                                   range(error, 1, true)})) return hipErrorInvalidValue;
-    ple_gate<<<tokens * branches, threads, 0, stream>>>(norm_key, norm_query, shared_value,
-            output, error);
+    const int rows = tokens * branches;
+    if (rows < 120)
+        ple_gate<512><<<rows, 512, 0, stream>>>(norm_key, norm_query, shared_value, output, error);
+    else
+        ple_gate<128><<<rows, 128, 0, stream>>>(norm_key, norm_query, shared_value, output, error);
     return hipGetLastError();
 }
 
