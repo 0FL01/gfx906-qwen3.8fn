@@ -2,7 +2,7 @@
 
 Дата проверки открытых источников: 2026-10-01.
 
-Это архитектурное решение и разведка по исходникам с read-only remote RECON от 2026-10-01. Последующие R0 build/probe/baseline, R1 loader/expert, R2a KV transforms/QSA selection, R2b GDN/conv, R2c CPU HC/PLE, R2d numeric QSA и R2e GPU linear/HC/PLE fixtures также выполнены; результаты и ограничения — STATE.md и results.jsonl. Полный inference нового core ещё не реализован.
+Это архитектурное решение и разведка по исходникам с read-only remote RECON от 2026-10-01. Последующие R0 build/probe/baseline, R1 loader/expert, R2a–R2e primitives и R3a dense/LM head fixtures также выполнены; результаты и ограничения — STATE.md и results.jsonl. Полный inference нового core ещё не реализован.
 
 ## 1. Решение и границы
 
@@ -293,6 +293,8 @@ HC не является обычным residual-add. Есть четыре ве
 **R2c, 2026-10-02:** src/hc.cpp/src/ple.cpp квалифицированы как CPU raw-FP32 oracles на actual HC attention/FFN/root и PLE Q4/F16 weights. Stored gamma уже 1+HF weight; HC mix — mean(sigmoid(up(SiLU(down(norm)/4)))*norm), inject — 2*sigmoid(projection/4), combine сохраняет original residual. PLE key/query branch RMS → signed-root sigmoid(shared value) → norm → dilation3 conv4 + SiLU; widened injection добавить один раз до attention HC. History9 не очищается EOS, hash segment очищается после текущего EOS. Actual UINT64 multipliers ограничивают все valid-token products <=INT64_MAX: signed torch.remainder и unsigned mx modulo эквивалентны на всём declared vocabulary выбранного варианта (не только sampled tokens). Negative synthetic fixture не доказывает баг baseline. Проверены logical16 heads, EOS248044 !=248046, N1/2/3 HC, 12 PLE шагов/10+2 split/accept0/1/2 continuation/hot allocations0; GPU projections/full forward ещё не проверены. Raw r2-hc-ple*, результаты — results.jsonl.
 
 **R2e, 2026-10-02:** hip/linear.hip адаптирует canonical mx SDOT4/common-Q8 для пяти quant types и N1/2/3; независимый CPU oracle проверяет raw-sum correction, Q4_1 half products, Q6 integer-subscale grouping. Обе GPU проходят extrema/odd rows/block boundaries/width16384 и до9 actual rows/type. hip/blocks.hip адаптирует DPP/LDS RMS и Qwen HC/PLE pointwise/history; actual gamma/F16 conv с одинаковыми synthetic projections проходят N1/2/3/128, root tap, prefix1+a, repeated reject, conditional publication/finite/error/reuse. Gates unchanged, remote CTest18/18/local common-Q8 ASan/UBSan. Полный projected block и all-layer logits ещё не проверены; это qualification без A/B/inference speed claim. Raw r2-linear-final/r2-blocks и scope/provenance — results.jsonl.
+
+**R3a, 2026-10-02:** rocBLAS transpose-A SGEMM использует unchanged F32/BF16 values, BF16 разворачивается точно в F32 один раз при загрузке (не requantization). Actual alpha [2560,48]/index K [2560,128], N1/2/3/128 и checked dimensions проходят full raw-FP32 oracle на обеих GPU. Actual Q6_K head [2560,248320] проходит sampled common-Q8 CPU oracle, full finite/prefix/canary checks; остальные quantized dimensions остаются ограничены16384. Remote CTest19/19; raw r3-dense/r3-head, compiled ce05879 dirty1. Это не all-layer logits. Forward wiring подтверждено по mx/HF: widened residual4×2560, PLE перед layer1 attention HC, без extra ordinary norms, Q/gate interleaved512/head, routed weights после down. В GDN own/HF L2 sum+1e-6 отличается от mx norm.cu max(sum,eps²); real-layer/logit эффект ещё измерить, не менять gates ради fork.
 
 ## 11. MTP2
 

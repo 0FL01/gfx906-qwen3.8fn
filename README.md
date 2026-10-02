@@ -374,3 +374,47 @@ quantization/projections where absent, transfers, resets, references and validat
 are excluded. This is component qualification, **not** a full projected HC/PLE
 block, A/B speedup or request throughput. F32/BF16 projection and the 48-layer Session
 remain next. Numerical evidence/provenance live in the single `results.jsonl`.
+## R3a: unchanged dense projection and full actual LM head
+
+```sh
+docker run --rm --name core-dense --device /dev/kfd --device /dev/dri \
+  --group-add video --ipc host --security-opt seccomp=unconfined \
+  --entrypoint /core/build/core-dense \
+  -v /home/radneon/gfx906-core:/core -v /home/radneon/models-nvme:/models:ro \
+  llama.cpp-gfx906:cmake-4.4.3 /models/qwen38-keep1-Q4_0.gguf \
+  > /home/radneon/gfx906-core/runs/r3-dense.jsonl \
+  2> /home/radneon/gfx906-core/runs/r3-dense.err
+# Check the preceding exit status before starting the next command.
+docker run --rm --name core-head --device /dev/kfd --device /dev/dri \
+  --group-add video --ipc host --security-opt seccomp=unconfined \
+  --entrypoint /core/build/core-head \
+  -v /home/radneon/gfx906-core:/core -v /home/radneon/models-nvme:/models:ro \
+  llama.cpp-gfx906:cmake-4.4.3 /models/qwen38-keep1-Q4_0.gguf \
+  > /home/radneon/gfx906-core/runs/r3-head.jsonl \
+  2> /home/radneon/gfx906-core/runs/r3-head.err
+python3 -B /home/radneon/gfx906-core/src/tools/record_dense.py \
+  --dense /home/radneon/gfx906-core/runs/r3-dense.jsonl \
+  --head /home/radneon/gfx906-core/runs/r3-head.jsonl \
+  --results /home/radneon/gfx906-core/results.jsonl
+```
+
+Run sequentially without another GPU workload or heavy compilation. The borrowed
+`hip/dense.cuh` wrapper uses a caller-owned rocBLAS handle/stream and canonical
+`[K,M]` weights with transpose-A, alpha1/beta0. F32 values are unchanged; BF16 is
+exactly converted once into F32, not requantized. Actual alpha F32 and index-K
+BF16 matrices pass full ascending raw-FP32 oracle at N1/2/3/128; synthetic cases
+cover odd, non-square and dimension16384 layouts. All outputs are checked, with
+poisoned old output, canaries, immutable reads and pre-enqueue rejection cases.
+
+The quantized wrapper's sole output-dimension extension is canonical Q6_K
+`output.weight [2560,248320]`. `core-head` computes all rows for N1/2/3, verifies
+every output is finite and full prefixes byte-exact, and compares 24 fixed rows
+(including EOS/end-of-vocabulary coordinates) against the independent common-Q8
+CPU oracle. It is not a full-output CPU oracle or whole-network logits fixture.
+Both GPU gates were frozen before execution: dense `2e-4+2e-4*abs(ref)`, head
+`2e-4+2e-5*abs(ref)`. Each reported event interval is completed and every one of
+20 repetitions validated; upload, quantization, reset, CPU oracle and readback
+are outside the resident linear measurement. No A/B or inference speed claim.
+Compiled provenance is ce05879/dirty1, preserved in results.jsonl; CTest19/19
+and 37 recorder tests passed. The next slice is direct 48-layer Session with
+teacher-forced intermediate/logits comparison, not another component milestone.

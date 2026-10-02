@@ -31,7 +31,8 @@ struct QuantizedDeviceMatrix {
 // success is not a completion guarantee or a check of tensor contents.
 // Compile linear.hip for gfx906 without fast-math, with -ffp-contract=off.
 
-// input/output dimensions <=16384; columns=1/2/3; input must be divisible by
+// input/output dimensions <=16384, plus the actual Q6_K LM head [2560,248320];
+// columns=1/2/3; input must be divisible by
 // the weight type's block_elements. Tokens are contiguous columns:
 // input[column*(matrix.input/32)+block], output[column*matrix.output+row].
 // Required capacities: weights = output*(input/block_elements)*block_bytes;

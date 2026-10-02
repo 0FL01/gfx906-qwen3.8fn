@@ -77,6 +77,8 @@ GDN GPU-пути адаптировать из mx decode/chunked и furnace resi
 
 ## R3. Первый сквозной самостоятельный runtime
 
+**Срез R3a закрыт 2026-10-02, R3 ещё не закрыт:** borrowed rocBLAS projection проверен на unchanged F32 и exact BF16→F32 values, N1/2/3/128, odd/non-square/max dimensions и beta-zero canaries на обеих GPU. Canonical Q6_K linear расширен только для actual LM head [2560,248320]; все output values finite, full prefix bytes exact, 24 выбранные строки сверены с common-Q8 oracle при N1/2/3. Remote CTest19/19 и recorder tests37 прошли, gates unchanged. Это не all-layer logits/full inference или A/B speedup; resident times/provenance — results.jsonl, команды — README.md. Далее прямой Session/48 layers и baseline teacher-forced/intermediate oracle.
+
 **Действия.** Соединить 48 слоёв в прямую последовательность вызовов. Один Session с заранее выделенными buffers; статический layer split. CPU misses и GPU hits первоначально могут синхронизироваться консервативно. Кеш и очередь копий должны сначала быть корректными.
 
 Сохранить owner/residency и producer-consumer контракты mx expert cache в собственных slots/maps/events, без импорта ggml scheduler. Публиковать slot только после всех uploads/repack, заменять только после readers. Между GPU передавать нужный residual 4×2560; P2P или ограниченный pinned staging выбирать по проверке R0, не по настройке чужого стека.

@@ -2,11 +2,11 @@
 
 ## Статус
 
-R0, R1 и срезы R2a–R2e закрыты: build/probe/baseline, loader/expert, KV/GDN/HC/PLE/QSA oracles и GPU primitives (2026-10-02). R2–R8 целиком ещё не закрыты; модель новым core ещё не исполняется. Скорости PLAN.md остаются целями.
+R0, R1, R2a–R2e и R3a закрыты: primitives, dense projections/LM head (2026-10-02). R2–R8 целиком ещё не закрыты; модель новым core ещё не исполняется. Скорости PLAN.md остаются целями.
 
 ## Задача
 
-R3: добавить F32/BF16 GPU projection, собрать прямой Session/48 layers с embeddings/LM head, layer split/cache и token-ID CLI, проверить intermediates/teacher-forced logits. hip/linear.* и hip/blocks.* integrated/GPU-qualified как isolated primitives, не полный projected block. Donor-first — PLAN.md/RECON.md §16; не повторять полный RECON. Основной KV target/MTP — Q4_0, expert layout canonical.
+R3b: прямой Session/48 layers с embeddings/LM head, layer split/cache и token-ID CLI; intermediates/teacher-forced logits. Все GPU projection/pointwise helpers integrated/qualified, не полный forward. No extra attention/FFN/final norm; Q/gate interleaved по512/head; MoE weights после down. Donor-first — PLAN.md/RECON.md §16. Основной KV target/MTP — Q4_0, expert layout canonical.
 
 ## Соединение и рабочие пути
 
@@ -29,6 +29,7 @@ GDN: как expert, entrypoint `/core/build/core-gdn`, target GGUF; stdout → r
 HC/PLE: CPU hc-test/ple-test --model target GGUF → runs/r2-hc-ple.jsonl; tools/record_hc_ple.py --raw ... --results ... . Команда в README.md.
 QSA: как expert, entrypoint `/core/build/core-qsa`; stdout → runs/r2-qsa-gpu.jsonl, stderr → runs/r2-qsa-gpu.err; tools/record_qsa.py --raw ... --results ... . Не использовать имя CPU boundary log.
 Linear/blocks: как expert, entrypoint `/core/build/core-linear` затем `/core/build/core-blocks`; logs runs/r2-linear-final.jsonl и r2-blocks.jsonl; tools/record_helpers.py --linear ... --blocks ... --results ... . Не запускать одновременно; полные команды README.md.
+Dense/head: как expert, entrypoint core-dense затем core-head; logs runs/r3-dense.jsonl/r3-head.jsonl; tools/record_dense.py --dense ... --head ... --results ... . Команды README.md.
 
 ## Исходный baseline пользователя
 
@@ -42,10 +43,11 @@ R0 hardware: actual 16 physical/32 logical cores, один NUMA, AVX2/FMA/F16C; 
 Новая baseline-серия, не оригинальные prompts: 4096+512 PP197.68/TG14.48, HTTP56.102s; sampling1/.95/20, MTP2/Q4 KV, один повтор без reuse. Occupancy/structured acceptance неизвестны; artifacts runs/r0-20261001T154816Z-4sffu3gz.
 R2d: обе GPU прошли 62-row fixture: Q4/tail bytes, pooled/score gates, same-score exact IDs/counts, causal/future/unselected poison, chronological rollback/error/reuse. Pooled max error7.15e-7, scores4.77e-6, attention1.21e-5 (frozen gates2e-4+2e-4|ref|). Resident 128K score~95us/select~112us; attention2048~1.1ms — bottleneck, не ускорение. CPU raw-FP32 synthetic projections/caches, не occupied128K inference. Remote CTest16/16 и local ASan/UBSan прошли. Raw r2-qsa-gpu*, boundaries r2-qsa-boundaries.jsonl; CPU log recovered by exact deterministic replay после filename collision, отмечен в result. Compiled c100866 dirty1, не подменять новым commit.
 R2e: обе GPU прошли 214+20-row common-Q8 linear/HC/PLE fixtures, gates unchanged. Remote CTest18/18/local common-Q8 ASan/UBSan; exact-byte producer/identical-input history и bounded parallel RMS. Это не full projection/inference; raw r2-linear-final/r2-blocks, compiled fa4ce49 dirty1. Ошибки fixture исправлены без изменения gates: read_slice по имени; tiny-scale max в каждом block; formatter переименован из-за std::quoted ADL.
+R3a: dense/head обе GPU прошли, CTest19/19, recorder37. Gates unchanged; full dense output и head sampled oracle/finite/prefix bytes, не all-layer logits. Compiled ce05879 dirty1; raw r3-dense/r3-head. Числа в results.jsonl. SGEMM small shapes ~0.17ms — кандидат для профиля R3/R5, не переключать до full forward.
 
 ## Следующие действия
 
-Подключить F32/BF16 GPU projections, расширить checked linear для LM head248320 rows, затем R3 Session/48 layers. Диагностировать measured attention cost без потери finite/publication guarantees; не бросать core ради одного kernel. GDN [V][v][k], h%16, chronological slot n; PLE hash/conv возвращать совместно. Actual RoPE sections — ARRAY INT32, не UINT32. Source excerpts runs/donors; views r1-inventory.log. Worker pool/cold DDR/DMA оставить R3/R5.
+R3 Session/48 layers и separate baseline oracle. GDN own/HF L2 uses sum+1e-6, mx max(sum,eps²): диагностировать численную разницу отдельно от wiring. QSA block-selection difference отдельно от pure speedup. GDN [V][v][k], h%16, chronological slot n; PLE hash/conv возвращать совместно. RoPE64 split-half парыj/j+32, text pos абсолютный; sections ARRAY INT32. Source excerpts runs/donors; views r1-inventory.log. Worker pool/cold DDR/DMA — R3/R5.
 
 ## Не повторять без причины
 

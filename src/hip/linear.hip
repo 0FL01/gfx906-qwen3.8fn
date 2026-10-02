@@ -322,11 +322,13 @@ hipError_t launch_quantized_linear(QuantizedDeviceMatrix matrix, const Q8_1* inp
                                   int columns, float* output, hipStream_t stream) noexcept {
     int block_elements = 0, block_bytes = 0;
     if (!layout(matrix.type, block_elements, block_bytes)) return hipErrorNotSupported;
-    if (!dimension(matrix.input) || !dimension(matrix.output) ||
+    const bool lm_head = matrix.type == TensorType::Q6_K &&
+                        matrix.input == 2560 && matrix.output == 248320;
+    if (!dimension(matrix.input) || (!dimension(matrix.output) && !lm_head) ||
         columns <= 0 || columns > linear_device_max_columns || matrix.input % block_elements)
         return hipErrorInvalidValue;
-    // Bounds above make every byte product fit even size_t32 (largest weight
-    // range is Q8_0: 16384*512*34 = 285212672 bytes). No unchecked signed product.
+    // Products fit size_t32: ordinary Q8_0 <=285212672 bytes; the sole larger
+    // shape is the actual Q6_K LM head, 248320*10*210=521472000 bytes.
     const auto rows = static_cast<std::size_t>(matrix.output);
     const auto width = static_cast<std::size_t>(matrix.input);
     const auto cols = static_cast<std::size_t>(columns);
