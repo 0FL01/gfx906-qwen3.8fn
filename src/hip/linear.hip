@@ -1,0 +1,365 @@
+#include "linear.cuh"
+#include "dpp.cuh"
+
+#include <hip/hip_fp16.h>
+#include <cmath>
+#include <cstddef>
+#include <cstdint>
+#include <limits>
+
+// ADAPT: mx-llama.cpp, dcd685463d597d31f5ca759d32c94592a2740fa4,
+// ggml/src/ggml-cuda/vecdotq.cuh::vec_dot_q{4_0,4_1,5_0,8_0,6_K}_q8_1,
+// their *_impl helpers, common.cuh::ggml_cuda_dp4a / gfx906 DPP reductions,
+// and quantize.cu::quantize_q8_1. Copyright (c) 2023-2026 The ggml authors;
+// MIT license, complete notice in third_party/mx-LICENSE. Q4 tiles are extracted
+// from this repo's R1-qualified hip/expert.hip (canonical, 2 rows / 3 columns).
+// KEEP: canonical on-disk bytes and our quant.hpp 36-byte raw-sum Q8_1 ABI.
+// ADAPT: multi-column weight register reuse; Q6_K's canonical MMVQ word slices.
+// WRITE OURS: borrowed-buffer API, range validation and numeric error handling.
+// Donor order/decision: mx above; furnace
+// 905021dbad71c5056ef51f9fd45d545403fc989c repack-gcn is a different repacked
+// consumer, not a canonical replacement; reinstinct
+// 0b79e326351d90d4554a1c18df92da5d0ab692e8 matvec multi-N pattern was inspected
+// in R1. Its 40-byte activation ABI / quantized-sum correction are not imported.
+
+#if defined(__FAST_MATH__) || (defined(__FINITE_MATH_ONLY__) && __FINITE_MATH_ONLY__ != 0)
+#error "linear.hip requires strict floating-point arithmetic (no fast-math)"
+#endif
+#if defined(__HIP_DEVICE_COMPILE__) && !defined(__gfx906__)
+#error "linear.hip requires gfx906 wave64"
+#endif
+#if defined(__clang__)
+#pragma clang fp contract(off)
+#endif
+
+namespace qwen {
+namespace {
+
+static_assert(sizeof(int) == 4 && sizeof(float) == 4);
+static_assert(sizeof(Q4_0) == 18 && offsetof(Q4_0, qs) == 2);
+static_assert(sizeof(Q4_1) == 20 && offsetof(Q4_1, qs) == 4);
+static_assert(sizeof(Q8_1) == 36 && offsetof(Q8_1, qs) == 4);
+
+struct Range { std::uintptr_t begin, end; };
+
+bool range(const void* pointer, std::size_t bytes, std::size_t alignment,
+           Range& result) noexcept {
+    const auto begin = reinterpret_cast<std::uintptr_t>(pointer);
+    if (!pointer || begin % alignment != 0 ||
+        bytes > static_cast<std::size_t>(std::numeric_limits<std::ptrdiff_t>::max()) ||
+        bytes > std::numeric_limits<std::uintptr_t>::max() - begin)
+        return false;
+    result = {begin, begin + bytes};
+    return true;
+}
+
+bool overlaps(Range a, Range b) noexcept {
+    return a.begin < b.end && b.begin < a.end;
+}
+
+bool dimension(int value) noexcept {
+    return value > 0 && value <= linear_device_max_dimension;
+}
+
+bool layout(TensorType type, int& elements, int& bytes) noexcept {
+    switch (type) {
+    case TensorType::Q4_0: elements = 32; bytes = 18; return true;
+    case TensorType::Q4_1: elements = 32; bytes = 20; return true;
+    case TensorType::Q5_0: elements = 32; bytes = 22; return true;
+    case TensorType::Q8_0: elements = 32; bytes = 34; return true;
+    case TensorType::Q6_K: elements = 256; bytes = 210; return true;
+    default: return false;
+    }
+}
+
+__device__ __forceinline__ float from_half(std::uint16_t bits) {
+    return __half2float(__ushort_as_half(bits));
+}
+
+__device__ __forceinline__ std::uint16_t to_half(float value) {
+    return __half_as_ushort(__float2half_rn(value));
+}
+
+// Canonical blocks have 2-byte strides/alignment (e.g. Q8_0 stride34,
+// Q6_K stride210). Do not replace this with a potentially unaligned int load.
+// ADAPT mx vecdotq.cuh::get_int_b2 / qualified expert.hip::word2.
+__device__ __forceinline__ std::uint32_t word2(const std::uint8_t* bytes, int index) {
+    const auto* halves = reinterpret_cast<const std::uint16_t*>(bytes);
+    return std::uint32_t(halves[2 * index]) |
+           (std::uint32_t(halves[2 * index + 1]) << 16);
+}
+
+__global__ void quantize(const float* input, Q8_1* output, int elements, int* error) {
+    const int index = blockIdx.x * blockDim.x + threadIdx.x;
+    if (index >= elements) return; // Whole width32 groups; no partial XOR sum.
+    const int lane = index % 32;
+    float x = input[index];
+    int bad = !isfinite(x);
+    if (bad) x = 0.0f;
+    float amax = fabsf(x);
+    for (int mask = 1; mask < 32; mask *= 2) {
+        amax = fmaxf(amax, __shfl_xor(amax, mask, 32));
+        bad |= __shfl_xor(bad, mask, 32);
+    }
+    const float sum = sum32(x), d = amax / 127.0f;
+    const auto hd = to_half(d), hs = to_half(sum);
+    const bool representable = isfinite(sum) && (hs & 0x7c00) != 0x7c00 &&
+                              (hd & 0x7c00) != 0x7c00 && (amax == 0.0f || hd != 0);
+    const bool valid = !bad && representable;
+    auto& block = output[index / 32];
+    block.qs[lane] = valid && amax != 0.0f ?
+                    static_cast<std::int8_t>(roundf(x / d)) : 0;
+    if (lane == 0) {
+        block.d = valid && amax != 0.0f ? hd : 0;
+        block.s = valid && amax != 0.0f ? hs : 0;
+        const int bits = (bad ? 1 : 0) | (representable ? 0 : 2);
+        if (bits) atomicOr(error, bits);
+    }
+}
+
+// A complete block32, decoded into eight SDOT4 operands once per weight row.
+// Integer dots are exact even for caller-supplied activation code -128.
+// Q5 uses vec_dot_q5_0_q8_1_impl with vdr=4; Q8 uses the float scale
+// specialization with vdr=8. Compared with MMVQ wrapper fragments this combines
+// integer dots before scaling, as the qualified Q4 path does, not after scaling.
+struct Tile32 {
+    std::uint32_t codes[8];
+    float d, m;
+};
+
+template<TensorType Type>
+__device__ __forceinline__ Tile32 load32(const std::uint8_t* block) {
+    Tile32 tile{};
+    tile.d = from_half(*reinterpret_cast<const std::uint16_t*>(block));
+    if constexpr (Type == TensorType::Q8_0) {
+        for (int j = 0; j < 8; ++j) tile.codes[j] = word2(block + 2, j);
+    } else {
+        constexpr int offset = Type == TensorType::Q4_0 ? 2 :
+                               Type == TensorType::Q4_1 ? 4 : 6;
+        if constexpr (Type == TensorType::Q4_1)
+            tile.m = from_half(*reinterpret_cast<const std::uint16_t*>(block + 2));
+        std::uint32_t high = 0;
+        if constexpr (Type == TensorType::Q5_0) high = word2(block + 2, 0);
+        for (int j = 0; j < 4; ++j) {
+            const auto packed = word2(block + offset, j);
+            auto low = packed & 0x0f0f0f0fu;
+            auto upper = (packed >> 4) & 0x0f0f0f0fu;
+            if constexpr (Type == TensorType::Q5_0) {
+                // ADAPT vec_dot_q5_0_q8_1_impl: qh bit i belongs to element i.
+                const auto h = high >> (4 * j);
+                low |= (h << 4) & 0x00000010u;
+                low |= (h << 11) & 0x00001000u;
+                low |= (h << 18) & 0x00100000u;
+                low |= (h << 25) & 0x10000000u;
+                upper |= (h >> 12) & 0x00000010u;
+                upper |= (h >> 5) & 0x00001000u;
+                upper |= (h << 2) & 0x00100000u;
+                upper |= (h << 9) & 0x10000000u;
+            }
+            tile.codes[j] = low;
+            tile.codes[j + 4] = upper;
+        }
+    }
+    return tile;
+}
+
+template<TensorType Type>
+__device__ __forceinline__ float dot32(const Tile32& tile, const int* q8,
+                                     float dx, float sx) {
+    int dot = 0;
+    for (int j = 0; j < 8; ++j)
+        dot = __builtin_amdgcn_sdot4(tile.codes[j], q8[j], dot, false);
+    if constexpr (Type == TensorType::Q4_1) {
+        const float dd = from_half(to_half(tile.d * dx));
+        const float ms = from_half(to_half(tile.m * sx));
+        return float(dot) * dd + ms;
+    } else if constexpr (Type == TensorType::Q8_0) {
+        // vec_dot_q8_0_q8_1_impl<float>: FP32 product, NOT half-rounded.
+        return (tile.d * dx) * float(dot);
+    } else {
+        constexpr float correction = Type == TensorType::Q4_0 ? 8.0f : 16.0f;
+        return tile.d * (float(dot) * dx - correction * sx);
+    }
+}
+
+// Four wave64s, each producing two rows and 1..3 columns. Weights/scales are
+// loaded once and reused across columns, activations reused across both rows.
+template<TensorType Type, int Columns>
+__global__ void matrix32(const std::uint8_t* weights, const Q8_1* input,
+                         float* output, int blocks, int rows) {
+    constexpr int bytes = Type == TensorType::Q4_0 ? 18 :
+                          Type == TensorType::Q4_1 ? 20 :
+                          Type == TensorType::Q5_0 ? 22 : 34;
+    const int lane = threadIdx.x % 64;
+    const int row0 = blockIdx.x * 8 + (threadIdx.x / 64) * 2;
+    float acc[2][Columns]{};
+    for (int k = lane; k < blocks; k += 64) {
+        Tile32 tile[2]{};
+        for (int r = 0; r < 2; ++r) {
+            if (row0 + r < rows)
+                tile[r] = load32<Type>(weights +
+                        (std::size_t(row0 + r) * blocks + k) * bytes);
+        }
+        for (int c = 0; c < Columns; ++c) {
+            const auto& x = input[std::size_t(c) * blocks + k];
+            const float dx = from_half(x.d), sx = from_half(x.s);
+            // Q8_1 base alignment is checked as 4, and sizeof(Q8_1) is 36.
+            const auto* q8 = reinterpret_cast<const int*>(x.qs);
+            int codes[8];
+            for (int j = 0; j < 8; ++j) codes[j] = q8[j];
+            for (int r = 0; r < 2; ++r)
+                if (row0 + r < rows) acc[r][c] += dot32<Type>(tile[r], codes, dx, sx);
+        }
+    }
+    // All lanes participate even when blocks<64 or the last tile has odd rows.
+    for (int r = 0; r < 2; ++r) for (int c = 0; c < Columns; ++c) {
+        const float value = sum64(acc[r][c]);
+        if (lane == 0 && row0 + r < rows)
+            output[std::size_t(c) * rows + row0 + r] = value;
+    }
+}
+
+struct Tile6 {
+    std::uint32_t codes[2];
+    int scales[2];
+    float d;
+};
+
+__device__ __forceinline__ Tile6 load6(const std::uint8_t* block, int iqs) {
+    // Canonical block: ql[128], qh[64], int8 scales[16], half d (offset208).
+    // mx QI6_K=32, QR6_K=2, QI8_1=8. Each iqs represents a four-element
+    // slice in two quarters 64 elements apart, not two adjacent Q8_1 blocks.
+    const int half = iqs / 16, quarter = (iqs % 16) / 8;
+    const int scale = half * 8 + (iqs % 16) / 4;
+    const auto vl = word2(block, iqs);
+    const auto vh = word2(block + 128, half * 8 + iqs % 8) >> (2 * quarter);
+    const auto* scales = reinterpret_cast<const std::int8_t*>(block + 192);
+    Tile6 tile{};
+    tile.d = from_half(*reinterpret_cast<const std::uint16_t*>(block + 208));
+    for (int i = 0; i < 2; ++i) {
+        const auto low = (vl >> (4 * i)) & 0x0f0f0f0fu;
+        const auto high = ((vh >> (4 * i)) << 4) & 0x30303030u;
+        // Exact bytewise (code-32), equivalent to donor __vsubss4 here:
+        // setting each byte's high bit prevents borrow into the next byte;
+        // XOR removes that bias, leaving signed int8 codes in [-32,31].
+        tile.codes[i] = (((low | high) | 0x80808080u) - 0x20202020u) ^ 0x80808080u;
+        tile.scales[i] = scales[scale + 4 * i];
+    }
+    return tile;
+}
+
+template<int Columns>
+__global__ void matrix6(const std::uint8_t* weights, const Q8_1* input,
+                        float* output, int blocks, int rows) {
+    const int lane = threadIdx.x % 64;
+    const int row0 = blockIdx.x * 8 + (threadIdx.x / 64) * 2;
+    float acc[2][Columns]{};
+    // 32 word slices per block256; one wave covers two weight blocks per pass.
+    for (int work = lane; work < blocks * 32; work += 64) {
+        const int k = work / 32, iqs = work % 32;
+        const int q8_offset = 4 * (iqs / 16) + (iqs % 16) / 8;
+        Tile6 tile[2]{};
+        for (int r = 0; r < 2; ++r)
+            if (row0 + r < rows)
+                tile[r] = load6(weights + (std::size_t(row0 + r) * blocks + k) * 210, iqs);
+        for (int c = 0; c < Columns; ++c) {
+            const auto* x = input + std::size_t(c) * blocks * 8 + k * 8 + q8_offset;
+            int codes[2]; float dx[2];
+            for (int i = 0; i < 2; ++i) {
+                codes[i] = reinterpret_cast<const int*>(x[2 * i].qs)[iqs % 8];
+                dx[i] = from_half(x[2 * i].d);
+            }
+            for (int r = 0; r < 2; ++r) {
+                if (row0 + r >= rows) continue;
+                // Keep vec_dot_q6_K_q8_1_impl_mmvq grouping exactly: scale
+                // multiplies the integer dot BEFORE FP32 d8, then d6 multiplies
+                // the two-term sum. No half scale product and no raw-sum offset.
+                float sum = 0.0f;
+                for (int i = 0; i < 2; ++i) {
+                    const int dot = __builtin_amdgcn_sdot4(tile[r].codes[i], codes[i], 0, false);
+                    sum += dx[i] * float(dot * tile[r].scales[i]);
+                }
+                acc[r][c] += tile[r].d * sum;
+            }
+        }
+    }
+    for (int r = 0; r < 2; ++r) for (int c = 0; c < Columns; ++c) {
+        const float value = sum64(acc[r][c]);
+        if (lane == 0 && row0 + r < rows)
+            output[std::size_t(c) * rows + row0 + r] = value;
+    }
+}
+
+template<int Columns>
+void enqueue(QuantizedDeviceMatrix matrix, const Q8_1* input, float* output,
+             hipStream_t stream) noexcept {
+    const dim3 grid((matrix.output + 7) / 8);
+    const auto* weights = static_cast<const std::uint8_t*>(matrix.weights);
+    const int blocks = matrix.input / 32;
+    switch (matrix.type) {
+    case TensorType::Q4_0:
+        matrix32<TensorType::Q4_0, Columns><<<grid, 256, 0, stream>>>(weights, input, output, blocks, matrix.output);
+        break;
+    case TensorType::Q4_1:
+        matrix32<TensorType::Q4_1, Columns><<<grid, 256, 0, stream>>>(weights, input, output, blocks, matrix.output);
+        break;
+    case TensorType::Q5_0:
+        matrix32<TensorType::Q5_0, Columns><<<grid, 256, 0, stream>>>(weights, input, output, blocks, matrix.output);
+        break;
+    case TensorType::Q8_0:
+        matrix32<TensorType::Q8_0, Columns><<<grid, 256, 0, stream>>>(weights, input, output, blocks, matrix.output);
+        break;
+    case TensorType::Q6_K:
+        matrix6<Columns><<<grid, 256, 0, stream>>>(weights, input, output, matrix.input / 256, matrix.output);
+        break;
+    default: break; // Unsupported types were rejected before enqueue.
+    }
+}
+
+} // namespace
+
+hipError_t launch_quantized_linear(QuantizedDeviceMatrix matrix, const Q8_1* input,
+                                  int columns, float* output, hipStream_t stream) noexcept {
+    int block_elements = 0, block_bytes = 0;
+    if (!layout(matrix.type, block_elements, block_bytes)) return hipErrorNotSupported;
+    if (!dimension(matrix.input) || !dimension(matrix.output) ||
+        columns <= 0 || columns > linear_device_max_columns || matrix.input % block_elements)
+        return hipErrorInvalidValue;
+    // Bounds above make every byte product fit even size_t32 (largest weight
+    // range is Q8_0: 16384*512*34 = 285212672 bytes). No unchecked signed product.
+    const auto rows = static_cast<std::size_t>(matrix.output);
+    const auto width = static_cast<std::size_t>(matrix.input);
+    const auto cols = static_cast<std::size_t>(columns);
+    const auto weight_bytes = rows * (width / block_elements) * block_bytes;
+    const auto input_bytes = cols * (width / 32) * sizeof(Q8_1);
+    const auto output_bytes = cols * rows * sizeof(float);
+    Range weights_range{}, input_range{}, output_range{};
+    if (!range(matrix.weights, weight_bytes, 2, weights_range) ||
+        !range(input, input_bytes, 4, input_range) ||
+        !range(output, output_bytes, 4, output_range) ||
+        overlaps(output_range, weights_range) || overlaps(output_range, input_range))
+        return hipErrorInvalidValue;
+    if (columns == 1) enqueue<1>(matrix, input, output, stream);
+    else if (columns == 2) enqueue<2>(matrix, input, output, stream);
+    else enqueue<3>(matrix, input, output, stream);
+    return hipGetLastError();
+}
+
+hipError_t launch_quantize_q8_1(const float* input, Q8_1* output, int width,
+                               int columns, int* error, hipStream_t stream) noexcept {
+    if (!dimension(width) || !dimension(columns) || width % 32) return hipErrorInvalidValue;
+    // <=2^28 elements; all byte products fit size_t32 and ptrdiff_t32.
+    const auto elements = static_cast<std::size_t>(width) * static_cast<std::size_t>(columns);
+    Range input_range{}, output_range{}, error_range{};
+    if (!range(input, elements * sizeof(float), 4, input_range) ||
+        !range(output, (elements / 32) * sizeof(Q8_1), 4, output_range) ||
+        !range(error, sizeof(int), 4, error_range) ||
+        overlaps(output_range, input_range) || overlaps(error_range, input_range) ||
+        overlaps(error_range, output_range))
+        return hipErrorInvalidValue;
+    const int count = static_cast<int>(elements);
+    quantize<<<(count + 255) / 256, 256, 0, stream>>>(input, output, count, error);
+    return hipGetLastError();
+}
+
+} // namespace qwen

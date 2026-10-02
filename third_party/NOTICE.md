@@ -53,4 +53,18 @@
   appear inline and in `mx-LICENSE`. Reinstinct partial/merge at the revision
   above is a design/algebra reference, not an imported Q8 backend.
 
+- `src/hip/linear.hip` adapts mx canonical Q4_0/Q4_1/Q5_0/Q8_0/Q6_K
+  `vecdotq.cuh`, Q8_1 `quantize.cu` and qualified R1 register-reuse/DPP patterns.
+  Modifications: borrowed checked buffers, N1/2/3 two-row reuse, full-block32
+  Q4/Q5/Q8 integer dots, canonical Q6 MMVQ slices, raw-sum/half-product ABI,
+  representable-scale and finite activation errors. `linear_reference.cpp`
+  is an original independently decoded common-Q8 scalar oracle.
+- `src/hip/blocks.hip` adapts mx `norm.cu` strided/wave/LDS reductions and
+  furnace `dsv4-hc.cu` coalesced pre/post patterns at the revisions above.
+  Modifications: Qwen C4 sigmoid/SiLU/direct-gamma equations (not DeepSeek
+  Sinkhorn), strict finite arithmetic and provisional outputs. PLE gate,
+  dilation3 state/prefix staging and conditional history publication are original.
+  Reinstinct RMS is a layout/design reference, not an imported runtime.
+  Copyright (c) 2023-2026 The ggml authors; MIT in `mx-LICENSE`.
+
 Upstream URLs and rejected donor options: RECON.md section 16.

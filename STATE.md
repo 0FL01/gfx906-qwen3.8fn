@@ -2,11 +2,11 @@
 
 ## Статус
 
-R0, R1 и срезы R2a–R2d закрыты: build/probe/baseline, loader/expert, Q4 KV/Hadamard, GDN, HC/PLE CPU и numeric QSA CPU/HIP (2026-10-02). R2–R8 целиком ещё не закрыты; модель новым core ещё не исполняется. Скорости PLAN.md остаются целями.
+R0, R1 и срезы R2a–R2e закрыты: build/probe/baseline, loader/expert, KV/GDN/HC/PLE/QSA oracles и GPU primitives (2026-10-02). R2–R8 целиком ещё не закрыты; модель новым core ещё не исполняется. Скорости PLAN.md остаются целями.
 
 ## Задача
 
-Квалифицировать GPU quantized linear и HC/PLE launchers, добавить dense GPU path для F32/BF16 перед R3 forward. Четыре hip/linear.* и hip/blocks.* пока untracked/не integrated, не GPU-qualified. Donor-first — PLAN.md/RECON.md §16; не повторять полный RECON. Основной KV target/MTP — Q4_0, expert layout canonical.
+R3: добавить F32/BF16 GPU projection, собрать прямой Session/48 layers с embeddings/LM head, layer split/cache и token-ID CLI, проверить intermediates/teacher-forced logits. hip/linear.* и hip/blocks.* integrated/GPU-qualified как isolated primitives, не полный projected block. Donor-first — PLAN.md/RECON.md §16; не повторять полный RECON. Основной KV target/MTP — Q4_0, expert layout canonical.
 
 ## Соединение и рабочие пути
 
@@ -28,6 +28,7 @@ KV: как probe, entrypoint `/core/build/core-kv`; stdout → runs/r2-kv.jsonl.
 GDN: как expert, entrypoint `/core/build/core-gdn`, target GGUF; stdout → runs/r2-gdn.jsonl, stderr → runs/r2-gdn.err; tools/record_gdn.py --raw ... --results ... . Полная команда в README.md.
 HC/PLE: CPU hc-test/ple-test --model target GGUF → runs/r2-hc-ple.jsonl; tools/record_hc_ple.py --raw ... --results ... . Команда в README.md.
 QSA: как expert, entrypoint `/core/build/core-qsa`; stdout → runs/r2-qsa-gpu.jsonl, stderr → runs/r2-qsa-gpu.err; tools/record_qsa.py --raw ... --results ... . Не использовать имя CPU boundary log.
+Linear/blocks: как expert, entrypoint `/core/build/core-linear` затем `/core/build/core-blocks`; logs runs/r2-linear-final.jsonl и r2-blocks.jsonl; tools/record_helpers.py --linear ... --blocks ... --results ... . Не запускать одновременно; полные команды README.md.
 
 ## Исходный baseline пользователя
 
@@ -40,10 +41,11 @@ QSA: как expert, entrypoint `/core/build/core-qsa`; stdout → runs/r2-qsa-gp
 R0 hardware: actual 16 physical/32 logical cores, один NUMA, AVX2/FMA/F16C; две wave64/CU60 gfx906 по17 163 091 968 bytes; copies/P2P/events/rocBLAS прошли. R1 target1224/sidecar32/expert прошли; CPU inlined/F16C принят A/B/A, GPU canonical. R2a Q4/Hadamard bytes exact; при2052 CPU source-emulation fork имеет3 extra IDs, не baseline GPU/logits доказательство. R2b GDN state/history/chunk/restore и R2c CPU actual HC/PLE gates прошли; hash baseline bug не найден. Подробные числа/сырые logs — один results.jsonl и README.md, не speed claims полного inference.
 Новая baseline-серия, не оригинальные prompts: 4096+512 PP197.68/TG14.48, HTTP56.102s; sampling1/.95/20, MTP2/Q4 KV, один повтор без reuse. Occupancy/structured acceptance неизвестны; artifacts runs/r0-20261001T154816Z-4sffu3gz.
 R2d: обе GPU прошли 62-row fixture: Q4/tail bytes, pooled/score gates, same-score exact IDs/counts, causal/future/unselected poison, chronological rollback/error/reuse. Pooled max error7.15e-7, scores4.77e-6, attention1.21e-5 (frozen gates2e-4+2e-4|ref|). Resident 128K score~95us/select~112us; attention2048~1.1ms — bottleneck, не ускорение. CPU raw-FP32 synthetic projections/caches, не occupied128K inference. Remote CTest16/16 и local ASan/UBSan прошли. Raw r2-qsa-gpu*, boundaries r2-qsa-boundaries.jsonl; CPU log recovered by exact deterministic replay после filename collision, отмечен в result. Compiled c100866 dirty1, не подменять новым commit.
+R2e: обе GPU прошли 214+20-row common-Q8 linear/HC/PLE fixtures, gates unchanged. Remote CTest18/18/local common-Q8 ASan/UBSan; exact-byte producer/identical-input history и bounded parallel RMS. Это не full projection/inference; raw r2-linear-final/r2-blocks, compiled fa4ce49 dirty1. Ошибки fixture исправлены без изменения gates: read_slice по имени; tiny-scale max в каждом block; formatter переименован из-за std::quoted ADL.
 
 ## Следующие действия
 
-Квалифицировать hip/linear.cuh (Q4/Q5/Q8/Q6 SDOT4/common Q8) и hip/blocks.cuh (HC/PLE), подключить F32/BF16 GPU projections, затем R3 Session/48 layers. Диагностировать measured attention cost без потери finite/publication guarantees; не бросать core ради одного kernel. GDN [V][v][k], h%16, chronological slot n; PLE hash/conv возвращать совместно. Actual RoPE sections — ARRAY INT32, не UINT32. Source excerpts runs/donors; views r1-inventory.log. Worker pool/cold DDR/DMA оставить R3/R5.
+Подключить F32/BF16 GPU projections, расширить checked linear для LM head248320 rows, затем R3 Session/48 layers. Диагностировать measured attention cost без потери finite/publication guarantees; не бросать core ради одного kernel. GDN [V][v][k], h%16, chronological slot n; PLE hash/conv возвращать совместно. Actual RoPE sections — ARRAY INT32, не UINT32. Source excerpts runs/donors; views r1-inventory.log. Worker pool/cold DDR/DMA оставить R3/R5.
 
 ## Не повторять без причины
 

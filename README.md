@@ -318,3 +318,59 @@ keys) remains a bottleneck to diagnose. `results.jsonl` preserves numerical scop
 and provenance. CPU boundary and GPU logs now have distinct names; the earlier
 CPU diagnostic log was overwritten by a filename collision, deterministically
 replayed with every recorded row matching, and explicitly marked as recovered.
+
+## R2e: reusable quantized projection and GPU HC/PLE primitives
+
+`hip/linear.cuh` consumes unchanged canonical Q4_0/Q4_1/Q5_0/Q8_0/Q6_K
+weights and the qualified 36-byte raw-sum Q8_1 activation ABI. N1/2/3 share
+weight registers and two output rows; dimensions are currently bounded by
+16384. Q5 retains the `-16*s8` correction, Q8 uses FP32 scale products and
+Q6 keeps MMVQ four-element/two-quarter integer-subscale grouping. The independent
+`linear_reference.hpp` scalar oracle checks these expressions, not a raw-FP32
+dequantized dot. Weight/input scales must be validated before this borrowed-buffer
+linear launch; the producer's sticky quantization error must be checked in order.
+
+`hip/blocks.cuh` provides direct-gamma group RMS, HC SiLU/sigmoid mixing/injection,
+original-residual combination, PLE signed-root gating and dilation3/conv4 history.
+Parallel RMS/dot ordering has bounded error; identical normalized convolution
+inputs give exact chronological history. Prefix slot `1+a`, rejected publication,
+repeated accept0 and keep-mask behavior are checked. Numeric errors keep the entire
+active PLE history unchanged; other outputs are provisional until error completion.
+
+```sh
+docker run --rm --name core-linear --device /dev/kfd --device /dev/dri \
+  --group-add video --ipc host --security-opt seccomp=unconfined \
+  --entrypoint /core/build/core-linear \
+  -v /home/radneon/gfx906-core:/core -v /home/radneon/models-nvme:/models:ro \
+  llama.cpp-gfx906:cmake-4.4.3 /models/qwen38-keep1-Q4_0.gguf \
+  > /home/radneon/gfx906-core/runs/r2-linear-final.jsonl \
+  2> /home/radneon/gfx906-core/runs/r2-linear-final.err
+docker run --rm --name core-blocks --device /dev/kfd --device /dev/dri \
+  --group-add video --ipc host --security-opt seccomp=unconfined \
+  --entrypoint /core/build/core-blocks \
+  -v /home/radneon/gfx906-core:/core -v /home/radneon/models-nvme:/models:ro \
+  llama.cpp-gfx906:cmake-4.4.3 /models/qwen38-keep1-Q4_0.gguf \
+  > /home/radneon/gfx906-core/runs/r2-blocks.jsonl \
+  2> /home/radneon/gfx906-core/runs/r2-blocks.err
+python3 -B /home/radneon/gfx906-core/src/tools/record_helpers.py \
+  --linear /home/radneon/gfx906-core/runs/r2-linear-final.jsonl \
+  --blocks /home/radneon/gfx906-core/runs/r2-blocks.jsonl \
+  --results /home/radneon/gfx906-core/results.jsonl
+```
+
+Check both process exit statuses before collecting; do not run concurrently.
+Both GPUs pass 110 common-Q8 matrix cases, 123 quantization cases and all five
+types, including signed-code extrema, odd rows, block boundaries, width16384 and
+up to nine unchanged actual rows per type. Blocks use **same synthetic projections**
+with actual gamma/F16 convolution, not actual matrix multiplication. Their N1/2/3/128
+fixtures validate finite/alias/canary/error/reuse, root widened-tap preservation and
+paired prefix history. Gates remain linear `2e-4+2e-5*|reference|`, blocks
+`2e-4+2e-4*|reference|`; large-finite tests report absolute error relative to their
+large input magnitudes, alongside the per-element bound ratio.
+
+Remote CTest18/18 and local common-Q8 ASan/UBSan pass. Measurements are means of
+20 individually completed resident HIP-event intervals with each result validated;
+quantization/projections where absent, transfers, resets, references and validation
+are excluded. This is component qualification, **not** a full projected HC/PLE
+block, A/B speedup or request throughput. F32/BF16 projection and the 48-layer Session
+remain next. Numerical evidence/provenance live in the single `results.jsonl`.
