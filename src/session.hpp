@@ -13,8 +13,8 @@ struct SessionConfig {
     int expert_slots = 112;
     // Empty disables all synchronous intermediate capture. Diagnostics only.
     std::string trace_directory;
-    // Preallocated logical chunk capacity, 1..1024 (projection tiles <=128).
-    // Capacities >3 opt into the unqualified bounded-prefill candidate.
+    // Preallocated logical chunk capacity, 1..1024 (canonical projection tiles <=8).
+    // Bounded prefill; real 4K/16K and longer-history qualification is separate.
     // Append after the existing fields
     // so positional aggregate initialization keeps its source contract.
     int max_batch_tokens = 1;
@@ -24,6 +24,15 @@ struct SessionStats {
     std::uint64_t consumed_tokens = 0;
     std::uint64_t expert_hits = 0, expert_misses = 0, expert_upload_bytes = 0;
     double last_completed_ms = 0;
+};
+
+// Completed-call routing diagnostics, separate from the historical SessionStats.
+// Count logical assignments to a single expert in a layer, before physical tiling.
+struct SessionRouteStats {
+    // Maximum across all 48 layers of the last successfully completed call.
+    std::uint64_t last_max_expert_group_assignments = 0;
+    // Cumulative number of call/layer/expert groups with >128 assignments since reset.
+    std::uint64_t expert_groups_gt128 = 0;
 };
 
 struct SessionDeviceMemory {
@@ -68,7 +77,11 @@ public:
     // the entire window's IDs/length/capacity before any state/cache mutation.
     std::span<const float> step_batch(std::span<const std::int32_t> tokens);
     void reset();
+    // Exclusive, nonconcurrent snapshots; neither accessor synchronizes or allocates.
     SessionStats stats() const;
+    // Failed execution/argument rejection retains the last successful diagnostics.
+    // Construction and a successfully completed reset() clear both fields.
+    SessionRouteStats route_stats() const;
     // Drains owned compute/copy streams and restores the caller's current device.
     // Does not modify logits, state, cache maps, counters or logical visibility.
     SessionMemory memory() const;

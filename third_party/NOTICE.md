@@ -108,6 +108,9 @@
   are not imported. This scheduling introduces no new weight/activation ABI,
   arithmetic or dependency; the existing mx/furnace MIT and reinstinct
   Apache-2.0 attribution above remains applicable to the adapted primitives.
+  Completed-call `SessionRouteStats`/`route_stats()` diagnostics and the logical
+  wide-prefill fixture/collector are original code. They measure assignments
+  before physical tiling and introduce no new donor component or license.
 
 - `src/hip/mmq.hip` adapts mx `mmq-load-tiles.cuh`, `mmq-vec-dot.cuh`,
   `mmq.cuh` and `vecdotq.cuh` canonical Q4 DP4A tile/load/dot/writeback seams

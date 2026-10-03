@@ -35,6 +35,23 @@ void check_zero_stats(const qwen::SessionStats& stats, const std::string& where)
             stats.last_completed_ms == 0, where + ": reset statistics are not zero");
 }
 
+void check_zero_route_stats(const qwen::SessionRouteStats& stats, const std::string& where) {
+    require(stats.last_max_expert_group_assignments == 0 && stats.expert_groups_gt128 == 0,
+            where + ": reset routing diagnostics are not zero");
+}
+
+void check_completed_route_stats(const qwen::SessionRouteStats& stats, const std::string& where) {
+    require(stats.last_max_expert_group_assignments == 1 && stats.expert_groups_gt128 == 0,
+            where + ": N1 routing diagnostics must be exactly max1/gt128=0");
+}
+
+void check_same_route_stats(const qwen::SessionRouteStats& actual, const qwen::SessionRouteStats& expected,
+                            const std::string& where) {
+    require(actual.last_max_expert_group_assignments == expected.last_max_expert_group_assignments &&
+            actual.expert_groups_gt128 == expected.expert_groups_gt128,
+            where + ": routing diagnostics changed");
+}
+
 void check_completed_stats(const qwen::SessionStats& stats, const qwen::SessionStats& previous,
                            std::size_t position, const std::string& where) {
     require(stats.consumed_tokens == position + 1, where + ": consumed count");
@@ -75,6 +92,7 @@ void expect_rejection(qwen::Session& session, std::int32_t token,
                       std::span<const float> prior_logits, std::span<const float> saved_logits,
                       const std::string& where) {
     const auto before = session.stats();
+    const auto routes_before = session.route_stats();
     bool rejected = false;
     try {
         static_cast<void>(session.step(token));
@@ -90,6 +108,7 @@ void expect_rejection(qwen::Session& session, std::int32_t token,
             std::bit_cast<std::uint64_t>(after.last_completed_ms) ==
                 std::bit_cast<std::uint64_t>(before.last_completed_ms),
             where + ": rejection mutated statistics");
+    check_same_route_stats(session.route_stats(), routes_before, where + ": rejection");
     // These argument checks precede the mutation/invalidating try block in step().
     // Its existing host_logits storage must therefore still contain the prior result.
     check_exact_logits(prior_logits, saved_logits, where + ": rejection mutated logits");
@@ -152,6 +171,7 @@ int main(int argc, char** argv) {
             qwen::Session session(argv[1], config);
             initial = session.stats();
             check_zero_stats(initial, "construction");
+            check_zero_route_stats(session.route_stats(), "construction");
             auto previous = initial;
             std::span<const float> logits;
             for (std::size_t i = 0; i < teacher_ids.size(); ++i) {
@@ -161,6 +181,7 @@ int main(int argc, char** argv) {
                 finite_values += logits.size();
                 baseline[i] = session.stats();
                 check_completed_stats(baseline[i], previous, i, where);
+                check_completed_route_stats(session.route_stats(), where);
                 previous = baseline[i];
                 std::copy(logits.begin(), logits.end(),
                           reference.begin() + static_cast<std::ptrdiff_t>(i * vocabulary));
@@ -172,6 +193,7 @@ int main(int argc, char** argv) {
             session.reset();
             after_reset = session.stats();
             check_zero_stats(after_reset, "reset after capacity rejection");
+            check_zero_route_stats(session.route_stats(), "reset after capacity rejection");
             previous = after_reset;
             for (std::size_t i = 0; i < teacher_ids.size(); ++i) {
                 const auto where = "reset replay step " + std::to_string(i);
@@ -182,6 +204,7 @@ int main(int argc, char** argv) {
                 compared_values += logits.size();
                 replay[i] = session.stats();
                 check_completed_stats(replay[i], previous, i, where);
+                check_completed_route_stats(session.route_stats(), where);
                 previous = replay[i];
                 if (i == 0) {
                     // Capacity remains available. Continue WITHOUT reset after
@@ -199,6 +222,7 @@ int main(int argc, char** argv) {
             session.reset();
             final_reset = session.stats();
             check_zero_stats(final_reset, "final reset");
+            check_zero_route_stats(session.route_stats(), "final reset");
         } // Complete RAII Session cleanup before emitting any success record.
 
         std::ostringstream record;

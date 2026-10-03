@@ -682,7 +682,7 @@ struct Layer {
         attn_output.apply(d, d.f(13), d.f(9), tokens);
         observe("block_attention_out", d.f(9), H);
     }
-    template<class Observe> void ffn(SessionStats& stats, int tokens, Observe&& observe) {
+    template<class Observe> void ffn(SessionStats& stats, SessionRouteStats& call_routes, int tokens, Observe&& observe) {
         auto& d = device;
         router.apply(d, d.f(6), d.f(9), tokens);
         tiles(tokens, [&](int first, int count) {
@@ -741,6 +741,9 @@ struct Layer {
         hip(hipMemsetAsync(d.f(20), 0, tokens * H * sizeof(float), d.stream));
         const auto* original = reinterpret_cast<const Q8_1*>(d.f(21));
         if (tokens == 1) {
+            // partial_sort above preserves the iota permutation: ten distinct
+            // routes, hence exactly one assignment per selected expert for N1.
+            call_routes.last_max_expert_group_assignments = 1;
             // Retain N1 physical cache/LRU order and immediate rank-order adds.
             for (int rank = 0; rank < 10; ++rank) {
                 experts.run(d, ids[rank], original, weights[rank], stats);
@@ -750,6 +753,13 @@ struct Layer {
             }
         } else {
             d.routes->prepare(std::span(ids).first(tokens * 10), std::span(weights).first(tokens * 10), tokens);
+            // prepare validated uniqueness per token. Scan the existing logical
+            // histogram once, before any expert microtile/staging execution.
+            for (const int count : d.routes->counts()) {
+                call_routes.last_max_expert_group_assignments = std::max(
+                    call_routes.last_max_expert_group_assignments, static_cast<std::uint64_t>(count));
+                if (count > 128) ++call_routes.expert_groups_gt128;
+            }
             if (tokens > 3) experts.run_chunk(d, original, stats);
             else {
                 auto* gathered = reinterpret_cast<Q8_1*>(d.f(23));
@@ -830,6 +840,7 @@ struct Session::Impl {
     Model model;
     SessionConfig config;
     SessionStats statistics;
+    SessionRouteStats route_statistics;
     std::array<std::unique_ptr<Device>, 2> devices;
     std::vector<std::unique_ptr<Layer>> layers;
     std::unique_ptr<Hc> head_hc;
@@ -915,7 +926,7 @@ struct Session::Impl {
         for (auto& l : layers) l->reset();
         hip(hipSetDevice(0)); hip(hipMemsetAsync(ple_history.get<void>(), 0, ple_history.bytes(), devices[0]->stream));
         for (auto& d : devices) { hip(hipSetDevice(d->id)); d->clear(); hip(hipStreamSynchronize(d->stream)); }
-        ple_hash.reset(); statistics = {}; usable = true;
+        ple_hash.reset(); statistics = {}; route_statistics = {}; usable = true;
     }
     SessionMemory memory() const {
         int previous = 0; hip(hipGetDevice(&previous));
@@ -1068,6 +1079,7 @@ struct Session::Impl {
         const int position = static_cast<int>(statistics.consumed_tokens);
         const auto begin = std::chrono::steady_clock::now();
         try {
+            SessionRouteStats call_routes{};
             auto* d = devices[0].get(); hip(hipSetDevice(0)); d->clear();
             for (int t = 0; t < tokens; ++t) {
                 const auto row = std::span(embeddings).subspan(embedding_stride * window[t], embedding_stride);
@@ -1113,7 +1125,7 @@ struct Session::Impl {
                     capture_batch(*d, "hc_ffn_gate_raw", d->f(5), W, tokens, l);
                     capture_batch(*d, "hc_ffn_inject_raw", d->f(7), 4, tokens, l);
                 }
-                layer.ffn(statistics, tokens,
+                layer.ffn(statistics, call_routes, tokens,
                     [&](const std::string& name, const float* x, int width, int token_offset = -1, int stride = 0) {
                         if (l != 0 || !trace_metadata.is_open()) return;
                         if (token_offset >= 0) capture(*d, name, x, width, l, token_offset);
@@ -1132,8 +1144,13 @@ struct Session::Impl {
             d->check("head");
             const std::span<const float> result(host_logits.data(), tokens * V);
             for (float v : result) if (!std::isfinite(v)) throw std::runtime_error("logits nonfinite");
+            // Each counted group consumes >=129 of the 48*10 assignments per
+            // token. Capacity <=131072 bounds the cumulative count well within
+            // uint64_t across reset; no fallible or partial publication is needed.
+            call_routes.expert_groups_gt128 += route_statistics.expert_groups_gt128;
             statistics.consumed_tokens += static_cast<std::uint64_t>(tokens);
             statistics.last_completed_ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - begin).count();
+            route_statistics = call_routes;
             return result;
         } catch (...) {
             usable = false;
@@ -1151,6 +1168,7 @@ std::span<const float> Session::step(std::int32_t token) { return step_batch(std
 std::span<const float> Session::step_batch(std::span<const std::int32_t> tokens) { return impl_->step_batch(tokens); }
 void Session::reset() { impl_->reset(); }
 SessionStats Session::stats() const { return impl_->statistics; }
+SessionRouteStats Session::route_stats() const { return impl_->route_statistics; }
 SessionMemory Session::memory() const { return impl_->memory(); }
 
 }

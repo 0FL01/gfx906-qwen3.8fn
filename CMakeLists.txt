@@ -98,7 +98,9 @@ if(BUILD_TESTING)
     -s ${CMAKE_CURRENT_SOURCE_DIR}/tests -p mmq_wide_results_test.py)
   add_test(NAME prefill-results COMMAND ${Python3_EXECUTABLE} -B -m unittest discover
     -s ${CMAKE_CURRENT_SOURCE_DIR}/tests -p prefill_results_test.py)
-  set_tests_properties(session-comparison session-results memory-results batch-results mmq-results mmq-wide-results prefill-results PROPERTIES
+  add_test(NAME prefill-wide-results COMMAND ${Python3_EXECUTABLE} -B -m unittest discover
+    -s ${CMAKE_CURRENT_SOURCE_DIR}/tests -p prefill_wide_results_test.py)
+  set_tests_properties(session-comparison session-results memory-results batch-results mmq-results mmq-wide-results prefill-results prefill-wide-results PROPERTIES
     ENVIRONMENT "TMPDIR=${CMAKE_CURRENT_BINARY_DIR}")
 endif()
 if(CORE_WITH_HIP)
@@ -127,6 +129,11 @@ if(CORE_WITH_HIP)
   target_link_libraries(core-prefill-test PRIVATE qwen-session)
   target_compile_definitions(core-prefill-test PRIVATE CORE_REVISION="${CORE_REVISION}" CORE_DIRTY=$<BOOL:${CORE_DIRTY}>)
   target_compile_options(core-prefill-test PRIVATE -Wall -Wextra -Wpedantic -Werror -ffp-contract=off)
+
+  add_executable(core-prefill-wide-test src/prefill_wide_test.cpp)
+  target_link_libraries(core-prefill-wide-test PRIVATE qwen-session)
+  target_compile_definitions(core-prefill-wide-test PRIVATE CORE_REVISION="${CORE_REVISION}" CORE_DIRTY=$<BOOL:${CORE_DIRTY}>)
+  target_compile_options(core-prefill-wide-test PRIVATE -Wall -Wextra -Wpedantic -Werror -ffp-contract=off)
 
   add_executable(core-prefill-trace src/prefill_trace.cpp)
   target_link_libraries(core-prefill-trace PRIVATE qwen-session)

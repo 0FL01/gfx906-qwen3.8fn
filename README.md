@@ -2,9 +2,10 @@
 
 Standalone C++20/HIP core under implementation. `core-session` now executes the
 own 48-layer model with Q4_0 K/V on both gfx906 GPUs. R3 teacher32/reset/generation
-are qualified; short prefill now passes same-Session N1/chunk4/chunk32/occupied-prefix
-full-logit parity. Short-slice closure includes strict full build/CTest27/27,
-sequential component/Session/default-memory regressions and one validated journal append.
+are qualified; short and logical-wide prefill pass same-Session N1 full-logit
+parity, including chunks128/129/single1024 and observed expert groups over 128.
+Wide-slice closure includes strict Release build/CTest28/28, sequential
+Session/wide/default-memory regressions and one validated journal append.
 Full R4–R8, large-prompt prefill, MTP, serving and end-to-end speed goals remain open.
 Scope and acceptance are in [PLAN.md](PLAN.md); current evidence in [STATE.md](STATE.md).
 
@@ -526,8 +527,8 @@ prefill, user-sampling qualification or an A/B speedup. Raw logs are
 The canonical journal contains one R3b record after the unchanged ten previous
 records. The initial accidental `src/results.jsonl` record was validated against
 the canonical append, then removed; no historical measurement was replaced.
-R3b is closed; the per-GPU allocation/category ledger remains a separate R3
-acceptance check before grouped prefill and hybrid scheduling.
+R3b is closed; the separate per-GPU allocation/category acceptance check was
+subsequently closed by R3c below.
 ## R3c: capacity/owner memory qualification
 
 `core-memory MODEL.gguf` constructs one trace-free Session with capacity131072/112 slots,
@@ -874,12 +875,111 @@ byte prefix and parsed JSON were unchanged; the downloaded controller journal
 has one added line and no removed lines. The new record preserves original
 `15a025d9e105b704a628d0bbca003a08cb61b334`/dirtytrue provenance.
 
-The source accepts bounded logical chunks up to 1024, but the real short fixture
-only exercises chunks through 32. Larger chunks, expert groups over 128,
-longer stage reuse, causal/chunk boundaries at scale, 4K/16K PP and full-request
-time/peak VRAM remain gates before closing R4. Public counters do not yet expose
-maximum expert-group cardinality; group>128 requires explicit fixture evidence.
-The future wide fixture and Sampler3 remain unintegrated and outside this slice.
-The wide MMQ kernels above have component qualification only; this checkpoint
-establishes no PP/TG speedup, independent HF, occupied128K, MTP or user end-to-end
-qualification. R4–R8 and the original sampling/performance goals remain open.
+This historical short fixture exercises chunks only through 32. The following
+accepted wide slice qualifies logical chunks through 1024 and observes actual
+expert groups over 128. The wide MMQ kernels above retain component qualification;
+neither Session fixture establishes PP/TG speedup or independent HF parity.
+
+## R4: qualified logical-wide1024 prefill slice; full R4 remains open
+
+`SessionRouteStats` and `Session::route_stats()` expose completed-call logical
+routing diagnostics separately from the unchanged historical `SessionStats` and
+serialized protocols. `last_max_expert_group_assignments` is the maximum number
+of assignments to **one expert in one layer**, across all 48 layers of the last
+successfully completed call. `expert_groups_gt128` cumulatively counts
+call/layer/expert groups with strictly more than 128 assignments since reset.
+Construction and successful reset clear both fields; only successful execution
+publishes new diagnostics. Invalid arguments and execution failure preserve the
+previous successful values. Execution failure still requires Session reset.
+
+The accepted slice retains canonical projection/shared/expert microtiles of at
+most eight, chronological GDN slices of at most 128, one route grouping per full
+logical chunk and one canonical triplet per expert group. Band16/two stages and
+`copy_ready`/`consumer_done` lifetime are retained. Model weights, loaded tensor
+precision, Q4_0 K/V, arithmetic, epsilon and frozen gates are unchanged.
+
+Successful job `1791014580540-724` exited 0 after **22m16s**. Its binaries were
+compiled as `88bd3e6b24ab1dc07c556f5093533d10a91ecd80`, **dirtytrue**; a later
+code/documentation commit must not retag these artifacts. Strict HIP/CXX Release
+build and **CTest28/28 (595.52 s)** passed, followed sequentially by
+`core-session-test`, `core-session-batch-test`, `core-prefill-wide-test` and
+`core-memory`, each with process exit 0. Build still needs the explicit
+`sh /core/src/tools/build.sh` invocation above (source mode100644).
+
+Actual raw `runs/r4-prefill-wide-a.jsonl` is **3,431,452 bytes**, protocol1:
+one trace-free Session, capacity1056/slots1/max-batch1024. All 1056 full-vocabulary
+N1 reference rows are retained. After resets, the 1024 teacher tokens are processed as eight
+N128 chunks, seven N129 chunks plus N121, and a single N1024 chunk. Each of the
+four phases includes 32 N1 continuations. Teacher IDs are `[248044,100..1122]`,
+continuation IDs `[1123..1154]`; later chunk128/129 calls have genuinely occupied
+prior history. Reset retains the expert cache, so cold-cache equality is not
+claimed.
+
+Across all phases: **4224 output rows / 1169 windows / 1181 JSONL records**,
+**1,048,903,680 finite logits / 786,677,760 comparisons**, zero numerical
+violations, diagnostic bit mismatches and maximum absolute error. The frozen
+gate is `0.02 + 0.002*abs(reference)`; bitwise/argmax equality is not an additional
+requirement. The observed maximum group contains **1017 assignments**; the
+footer sums **950 groups over 128** across phases, including **874** in the
+single1024 phase. These are actual completed-call logical routing observations,
+not an inference from chunk length or proof of physical 128-column kernel/repack
+execution.
+
+Fifteen atomic argument rejections preserve the full live logits span,
+`SessionStats`, `SessionRouteStats`, fixture guards and memory ledger, then
+continue without reset. The **1205 memory observations** comprise 1175 serialized
+snapshots plus 30 rejection observations summarized by preservation proofs.
+Owned categories/counts/peaks, reported host/pinned capacities and constructor
+payload-read counters remain steady. Minimum observed free VRAM is
+**12,709,560,320 / 12,153,815,040 bytes** on GPU0/GPU1. This checks the owned
+ledger and aggregate workspace floor, not individual-buffer geometry, full RAM
+or wide-fixture post-destruction owned-byte recovery; RAII cleanup is reported.
+
+Parent validation of `tools/record_prefill_wide.py::collect(actual_raw)` passed;
+the parent local suite passed **18/18 in 47.192 s**. Logs are
+`runs/r4-prefill-wide-a-build.log`, `r4-prefill-wide-a-reset.jsonl`,
+`r4-prefill-wide-a-batch.jsonl` and `r4-prefill-wide-a-memory.jsonl`.
+Separate `record_memory.collect` validation of the actual memory log passed for
+the unchanged default capacity131072/slots112 regression; it did not append a
+duplicate memory record.
+
+Canonical `/home/radneon/gfx906-core/results.jsonl` now has exactly **19 records**:
+one validated new `r4b_wide_prefill`, **18 → 19**, with the previous byte prefix
+and parsed history unchanged. Compiled source `88bd3e6`/dirtytrue is retained.
+The downloaded journal has one added line and no removed lines; controller
+validation of the downloaded actual raw log also passes unchanged.
+
+Reproduce on the GPU host after source sync and the explicit-shell build, using
+fresh names in the existing `runs/` parent and one GPU workload at a time:
+
+```sh
+set -eu
+set -C
+docker run --rm --name core-prefill-wide-repro \
+  --device /dev/kfd --device /dev/dri --group-add video --ipc host \
+  --security-opt seccomp=unconfined --entrypoint /core/build/core-prefill-wide-test \
+  -v /home/radneon/gfx906-core:/core \
+  -v /home/radneon/models-nvme:/models:ro \
+  llama.cpp-gfx906:cmake-4.4.3 /models/qwen38-keep1-Q4_0.gguf \
+  > /home/radneon/gfx906-core/runs/NEW-prefill-wide.jsonl \
+  2> /home/radneon/gfx906-core/runs/NEW-prefill-wide.err
+python3 -B /home/radneon/gfx906-core/src/tools/record_prefill_wide.py \
+  --raw /home/radneon/gfx906-core/runs/NEW-prefill-wide.jsonl \
+  --results /home/radneon/gfx906-core/results.jsonl
+```
+
+Check both exit statuses. `core-prefill-wide-test MODEL.gguf` takes no adjustable
+gates; the collector validates the complete protocol before appending one record
+to the explicit canonical ROOT journal. Existing accepted raw data need no
+second append.
+
+This closes logical-wide1024 same-Session N1 self-parity, observed group>128 and
+multi-microtile/stage-reuse correctness at this scale. Full 4K/16K teacher logits
+and chunk boundaries beyond the 2052-token QSA budget, full requests with 512
+actual outputs and peak VRAM/performance gates remain next. Prepared
+`src/prefill_long_test.cpp`, sample CLI/sampler changes in `src/session_main.cpp`,
+`src/session_cli.hpp`, `tests/session_cli_test.cpp` and sampling3 are not yet
+accepted/integrated and are outside this wide closure. Neither throughput,
+independent HF parity, occupied128K nor MTP is qualified by this fixture.
+R4–R8 and the original temperature1.0/top-p0.95/top-k20 performance goals remain
+open.

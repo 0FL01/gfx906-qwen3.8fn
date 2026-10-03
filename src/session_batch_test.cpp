@@ -106,6 +106,25 @@ void check_same_stats(const qwen::SessionStats& actual, const qwen::SessionStats
                 std::bit_cast<std::uint64_t>(expected.last_completed_ms), where + ": statistics changed");
 }
 
+void check_zero_route_stats(const qwen::SessionRouteStats& stats, const std::string& where) {
+    require(stats.last_max_expert_group_assignments == 0 && stats.expert_groups_gt128 == 0,
+            where + ": reset routing diagnostics are not zero");
+}
+
+void check_same_route_stats(const qwen::SessionRouteStats& actual, const qwen::SessionRouteStats& expected,
+                            const std::string& where) {
+    require(actual.last_max_expert_group_assignments == expected.last_max_expert_group_assignments &&
+            actual.expert_groups_gt128 == expected.expert_groups_gt128,
+            where + ": routing diagnostics changed");
+}
+
+void check_completed_route_stats(const qwen::SessionRouteStats& stats, std::size_t rows,
+                                 const std::string& where) {
+    require(rows > 0 && rows <= max_batch_tokens && stats.last_max_expert_group_assignments >= 1 &&
+            stats.last_max_expert_group_assignments <= rows && stats.expert_groups_gt128 == 0,
+            where + ": N1..3 routing diagnostics outside max1..N/gt128=0");
+}
+
 struct Routes {
     std::uint64_t hits = 0, misses = 0, upload_bytes = 0;
 };
@@ -217,8 +236,10 @@ struct MemoryAudit {
     void observe(qwen::Session& session, std::span<const float> prior, std::span<const float> saved,
                  const std::string& where) {
         const auto before = session.stats();
+        const auto routes_before = session.route_stats();
         last = session.memory();
         check_same_stats(session.stats(), before, where + ": memory()");
+        check_same_route_stats(session.route_stats(), routes_before, where + ": memory()");
         if (!prior.empty()) {
             check_exact_logits(prior, saved, where + ": memory() logits");
             logit_values_preserved += prior.size();
@@ -300,6 +321,7 @@ void expect_rejection(qwen::Session& session, References& reference, MemoryAudit
     const auto where = std::string(result.name) + ": " + std::string(name);
     const auto saved = reference.snapshot(prior);
     const auto before = session.stats();
+    const auto routes_before = session.route_stats();
     audit.observe(session, prior, saved, where + " before");
     bool rejected = false;
     try {
@@ -311,6 +333,7 @@ void expect_rejection(qwen::Session& session, References& reference, MemoryAudit
     }
     require(rejected, where + ": rejected input was accepted");
     check_same_stats(session.stats(), before, where);
+    check_same_route_stats(session.route_stats(), routes_before, where);
     check_exact_logits(prior, saved, where + ": prior full logits");
     audit.observe(session, prior, saved, where + " after");
     result.invalid[result.invalid_count++] = {name, tokens.size(), prior.size() / vocabulary, 0, before, false, false};
@@ -337,6 +360,7 @@ Schedule run_schedule(qwen::Session& session, References& reference, MemoryAudit
     result.name = schedule_names[variant];
     result.initial = session.stats();
     check_zero_stats(result.initial, std::string(result.name) + ": start");
+    check_zero_route_stats(session.route_stats(), std::string(result.name) + ": start");
     audit.observe(session, {}, {}, std::string(result.name) + ": start");
     std::span<const float> prior;
     std::size_t offset = 0, mixed_index = 0;
@@ -361,6 +385,7 @@ Schedule run_schedule(qwen::Session& session, References& reference, MemoryAudit
         check_finite_logits(prior, rows, where);
         const auto after = session.stats();
         const auto delta = check_completed_stats(after, before, offset, rows, where);
+        check_completed_route_stats(session.route_stats(), rows, where);
         result.finite_values += prior.size();
         if (baseline) {
             require(rows == 1, "reference must be sequential N1");
@@ -448,6 +473,7 @@ Schedule run_schedule(qwen::Session& session, References& reference, MemoryAudit
     prior = {};
     session.reset();
     check_zero_stats(session.stats(), std::string(result.name) + ": reset");
+    check_zero_route_stats(session.route_stats(), std::string(result.name) + ": reset");
     audit.observe(session, {}, {}, std::string(result.name) + ": reset");
     if (!baseline) {
         const auto before = session.stats();
@@ -456,6 +482,7 @@ Schedule run_schedule(qwen::Session& session, References& reference, MemoryAudit
         check_exact_logits(prior, reference.slice(0, 1), std::string(result.name) + ": reset continuation");
         const auto after = session.stats();
         const auto delta = check_completed_stats(after, before, 0, 1, std::string(result.name) + ": reset continuation");
+        check_completed_route_stats(session.route_stats(), 1, std::string(result.name) + ": reset continuation");
         prove_continuation(result, 0, 1, true);
         result.reset_probe = {0, 1, 1, delta, reference.routes(0, 1), after};
         result.has_reset_probe = true;
@@ -463,6 +490,7 @@ Schedule run_schedule(qwen::Session& session, References& reference, MemoryAudit
         prior = {};
         session.reset();
         check_zero_stats(session.stats(), std::string(result.name) + ": final reset");
+        check_zero_route_stats(session.route_stats(), std::string(result.name) + ": final reset");
         audit.observe(session, {}, {}, std::string(result.name) + ": final reset");
         require(result.invalid_count == result.invalid.size(), "invalid proof count");
         for (std::size_t i = 0; i < result.invalid_count; ++i)
@@ -714,9 +742,12 @@ int main(int argc, char** argv) {
             // weight caches; never create a second ~68 GB RAM expert inventory.
             qwen::Session session(model, config);
             check_zero_stats(session.stats(), "construction");
+            check_zero_route_stats(session.route_stats(), "construction");
             const auto before = session.stats();
+            const auto routes_before = session.route_stats();
             const auto loaded = session.memory();
             check_same_stats(session.stats(), before, "loaded memory()");
+            check_same_route_stats(session.route_stats(), routes_before, "loaded memory()");
             check_memory_geometry(loaded, "loaded");
             for (std::size_t i = 0; i < schedule_names.size(); ++i) {
                 MemoryAudit audit(loaded);
