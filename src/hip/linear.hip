@@ -15,7 +15,7 @@
 // Copyright (c) 2023-2026 The ggml authors; MIT license, complete notice in
 // third_party/mx-LICENSE. Adapt only canonical primitives, no GGML runtime/types.
 // KEEP: canonical on-disk bytes and our quant.hpp 36-byte raw-sum Q8_1 ABI.
-// ADAPT: MMVQ fragments, two cooperating wave64s per row for N=1/2/3,
+// ADAPT: MMVQ fragments, two cooperating wave64s per row for N=1..8,
 // production row tiling/reduction order, multi-column weight register reuse.
 // WRITE OURS: borrowed-buffer API, range validation and numeric error handling.
 // Donor order/decision: mx above; furnace
@@ -379,16 +379,14 @@ void enqueue(QuantizedDeviceMatrix matrix, const Q8_1* input, float* output,
     }
 }
 
-} // namespace
-
-hipError_t launch_quantized_linear(QuantizedDeviceMatrix matrix, const Q8_1* input,
-                                  int columns, float* output, hipStream_t stream) noexcept {
+hipError_t validate_linear(QuantizedDeviceMatrix matrix, const Q8_1* input,
+                          int columns, int max_columns, float* output) noexcept {
     int block_elements = 0, block_bytes = 0;
     if (!layout(matrix.type, block_elements, block_bytes)) return hipErrorNotSupported;
     const bool lm_head = matrix.type == TensorType::Q6_K &&
                         matrix.input == 2560 && matrix.output == 248320;
     if (!dimension(matrix.input) || (!dimension(matrix.output) && !lm_head) ||
-        columns <= 0 || columns > linear_device_max_columns || matrix.input % block_elements)
+        columns <= 0 || columns > max_columns || matrix.input % block_elements)
         return hipErrorInvalidValue;
     // Products fit size_t32: ordinary Q8_0 <=285212672 bytes; the sole larger
     // shape is the actual Q6_K LM head, 248320*10*210=521472000 bytes.
@@ -404,9 +402,35 @@ hipError_t launch_quantized_linear(QuantizedDeviceMatrix matrix, const Q8_1* inp
         !range(output, output_bytes, 4, output_range) ||
         overlaps(output_range, weights_range) || overlaps(output_range, input_range))
         return hipErrorInvalidValue;
+    return hipSuccess;
+}
+
+} // namespace
+
+hipError_t launch_quantized_linear(QuantizedDeviceMatrix matrix, const Q8_1* input,
+                                  int columns, float* output, hipStream_t stream) noexcept {
+    const auto status = validate_linear(matrix, input, columns, linear_device_max_columns, output);
+    if (status != hipSuccess) return status;
     if (columns == 1) enqueue<1>(matrix, input, output, stream);
     else if (columns == 2) enqueue<2>(matrix, input, output, stream);
     else enqueue<3>(matrix, input, output, stream);
+    return hipGetLastError();
+}
+
+hipError_t launch_quantized_linear_short(QuantizedDeviceMatrix matrix, const Q8_1* input,
+                                        int columns, float* output, hipStream_t stream) noexcept {
+    const auto status = validate_linear(matrix, input, columns, linear_device_short_max_columns, output);
+    if (status != hipSuccess) return status;
+    switch (columns) {
+    case 1: enqueue<1>(matrix, input, output, stream); break;
+    case 2: enqueue<2>(matrix, input, output, stream); break;
+    case 3: enqueue<3>(matrix, input, output, stream); break;
+    case 4: enqueue<4>(matrix, input, output, stream); break;
+    case 5: enqueue<5>(matrix, input, output, stream); break;
+    case 6: enqueue<6>(matrix, input, output, stream); break;
+    case 7: enqueue<7>(matrix, input, output, stream); break;
+    case 8: enqueue<8>(matrix, input, output, stream); break;
+    }
     return hipGetLastError();
 }
 

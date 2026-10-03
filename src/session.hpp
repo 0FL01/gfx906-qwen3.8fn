@@ -13,7 +13,9 @@ struct SessionConfig {
     int expert_slots = 112;
     // Empty disables all synchronous intermediate capture. Diagnostics only.
     std::string trace_directory;
-    // Preallocated short-window capacity, 1..3. Append after the existing fields
+    // Preallocated logical chunk capacity, 1..1024 (projection tiles <=128).
+    // Capacities >3 opt into the unqualified bounded-prefill candidate.
+    // Append after the existing fields
     // so positional aggregate initialization keeps its source contract.
     int max_batch_tokens = 1;
 };
@@ -45,6 +47,8 @@ struct SessionMemory {
     std::uint64_t pinned_handoff = 0;
     std::uint64_t expert_payload_reads = 0, expert_payload_bytes_read = 0;
     bool ownership_verified = false;
+    // Two pinned band16 payloads per device for explicit max_batch_tokens>3.
+    std::uint64_t pinned_expert_staging = 0;
 };
 
 // One exclusive interactive session, static 24/24 layer split. Canonical expert
@@ -65,7 +69,7 @@ public:
     std::span<const float> step_batch(std::span<const std::int32_t> tokens);
     void reset();
     SessionStats stats() const;
-    // Synchronizes both owned streams and restores the caller's current device.
+    // Drains owned compute/copy streams and restores the caller's current device.
     // Does not modify logits, state, cache maps, counters or logical visibility.
     SessionMemory memory() const;
 private:

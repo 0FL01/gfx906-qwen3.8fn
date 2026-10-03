@@ -25,7 +25,7 @@ bool dimension(int d) noexcept { return d > 0 && d <= 16384; }
 // Exact BF16->F32 load conversion has already happened outside this API.
 // The actual production binary uses low-then-high FMAC and two-stage padded
 // wave reduction. Express contraction explicitly, not with global fast-math.
-// KEEP rocBLAS for PP, odd K and valid float-aligned/non-pair-aligned inputs.
+// KEEP rocBLAS for N9..128, odd K and valid float-aligned/non-pair-aligned inputs.
 template<int Columns, int Threads>
 __global__ __launch_bounds__(Threads)
 void mmvf(const float2* weights, const float2* input, int pairs, int rows,
@@ -86,12 +86,17 @@ rocblas_status launch_dense_linear(rocblas_handle handle, DenseDeviceMatrix matr
     if (status != rocblas_status_success) return status;
     status = rocblas_set_pointer_mode(handle, rocblas_pointer_mode_host);
     if (status != rocblas_status_success) return status;
-    if (columns <= 3 && matrix.input % 2 == 0 &&
+    if (columns <= 8 && matrix.input % 2 == 0 &&
         reinterpret_cast<std::uintptr_t>(matrix.weights) % alignof(float2) == 0 &&
         reinterpret_cast<std::uintptr_t>(input) % alignof(float2) == 0) {
         if (columns == 1) enqueue_mmvf<1>(matrix, input, output, stream);
         else if (columns == 2) enqueue_mmvf<2>(matrix, input, output, stream);
-        else enqueue_mmvf<3>(matrix, input, output, stream);
+        else if (columns == 3) enqueue_mmvf<3>(matrix, input, output, stream);
+        else if (columns == 4) enqueue_mmvf<4>(matrix, input, output, stream);
+        else if (columns == 5) enqueue_mmvf<5>(matrix, input, output, stream);
+        else if (columns == 6) enqueue_mmvf<6>(matrix, input, output, stream);
+        else if (columns == 7) enqueue_mmvf<7>(matrix, input, output, stream);
+        else enqueue_mmvf<8>(matrix, input, output, stream);
         return hipGetLastError() == hipSuccess ? rocblas_status_success : rocblas_status_internal_error;
     }
     const float alpha = 1.0f, beta = 0.0f;

@@ -1,8 +1,11 @@
 # Qwen3.8-Flash-Next core for 2×gfx906
 
 Standalone C++20/HIP core under implementation. `core-session` now executes the
-own 48-layer model with Q4_0 K/V on both gfx906 GPUs. The 32-token teacher-forced
-logits gate and final build/reset/generation pass. Prefill/MTP/serving remain in progress.
+own 48-layer model with Q4_0 K/V on both gfx906 GPUs. R3 teacher32/reset/generation
+are qualified; short prefill now passes same-Session N1/chunk4/chunk32/occupied-prefix
+full-logit parity. Short-slice closure includes strict full build/CTest27/27,
+sequential component/Session/default-memory regressions and one validated journal append.
+Full R4–R8, large-prompt prefill, MTP, serving and end-to-end speed goals remain open.
 Scope and acceptance are in [PLAN.md](PLAN.md); current evidence in [STATE.md](STATE.md).
 
 ## Remote build and R0 probe
@@ -16,7 +19,7 @@ Clang 23; production runtime image does not contain CMake.
 docker run --rm --name core-build --entrypoint /bin/sh \
   -v /home/radneon/gfx906-core:/core \
   -e CORE_REVISION="$CORE_REVISION" -e CORE_DIRTY="$CORE_DIRTY" \
-  llama.cpp-gfx906:cmake-4.4.3 /core/src/tools/build.sh
+  llama.cpp-gfx906:cmake-4.4.3 -c 'sh /core/src/tools/build.sh'
 docker run --rm --name core-probe --device /dev/kfd --device /dev/dri \
   --group-add video --ipc host --security-opt seccomp=unconfined \
   --entrypoint /core/build/core-probe -v /home/radneon/gfx906-core:/core \
@@ -32,6 +35,10 @@ are checked before target-attributed CPU code. GPU compilation explicitly target
 gfx906. Probe errors exit nonzero; transfer/consumer and both GEMMs are checked.
 RAM read/FMA and concurrent read/H2D are synthetic hardware measurements, **not**
 quantized expert throughput or full-request speed.
+
+Use the explicit `sh` invocation above after transfer: `tools/build.sh` is
+nonexecutable (source mode100644, observed remote0664). Direct execution caused
+job `1791010696634-716` to exit126 immediately; the explicit-shell retry succeeded.
 
 ## R1: validated GGUF and one real expert
 
@@ -188,8 +195,11 @@ Snapshots are chronological: slot n means n consumed inputs; verifying one
 pending input plus two drafts restores slot `1 + accepted_drafts`.
 
 `hip/gdn.cuh` borrows explicit-stream device buffers, without allocation or
-host synchronization. Decode adapts furnace CPW2; chunks adapt its resident
-16-column wave64/LDS slab with the same external state layout. Sticky error bits
+host synchronization. At the R2b checkpoint, decode adapted furnace CPW2 and
+chunks adapted its resident 16-column wave64/LDS slab with the same external
+state layout. Current N1..128 dispatch uses the exact chronological CPW recurrence
+described in the short-prefill checkpoint below; the R2b measurements retain their
+historical implementation and provenance. Sticky error bits
 are 1 for invalid values and 2 for nonfinite arithmetic. A final conditional
 publication preserves the entire active chunk state/output on numeric failure;
 scratch and speculative prefixes must not be consumed on error. CPU overflow
@@ -322,9 +332,12 @@ replayed with every recorded row matching, and explicitly marked as recovered.
 ## R2e: reusable quantized projection and GPU HC/PLE primitives
 
 `hip/linear.cuh` consumes unchanged canonical Q4_0/Q4_1/Q5_0/Q8_0/Q6_K
-weights and the qualified 36-byte raw-sum Q8_1 activation ABI. N1/2/3 share
-weight registers and two output rows; dimensions are currently bounded by
-16384. Q5 retains the `-16*s8` correction, Q8 uses FP32 scale products and
+weights and the qualified 36-byte raw-sum Q8_1 activation ABI. At the R2e checkpoint,
+N1/2/3 shared weight registers and two output rows, with dimensions bounded by
+16384. The current separate `launch_quantized_linear_short` seam extends that
+reuse to N1..8; the original `launch_quantized_linear` N≤3 contract is unchanged.
+The later sole large-output exception is the actual Q6_K LM head (R3a below).
+Q5 retains the `-16*s8` correction, Q8 uses FP32 scale products and
 Q6 keeps MMVQ four-element/two-quarter integer-subscale grouping. The independent
 `linear_reference.hpp` scalar oracle checks these expressions, not a raw-FP32
 dequantized dot. Weight/input scales must be validated before this borrowed-buffer
@@ -547,11 +560,13 @@ remain in the single `results.jsonl` and raw log.
 
 ## R4a prerequisites: exact short GDN and stable route groups
 
-The CPW2 GDN kernel now keeps state in registers across N2/3, with the same
-arithmetic as sequential N1. Both GPUs pass bitwise output, recurrent-state,
+At this checkpoint, the CPW2 GDN kernel kept state in registers across N2/3,
+with the same arithmetic as sequential N1. Both GPUs pass bitwise output, recurrent-state,
 raw-history and chronological-prefix comparisons from zero and occupied states,
 including restore/continuation and late-error chunk-atomic publication. N≥4
-still uses the qualified resident LDS kernel.
+then used the qualified resident LDS kernel. Current dispatch extends the exact
+chronological CPW recurrence to N1..128; the A/B/A numbers below describe the
+historical N2/3 change, not a new N128 speed measurement.
 
 `RouteGroups` is a constructor-allocated CPU histogram/scan/scatter: ascending
 expert IDs, stable token/rank order within each group, unchanged float weight
@@ -758,5 +773,113 @@ Raw artifacts: `runs/r4-mmq-wide.jsonl`, `r4-mmq-wide-build-fixed.log`,
 After SSH lost job539's status, the persisted build/CTest log and separate
 docker-wait job541 established the GPU process exit0; no second workload was
 started blindly. The canonical journal adds one `r4b_mmq_wide` record after
-sixteen unchanged records. Bounded causal Session PP integration is next and
-remains unqualified.
+sixteen unchanged records. These remain component results; the bounded Session
+short-prefill checkpoint follows, while large-prompt qualification remains open.
+
+## R4: qualified short-prefill slice closed; full R4 remains open
+
+The accepted working source schedules all nonexpert `Matrix::apply` projections
+as chronological tiles of at most eight columns. Dense MMVF covers N1..8;
+the dense N9..128 fallback remains available. Quantized tiles use the separate
+`launch_quantized_linear_short` N1..8 seam with the same canonical weights,
+36-byte Q8_1 ABI, raw-sum/half-product arithmetic and range/lifetime contracts;
+the original N≤3 API still rejects N4. Shared-expert projections also tile at
+eight. Routed experts group routes **once per full logical chunk**, acquire one
+canonical gate/up/down triplet per group, and compute microtiles of at most eight
+assignments before original-rank scatter/fold. Band16, two stages per device and
+the `copy_ready`/`consumer_done` producer/reader/reuse lifetime are retained.
+
+PLE uses its existing 512-thread gate reduction for tiles of at most eight;
+hash, normalization and convolution semantics are unchanged. GDN dispatch uses
+the exact chronological CPW recurrence for N1..128 with strengthened state,
+prefix, continuation and late-error atomic-publication checks. This checkpoint
+adds no new arithmetic, weight, precision, epsilon or acceptance-gate changes.
+
+GPU job `1791004619377-704` produced
+`runs/r4-prefill-short-expert8-ple8.jsonl`: protocol1, **92 completed records**,
+one Session with capacity40/slots1/max-batch32 and tracing off. It retains all
+40 sequential N1 full-vocabulary rows, then resets the same Session for eight
+N4 teacher windows, one N32 teacher window, and five N1 occupied-prefix steps
+followed by N17+N10. Every phase adds eight N1 continuations; teacher IDs are
+`[248044,100..130]`, continuation IDs `[131..138]`. Reset retains the expert
+cache, so initial cold-cache equality is not assumed.
+
+Across four timelines: 160 output rows/80 windows, **39,731,200 finite logits**
+and **29,798,400 comparisons**, zero numerical violations and zero diagnostic
+bit mismatches. The frozen gate remains `0.02 + 0.002*abs(reference)`; bitwise
+or argmax equality is not a newly imposed acceptance requirement. Fifteen
+invalid windows preserve the full active logits span, public stats and ledger,
+then continue without reset. The 116 memory observations comprise 86 serialized
+snapshots plus 30 rejection observations summarized by preservation proofs:
+owned categories/counts/peaks, reported host/pinned capacities and constructor
+payload-read counters stay steady. Workspace geometry is only an aggregate
+floor; RAII cleanup is reported, **owned-buffer release/recovery is not measured**.
+
+Compiled provenance is `15a025d9e105b704a628d0bbca003a08cb61b334`, **dirty1**.
+The raw source literal `first_end_to_end_PP_gate_current_unqualified_candidate`
+is a historical driver label and is preserved verbatim. The strict collector
+qualifies the successful footer as **short PP self-parity**, without relabeling
+the source or claiming independent HF parity. Parent validation of
+`tools/record_prefill.py::collect(actual_raw)` passed; its local tests passed
+36/36 in 142.573 s. Diagnostic trace32 job700 matched all 7392 nodes, including
+640 FFN probes and the full head, exactly. Default-N1 job708 retained exact
+original 6912 probes and full teacher32 logits. These are distinct checks;
+the short fixture itself supplies only same-Session N1 reference evidence.
+
+Reproduce on the GPU host after the usual source sync/build, with a fresh log
+name in the existing `runs/` parent and one GPU workload at a time:
+
+```sh
+set -eu
+set -C
+docker run --rm --name core-prefill-short-repro \
+  --device /dev/kfd --device /dev/dri --group-add video --ipc host \
+  --security-opt seccomp=unconfined --entrypoint /core/build/core-prefill-test \
+  -v /home/radneon/gfx906-core:/core \
+  -v /home/radneon/models-nvme:/models:ro \
+  llama.cpp-gfx906:cmake-4.4.3 /models/qwen38-keep1-Q4_0.gguf \
+  > /home/radneon/gfx906-core/runs/NEW-prefill-short.jsonl \
+  2> /home/radneon/gfx906-core/runs/NEW-prefill-short.err
+python3 -B /home/radneon/gfx906-core/src/tools/record_prefill.py \
+  --raw /home/radneon/gfx906-core/runs/NEW-prefill-short.jsonl \
+  --results /home/radneon/gfx906-core/results.jsonl
+```
+
+Check both exit statuses. `core-prefill-test MODEL.gguf` takes no adjustable
+gates; the collector validates the complete frozen protocol before appending
+one record to the explicit canonical journal. Diagnostic-only tracing is a
+separate `core-prefill-trace --tokens32 MODEL.gguf NEW_TRACE_DIRECTORY` run;
+use a fresh directory and its emitted manifest boundaries. A completed trace
+capture does not itself establish that its numerical gate passed.
+
+**Short-slice closure completed:** broad job `1791011326789-719` exited0 after
+13m50s. Strict HIP/CXX Release build and **CTest27/27** passed; CTest total was
+525.55 s. Dense-MMVF validation passed on both GPUs (480 cases reported), with
+exact results. Quantized-short validation covered 747 cases/device, 1494 total,
+plus 42 host rejections on each device; common-Q8 max absolute error was
+`4.291534423828125e-06`, max bound ratio `0.01524`. The old API still rejects N4.
+`core-gdn`, `core-session-test`, `core-session-batch-test` and `core-memory`
+(capacity131072/slots112) then ran sequentially, each with process exit0.
+Build/test durations are not inference-performance measurements.
+
+Closure logs are `runs/r4-shortpp-final-regression-sh.log` and
+`runs/r4-shortpp-final-{gdn,reset,batch,memory}.jsonl`. Separate validation through
+`record_memory.collect(actual_raw)` passed, including steady owners, minimum free
+VRAM of 7,166,787,584/6,686,539,776 bytes and complete owned-byte recovery after
+destruction. This remains a capacity/regression check, not occupied128K evidence.
+
+The canonical `/home/radneon/gfx906-core/results.jsonl` received exactly one
+validated `r4b_short_prefill` append, **17 → 18 records**. Both the old 17-record
+byte prefix and parsed JSON were unchanged; the downloaded controller journal
+has one added line and no removed lines. The new record preserves original
+`15a025d9e105b704a628d0bbca003a08cb61b334`/dirtytrue provenance.
+
+The source accepts bounded logical chunks up to 1024, but the real short fixture
+only exercises chunks through 32. Larger chunks, expert groups over 128,
+longer stage reuse, causal/chunk boundaries at scale, 4K/16K PP and full-request
+time/peak VRAM remain gates before closing R4. Public counters do not yet expose
+maximum expert-group cardinality; group>128 requires explicit fixture evidence.
+The future wide fixture and Sampler3 remain unintegrated and outside this slice.
+The wide MMQ kernels above have component qualification only; this checkpoint
+establishes no PP/TG speedup, independent HF, occupied128K, MTP or user end-to-end
+qualification. R4–R8 and the original sampling/performance goals remain open.

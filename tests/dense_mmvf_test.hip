@@ -59,12 +59,16 @@ int main() {
             check(hipSetDevice(d));
             {
                 Fixture f;
+                // MMVF N1..8; N9 and N128 retain the SGEMM column seam/limit.
+                // K128/130 straddle the one/two-wave seam; K7 and offsets
+                // independently exercise odd-K and weight/input alignment fallback.
                 for (int k : {2, 7, 64, 128, 130, 320, 10240, 16384})
-                    for (int n : {1, 2, 3}) for (int a : {0, 1, 2}) { f.run(k, n, a); ++cases; }
+                    for (int n : {1, 2, 3, 4, 5, 6, 7, 8, 9, 128})
+                        for (int a : {0, 1, 2}) { f.run(k, n, a); ++cases; }
             }
         }
-        if (cases != 144) throw std::runtime_error("coverage");
-        std::printf("{\"kind\":\"dense_mmvf_boundaries\",\"devices\":2,\"cases\":144,\"exact_numeric\":true,\"canaries\":true,\"passed\":true}\n");
+        if (cases != 480) throw std::runtime_error("coverage");
+        std::printf("{\"kind\":\"dense_mmvf_boundaries\",\"devices\":2,\"cases\":480,\"exact_numeric\":true,\"canaries\":true,\"passed\":true}\n");
         return 0;
     } catch (const std::exception& e) { std::fprintf(stderr, "dense-mmvf: %s\n", e.what()); return 1; }
 }

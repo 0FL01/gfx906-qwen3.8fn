@@ -8,6 +8,7 @@
 #include "hip/gdn.cuh"
 #include "hip/kv.cuh"
 #include "hip/linear.cuh"
+#include "hip/mmq_wide.cuh"
 #include "hip/qsa_index.cuh"
 #include "hip/qsa_select.cuh"
 #include "hip/session_ops.cuh"
@@ -18,9 +19,11 @@
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <iomanip>
+#include <limits>
 #include <numeric>
 #include <stdexcept>
 #include <utility>
@@ -29,10 +32,23 @@
 namespace qwen {
 namespace {
 constexpr int H = 2560, W = 10240, V = 248320;
+constexpr int microtile_tokens = 128, expert_band = 16;
+constexpr std::size_t expert_stage_bytes = 45875200; // 16 canonical Q4_1-down triplets
+static_assert(microtile_tokens == blocks_device_max_tokens && microtile_tokens == gdn_device_max_tokens &&
+              microtile_tokens == session_ops_max_tokens && microtile_tokens == mmq_device_max_columns);
+std::size_t checked_size(std::size_t count, std::size_t width) {
+    if (width && count > static_cast<std::size_t>(std::numeric_limits<std::ptrdiff_t>::max()) / width)
+        throw std::overflow_error("Session allocation size");
+    return count * width;
+}
+template<class F> void tiles(int tokens, F&& f) {
+    for (int first = 0; first < tokens; first += microtile_tokens)
+        f(first, std::min(microtile_tokens, tokens - first));
+}
 SessionConfig checked_config(SessionConfig config) {
     if (config.capacity < 4 || config.capacity > 131072 || config.capacity % 4 ||
         config.expert_slots < 1 || config.expert_slots > 512 ||
-        config.max_batch_tokens < 1 || config.max_batch_tokens > 3)
+        config.max_batch_tokens < 1 || config.max_batch_tokens > 1024)
         throw std::invalid_argument("Session capacity/slots/max_batch_tokens");
     return config;
 }
@@ -83,15 +99,46 @@ private:
     int device_ = 0;
 };
 
+// WRITE OURS bounded orchestration over KEEP canonical MMQ/DPP primitives.
+// RECON16: mx dcd6854 staging/layout-aware PP D2D, furnace 905021d pipeline,
+// reinstinct 0b79e32 route sort/gather/scatter. No donor scheduler or GPU slab.
+// Exactly two reusable band16 payloads per device, only for explicit max>3.
+struct ExpertStage {
+    int device;
+    Buffer data;
+    std::byte* host = nullptr;
+    hipEvent_t copy_ready = nullptr, consumer_done = nullptr;
+    bool used = false;
+    explicit ExpertStage(int id) : device(id), data(expert_stage_bytes) {
+        try {
+            hip(hipHostMalloc(&host, expert_stage_bytes, hipHostMallocDefault));
+            hip(hipEventCreateWithFlags(&copy_ready, hipEventDisableTiming));
+            hip(hipEventCreateWithFlags(&consumer_done, hipEventDisableTiming));
+        } catch (...) { release(); throw; }
+    }
+    ~ExpertStage() { release(); }
+    void release() noexcept {
+        cleanup(hipSetDevice(device));
+        if (consumer_done) { cleanup(hipEventDestroy(consumer_done)); consumer_done = nullptr; }
+        if (copy_ready) { cleanup(hipEventDestroy(copy_ready)); copy_ready = nullptr; }
+        if (host) { cleanup(hipHostFree(host)); host = nullptr; }
+    }
+};
+
 struct Device {
     int id;
     hipStream_t stream = nullptr;
+    hipStream_t copy_stream = nullptr;
     rocblas_handle handle = nullptr;
     std::vector<Buffer> scratch;
     Buffer q8, error, logits, gathered_k, gathered_v, partial_o, partial_ms;
     Buffer histogram, select_state, candidates, ids, block_ids, counts;
     Buffer routed_contributions;
+    Buffer ds4, append_packed, append_work;
+    std::array<std::unique_ptr<ExpertStage>, 2> stages;
     std::unique_ptr<RouteGroups> routes;
+    std::vector<float> route_probabilities, route_weights;
+    std::vector<std::int32_t> route_ids;
     explicit Device(int d, int max_tokens) : id(d) {
         hip(hipSetDevice(id));
         hipDeviceProp_t p{}; hip(hipGetDeviceProperties(&p, id));
@@ -101,13 +148,16 @@ struct Device {
         hip(hipStreamCreateWithFlags(&stream, hipStreamNonBlocking));
         try {
             blas(rocblas_create_handle(&handle));
+            route_probabilities.resize(checked_size(max_tokens, 512));
+            route_weights.resize(checked_size(max_tokens, 10));
+            route_ids.resize(checked_size(max_tokens, 10));
             scratch.reserve(24);
             // f(16) also holds 32768 completed-block scores at capacity 128K.
             // N3 QSA projections require 36864 floats. N1 sizes/counts stay exact.
-            const int elements = std::max(32768, max_tokens * 12288);
-            for (int i = 0; i < 24; ++i) scratch.emplace_back(elements * sizeof(float));
-            q8 = Buffer(std::max(512, max_tokens * W / 32) * sizeof(Q8_1));
-            error = Buffer(sizeof(int)); logits = Buffer(max_tokens * V * sizeof(float));
+            const auto elements = std::max<std::size_t>(32768, checked_size(max_tokens, 12288));
+            for (int i = 0; i < 24; ++i) scratch.emplace_back(checked_size(elements, sizeof(float)));
+            q8 = Buffer(checked_size(std::max<std::size_t>(512, checked_size(max_tokens, W / 32)), sizeof(Q8_1)));
+            error = Buffer(sizeof(int)); logits = Buffer(checked_size(checked_size(max_tokens, V), sizeof(float)));
             gathered_k = Buffer(1050112 * sizeof(std::uint16_t));
             gathered_v = Buffer(1050112 * sizeof(std::uint16_t));
             partial_o = Buffer(202752 * sizeof(float)); partial_ms = Buffer(792 * sizeof(float2));
@@ -115,18 +165,40 @@ struct Device {
             candidates = Buffer(512 * sizeof(std::uint64_t)); ids = Buffer(2051 * sizeof(std::int32_t));
             block_ids = Buffer(512 * sizeof(std::int32_t)); counts = Buffer(2 * sizeof(int));
             if (max_tokens > 1) {
-                routed_contributions = Buffer(max_tokens * 10 * H * sizeof(float));
+                routed_contributions = Buffer(checked_size(checked_size(max_tokens, 10 * H), sizeof(float)));
                 routes = std::make_unique<RouteGroups>(max_tokens);
             }
+            if (max_tokens > 3) {
+                const int bounded = std::min(max_tokens, microtile_tokens);
+                ds4 = Buffer(checked_size(checked_size(bounded, W / 128), sizeof(Q8MmqBlock)));
+                append_packed = Buffer(microtile_tokens * 4 * sizeof(Q4_0));
+                // Roundtrip128*128 + at most33 new blocks*128 + staged tail384.
+                append_work = Buffer((microtile_tokens * 128 + 33 * 128 + 384) * sizeof(float));
+                hip(hipStreamCreateWithFlags(&copy_stream, hipStreamNonBlocking));
+                for (auto& stage : stages) stage = std::make_unique<ExpertStage>(id);
+            }
         } catch (...) {
+            drain_cleanup();
             if (handle) { if (rocblas_destroy_handle(handle) != rocblas_status_success) std::abort(); }
+            if (copy_stream) { cleanup(hipStreamDestroy(copy_stream)); copy_stream = nullptr; }
             cleanup(hipStreamDestroy(stream)); stream = nullptr; throw;
         }
     }
     ~Device() {
-        cleanup(hipSetDevice(id)); cleanup(hipStreamSynchronize(stream));
+        drain_cleanup();
         if (rocblas_destroy_handle(handle) != rocblas_status_success) std::abort();
+        if (copy_stream) cleanup(hipStreamDestroy(copy_stream));
         cleanup(hipStreamDestroy(stream));
+    }
+    void drain() {
+        hip(hipSetDevice(id));
+        if (copy_stream) hip(hipStreamSynchronize(copy_stream));
+        hip(hipStreamSynchronize(stream));
+    }
+    void drain_cleanup() noexcept {
+        cleanup(hipSetDevice(id));
+        if (copy_stream) cleanup(hipStreamSynchronize(copy_stream));
+        if (stream) cleanup(hipStreamSynchronize(stream));
     }
     float* f(int i) { return scratch.at(static_cast<std::size_t>(i)).get(); }
     int* flag() { return error.get<int>(); }
@@ -150,11 +222,26 @@ struct Matrix {
     int input = 0, output = 0;
     Buffer data;
     void apply(Device& d, const float* x, float* y, int columns) const {
-        if (type == TensorType::F32 || type == TensorType::BF16 || type == TensorType::F16) {
-            blas(launch_dense_linear(d.handle, {data.get(), input, output}, x, columns, y, d.stream));
-        } else {
-            hip(launch_quantize_q8_1(x, d.q8.get<Q8_1>(), input, columns, d.flag(), d.stream));
-            hip(launch_quantized_linear({type, data.get<void>(), input, output}, d.q8.get<Q8_1>(), columns, y, d.stream));
+        // KEEP canonical Columns1..8 arithmetic for every projection, including decoded BF16.
+        // Only launch geometry is sliced; logical columns and token strides stay intact.
+        const int limit = 8;
+        for (int first = 0; first < columns; first += limit) {
+            const int count = std::min(limit, columns - first);
+            const auto* source = x + first * input;
+            auto* destination = y + first * output;
+            if (type == TensorType::F32 || type == TensorType::BF16 || type == TensorType::F16) {
+                blas(launch_dense_linear(d.handle, {data.get(), input, output}, source, count, destination, d.stream));
+            } else {
+                hip(launch_quantize_q8_1(source, d.q8.get<Q8_1>(), input, count, d.flag(), d.stream));
+                if (count <= 3)
+                    hip(launch_quantized_linear({type, data.get<void>(), input, output}, d.q8.get<Q8_1>(), count, destination, d.stream));
+                else if (count <= linear_device_short_max_columns)
+                    hip(launch_quantized_linear_short({type, data.get<void>(), input, output}, d.q8.get<Q8_1>(), count, destination, d.stream));
+                else {
+                    hip(launch_q8_1_to_mmq(d.q8.get<Q8_1>(), input, count, d.ds4.get<Q8MmqBlock>(), d.stream));
+                    hip(launch_mmq_linear({type, data.get<void>(), input, output}, d.ds4.get<Q8MmqBlock>(), count, destination, d.stream));
+                }
+            }
         }
     }
 };
@@ -201,17 +288,33 @@ struct Hc {
         if (!head) inject = matrix(m, d, prefix + "inject.weight", W, 4);
     }
     void mix(Device& d, const float* residual, float epsilon, int tokens, bool head = false) const {
-        hip(launch_group_rms_norm(residual, norm.get(), tokens, W, H, epsilon, false, d.f(2), d.flag(), d.stream));
+        tiles(tokens, [&](int first, int count) {
+            hip(launch_group_rms_norm(residual + first * W, norm.get(), count, W, H, epsilon, false,
+                d.f(2) + first * W, d.flag(), d.stream));
+        });
         down.apply(d, d.f(2), d.f(3), tokens);
-        hip(launch_hc_lowrank_activation(d.f(3), tokens, d.f(4), d.flag(), d.stream));
+        tiles(tokens, [&](int first, int count) {
+            hip(launch_hc_lowrank_activation(d.f(3) + first * 320, count, d.f(4) + first * 320, d.flag(), d.stream));
+        });
         up.apply(d, d.f(4), d.f(5), tokens);
-        hip(launch_hc_mix(d.f(2), d.f(5), tokens, d.f(6), d.flag(), d.stream));
+        tiles(tokens, [&](int first, int count) {
+            hip(launch_hc_mix(d.f(2) + first * W, d.f(5) + first * W, count, d.f(6) + first * H, d.flag(), d.stream));
+        });
         if (!head) {
             inject.apply(d, d.f(2), d.f(7), tokens);
-            hip(launch_hc_injection(d.f(7), tokens, d.f(8), d.flag(), d.stream));
+            tiles(tokens, [&](int first, int count) {
+                hip(launch_hc_injection(d.f(7) + first * 4, count, d.f(8) + first * 4, d.flag(), d.stream));
+            });
         }
     }
 };
+
+void combine(Device& d, const float* residual, const float* block, int tokens, float* output) {
+    tiles(tokens, [&](int first, int count) {
+        hip(launch_hc_combine(residual + first * W, block + first * H, d.f(8) + first * 4,
+            count, output + first * W, d.flag(), d.stream));
+    });
+}
 
 struct Experts {
     struct Slot { int id = -1; std::uint64_t stamp = 0; };
@@ -233,12 +336,21 @@ struct Experts {
                 if (down_type != TensorType::Q4_0 && down_type != TensorType::Q4_1) throw std::runtime_error("expert down dtype");
             }
             bytes[i] = static_cast<std::size_t>(t.strides[2]);
+            const auto layout = type_layout(t.type);
+            const auto expected = checked_size(H * 640 / layout.block_elements, layout.block_bytes);
+            if (t.strides[2] != expected || t.byte_size != checked_size(expected, 512))
+                throw std::runtime_error("expert canonical span: " + names[i]);
             ram[i].resize(static_cast<std::size_t>(t.byte_size)); m.read_tensor(names[i], ram[i]);
             ++payload_reads; payload_bytes_read += ram[i].size();
         }
-        hip(hipSetDevice(d.id)); slots = Buffer(total() * static_cast<std::size_t>(nslots)); map.resize(nslots);
+        if (checked_size(total(), expert_band) > expert_stage_bytes) throw std::runtime_error("expert staging capacity");
+        hip(hipSetDevice(d.id)); slots = Buffer(checked_size(total(), nslots)); map.resize(nslots);
     }
     std::size_t total() const { return bytes[0] + bytes[1] + bytes[2]; }
+    int resident(int id) const {
+        for (std::size_t i = 0; i < map.size(); ++i) if (map[i].id == id) return static_cast<int>(i);
+        return -1;
+    }
     std::byte* acquire(Device& d, int id, int columns, SessionStats& stats) {
         if (id < 0 || id >= 512) throw std::runtime_error("expert ID");
         int chosen = -1;
@@ -261,11 +373,27 @@ struct Experts {
     void project(Device& d, const std::byte* base, const Q8_1* input, int columns) {
         // KEEP qualified canonical Q4xQ8 Columns1/2/3: the same weight registers
         // feed all columns. No padding/repack or per-token projection fallback.
-        hip(launch_quantized_linear({TensorType::Q4_0, base, H, 640}, input, columns, d.f(16), d.stream));
-        hip(launch_quantized_linear({TensorType::Q4_0, base + bytes[0], H, 640}, input, columns, d.f(17), d.stream));
+        if (columns <= 3) {
+            hip(launch_quantized_linear({TensorType::Q4_0, base, H, 640}, input, columns, d.f(16), d.stream));
+            hip(launch_quantized_linear({TensorType::Q4_0, base + bytes[0], H, 640}, input, columns, d.f(17), d.stream));
+        } else if (columns <= linear_device_short_max_columns) {
+            hip(launch_quantized_linear_short({TensorType::Q4_0, base, H, 640}, input, columns, d.f(16), d.stream));
+            hip(launch_quantized_linear_short({TensorType::Q4_0, base + bytes[0], H, 640}, input, columns, d.f(17), d.stream));
+        } else {
+            hip(launch_q8_1_to_mmq(input, H, columns, d.ds4.get<Q8MmqBlock>(), d.stream));
+            hip(launch_mmq_linear({TensorType::Q4_0, base, H, 640}, d.ds4.get<Q8MmqBlock>(), columns, d.f(16), d.stream));
+            hip(launch_mmq_linear({TensorType::Q4_0, base + bytes[0], H, 640}, d.ds4.get<Q8MmqBlock>(), columns, d.f(17), d.stream));
+        }
         hip(launch_silu_up(d.f(16), d.f(17), columns * 640, d.f(18), d.flag(), d.stream));
         hip(launch_quantize_q8_1(d.f(18), d.q8.get<Q8_1>(), 640, columns, d.flag(), d.stream));
-        hip(launch_quantized_linear({down_type, base + bytes[0] + bytes[1], 640, H}, d.q8.get<Q8_1>(), columns, d.f(19), d.stream));
+        if (columns <= 3)
+            hip(launch_quantized_linear({down_type, base + bytes[0] + bytes[1], 640, H}, d.q8.get<Q8_1>(), columns, d.f(19), d.stream));
+        else if (columns <= linear_device_short_max_columns)
+            hip(launch_quantized_linear_short({down_type, base + bytes[0] + bytes[1], 640, H}, d.q8.get<Q8_1>(), columns, d.f(19), d.stream));
+        else {
+            hip(launch_q8_1_to_mmq(d.q8.get<Q8_1>(), 640, columns, d.ds4.get<Q8MmqBlock>(), d.stream));
+            hip(launch_mmq_linear({down_type, base + bytes[0] + bytes[1], 640, H}, d.ds4.get<Q8MmqBlock>(), columns, d.f(19), d.stream));
+        }
     }
     void run(Device& d, int id, const Q8_1* input, float weight, SessionStats& stats) {
         project(d, acquire(d, id, 1, stats), input, 1);
@@ -273,6 +401,70 @@ struct Experts {
     }
     void run_group(Device& d, int id, const Q8_1* input, int columns, SessionStats& stats) {
         project(d, acquire(d, id, columns, stats), input, columns);
+    }
+    void stage_band(Device& d, ExpertStage& stage, std::span<const int> ids, SessionStats& stats) const {
+        if (ids.empty() || ids.size() > expert_band) throw std::runtime_error("expert band size");
+        if (stage.used) {
+            // CPU must not refill pinned bytes until the prior DMA read finishes.
+            hip(hipEventSynchronize(stage.copy_ready));
+            // GPU destination is reusable only after EVERY group microtile/scatter.
+            hip(hipStreamWaitEvent(d.copy_stream, stage.consumer_done, 0));
+        }
+        for (std::size_t i = 0; i < ids.size(); ++i) {
+            const int expert = ids[i], slot = resident(expert);
+            const auto reuse = static_cast<std::uint64_t>(d.routes->group(expert).size());
+            std::size_t offset = i * total();
+            std::size_t source_offset = slot < 0 ? 0 : static_cast<std::size_t>(slot) * total();
+            for (int j = 0; j < 3; ++j) {
+                auto* destination = stage.data.get<std::byte>() + offset;
+                if (slot >= 0) {
+                    const auto* source = slots.get<std::byte>() + source_offset;
+                    hip(hipMemcpyAsync(destination, source, bytes[j], hipMemcpyDeviceToDevice, d.copy_stream));
+                } else {
+                    // Exact validated RAM spans only; never copy slot/K padding.
+                    std::memcpy(stage.host + offset, ram[j].data() + bytes[j] * expert, bytes[j]);
+                    hip(hipMemcpyAsync(destination, stage.host + offset, bytes[j], hipMemcpyHostToDevice, d.copy_stream));
+                }
+                offset += bytes[j];
+                source_offset += bytes[j];
+            }
+            if (slot >= 0) stats.expert_hits += reuse;
+            else { ++stats.expert_misses; stats.expert_hits += reuse - 1; stats.expert_upload_bytes += total(); }
+        }
+        // PP makes no admissions/LRU edits. Router's completed check ordered all
+        // earlier source writers; this serial owner cannot evict any source slot
+        // until the consuming compute chain has waited on this D2D completion.
+        hip(hipEventRecord(stage.copy_ready, d.copy_stream));
+        hip(hipStreamWaitEvent(d.stream, stage.copy_ready, 0));
+    }
+    void run_chunk(Device& d, const Q8_1* original, SessionStats& stats) {
+        std::array<int, 512> active{};
+        int count = 0;
+        for (int expert = 0; expert < 512; ++expert) if (!d.routes->group(expert).empty()) active[count++] = expert;
+        auto* gathered = reinterpret_cast<Q8_1*>(d.f(23));
+        auto* contributions = d.routed_contributions.get();
+        for (int first = 0, band = 0; first < count; first += expert_band, ++band) {
+            auto& stage = *d.stages[band % 2];
+            const int length = std::min(expert_band, count - first);
+            stage_band(d, stage, std::span(active).subspan(first, length), stats);
+            for (int i = 0; i < length; ++i) {
+                const auto group = d.routes->group(active[first + i]);
+                for (int begin = 0; begin < static_cast<int>(group.size()); begin += linear_device_short_max_columns) {
+                    const int columns = std::min(linear_device_short_max_columns, static_cast<int>(group.size()) - begin);
+                    for (int c = 0; c < columns; ++c)
+                        hip(hipMemcpyAsync(gathered + c * (H / 32), original + group[begin + c].token * (H / 32),
+                            (H / 32) * sizeof(Q8_1), hipMemcpyDeviceToDevice, d.stream));
+                    project(d, stage.data.get<std::byte>() + i * total(), gathered, columns);
+                    for (int c = 0; c < columns; ++c) {
+                        const auto& assignment = group[begin + c];
+                        hip(hipMemcpyAsync(contributions + (assignment.token * 10 + assignment.rank) * H,
+                            d.f(19) + c * H, H * sizeof(float), hipMemcpyDeviceToDevice, d.stream));
+                    }
+                }
+            }
+            hip(hipEventRecord(stage.consumer_done, d.stream));
+            stage.used = true;
+        }
     }
 };
 
@@ -288,6 +480,7 @@ struct Layer {
     Buffer q_norm, k_norm, iq_norm, ik_norm, frequencies, kv_k, kv_v, pooled, tail;
     Buffer stage_recurrent, stage_history;
     bool state_probe = false;
+    bool ffn_probe = false;
     Layer(const Model& m, Device& d, int l, const SessionConfig& cfg, float rope_base)
         : index(l), device(d), attention_hc(m, d, "blk." + std::to_string(l) + ".hc_attn_"),
           ffn_hc(m, d, "blk." + std::to_string(l) + ".hc_ffn_"),
@@ -299,6 +492,7 @@ struct Layer {
           experts(m, d, "blk." + std::to_string(l) + ".", cfg.expert_slots) {
         const std::string p = "blk." + std::to_string(l) + ".";
         state_probe = !cfg.trace_directory.empty() && l == 22;
+        ffn_probe = !cfg.trace_directory.empty() && l == 0;
         hip(hipSetDevice(d.id));
         if ((l + 1) % 4) {
             qkv = matrix(m, d, p + "attn_qkv.weight", H, W);
@@ -332,7 +526,90 @@ struct Layer {
         auto& d = device; hip(hipSetDevice(d.id));
         for (auto* b : {&recurrent, &history, &tail}) if (b->bytes()) hip(hipMemsetAsync(b->get<void>(), 0, b->bytes(), d.stream));
     }
+    template<class Observe> void attention_chunk(int position, int capacity, float epsilon, int tokens, Observe&& observe) {
+        auto& d = device;
+        // All projections belong to the logical chunk; only their borrowed
+        // launch geometry is tiled. Recurrent/append work retains active history
+        // across chronological <=128 slices, never replaying a decode layer.
+        qkv.apply(d, d.f(6), d.f(9), tokens);
+        if ((index + 1) % 4) {
+            z.apply(d, d.f(6), d.f(10), tokens); alpha.apply(d, d.f(6), d.f(11), tokens); beta.apply(d, d.f(6), d.f(12), tokens);
+            observe("qkv", d.f(9), W); observe("z", d.f(10), 6144);
+            observe("alpha", d.f(11), 48); observe("beta", d.f(12), 48);
+            tiles(tokens, [&](int first, int count) {
+                launch_gdn({conv.get(), dt.get(), a.get(), gdn_norm.get(), epsilon},
+                    {d.f(9) + first * W, d.f(10) + first * 6144, d.f(11) + first * 48, d.f(12) + first * 48},
+                    count, recurrent.get(), history.get(), d.f(13) + first * 6144,
+                    {d.f(14) + first * W, stage_recurrent.get(), stage_history.get(), d.f(15) + first * 6144,
+                     nullptr, nullptr, d.flag()}, d.stream);
+            });
+            // Large recurrent/control witnesses are explicitly N1-only.
+            observe("gdn_convolved_normalized", d.f(14), W);
+            observe("final_output", d.f(13), 6144);
+        } else {
+            key.apply(d, d.f(6), d.f(10), tokens); value.apply(d, d.f(6), d.f(11), tokens);
+            observe("qsa_q_gate_raw", d.f(9), 12288);
+            observe("qsa_key_raw", d.f(10), 512); observe("qsa_value_raw", d.f(11), 512);
+            tiles(tokens, [&](int first, int count) {
+                hip(launch_qsa_split_q_gate(d.f(9) + first * 12288, count, d.f(12) + first * 6144,
+                    d.f(13) + first * 6144, d.flag(), d.stream));
+            });
+            observe("qsa_gate_raw", d.f(13), 6144);
+            tiles(tokens, [&](int first, int count) {
+                hip(launch_group_rms_norm(d.f(12) + first * 6144, q_norm.get(), count, 6144, 256, epsilon, true,
+                    d.f(14) + first * 6144, d.flag(), d.stream));
+                hip(launch_group_rms_norm(d.f(10) + first * 512, k_norm.get(), count, 512, 256, epsilon, true,
+                    d.f(15) + first * 512, d.flag(), d.stream));
+                hip(launch_qsa_rope(d.f(14) + first * 6144, frequencies.get(), count, 24, position + first,
+                    d.f(14) + first * 6144, d.flag(), d.stream));
+                hip(launch_qsa_rope(d.f(15) + first * 512, frequencies.get(), count, 2, position + first,
+                    d.f(15) + first * 512, d.flag(), d.stream));
+                launch_hadamard(d.f(14) + first * 6144, d.f(12) + first * 6144, count * 6144, 256, d.stream);
+                launch_hadamard(d.f(15) + first * 512, d.f(10) + first * 512, count * 512, 256, d.stream);
+                launch_hadamard(d.f(11) + first * 512, d.f(15) + first * 512, count * 512, 64, d.stream);
+            });
+            observe("qsa_query_rotated", d.f(12), 6144);
+            observe("qsa_key_rotated", d.f(10), 512); observe("qsa_value_rotated", d.f(15), 512);
+            tiles(tokens, [&](int first, int count) {
+                launch_quantize_q4(d.f(10) + first * 512, kv_k.get<Q4_0>() + (position + first) * 16,
+                    count * 512, d.flag(), d.stream);
+                launch_quantize_q4(d.f(15) + first * 512, kv_v.get<Q4_0>() + (position + first) * 16,
+                    count * 512, d.flag(), d.stream);
+            });
+            index_q.apply(d, d.f(6), d.f(14), tokens); index_k.apply(d, d.f(6), d.f(15), tokens);
+            QsaIndexConfig cfg; cfg.capacity = static_cast<std::size_t>(capacity); cfg.rms_epsilon = epsilon; cfg.rotary_dim = 64;
+            QsaIndexDeviceParameters p{cfg, iq_norm.get(), ik_norm.get(), frequencies.get()};
+            tiles(tokens, [&](int first, int count) {
+                auto* work = d.append_work.get();
+                hip(launch_qsa_index_append(p, d.f(15) + first * 128, position + first, count, pooled.get(), tail.get(),
+                    {d.append_packed.get<Q4_0>(), work, work + microtile_tokens * 128,
+                     work + microtile_tokens * 128 + 33 * 128, nullptr, d.flag()}, d.stream));
+            });
+            // Future main/pooled keys can be prepared, but NONE is visible to an
+            // earlier query. The existing one-query <=2051 gather remains bounded.
+            // All append inputs die before f(15..18) becomes the query workspace.
+            for (int t = 0; t < tokens; ++t) {
+                const int visible = position + t + 1;
+                hip(launch_qsa_index_score(p, d.f(14) + t * 512, pooled.get(), visible, d.f(15), d.f(16), d.flag(), d.stream));
+                hip(launch_qsa_select(d.f(16), visible, d.ids.get<std::int32_t>(), d.block_ids.get<std::int32_t>(), d.counts.get<int>(),
+                    {d.histogram.get<int>(), d.select_state.get<std::uint64_t>(), d.candidates.get<std::uint64_t>(), d.flag()}, d.stream));
+                hip(launch_attention_q4(d.f(12) + t * 6144, kv_k.get<Q4_0>(), kv_v.get<Q4_0>(), capacity, d.ids.get<std::int32_t>(),
+                    d.counts.get<int>(), visible, d.f(17),
+                    {d.gathered_k.get<std::uint16_t>(), d.gathered_v.get<std::uint16_t>(), d.partial_o.get(),
+                     d.partial_ms.get<float2>(), d.f(15), d.flag()}, d.stream));
+                observe("qsa_attention_rotated", d.f(17), 6144, t);
+                launch_hadamard(d.f(17), d.f(18), 6144, 64, d.stream);
+                observe("qsa_attention_inverse_h64", d.f(18), 6144, t);
+                hip(launch_sigmoid_gate(d.f(18), d.f(13) + t * 6144, 6144, d.f(9) + t * 6144, d.flag(), d.stream));
+                observe("qsa_attention_gated", d.f(9) + t * 6144, 6144, t);
+            }
+            hip(hipMemcpyAsync(d.f(13), d.f(9), tokens * 6144 * sizeof(float), hipMemcpyDeviceToDevice, d.stream));
+        }
+        attn_output.apply(d, d.f(13), d.f(9), tokens);
+        observe("block_attention_out", d.f(9), H);
+    }
     template<class Observe> void attention(int position, int capacity, float epsilon, int tokens, Observe&& observe) {
+        if (tokens > 3) { attention_chunk(position, capacity, epsilon, tokens, observe); return; }
         auto& d = device;
         qkv.apply(d, d.f(6), d.f(9), tokens);
         if ((index + 1) % 4) {
@@ -405,15 +682,21 @@ struct Layer {
         attn_output.apply(d, d.f(13), d.f(9), tokens);
         observe("block_attention_out", d.f(9), H);
     }
-    void ffn(SessionStats& stats, int tokens) {
+    template<class Observe> void ffn(SessionStats& stats, int tokens, Observe&& observe) {
         auto& d = device;
         router.apply(d, d.f(6), d.f(9), tokens);
-        hip(launch_router_softmax(d.f(9), tokens, d.f(10), d.flag(), d.stream));
-        std::array<float, 3 * 512> probabilities{};
+        tiles(tokens, [&](int first, int count) {
+            hip(launch_router_softmax(d.f(9) + first * 512, count, d.f(10) + first * 512, d.flag(), d.stream));
+        });
+        auto& probabilities = d.route_probabilities;
         hip(hipMemcpyAsync(probabilities.data(), d.f(10), tokens * 512 * sizeof(float), hipMemcpyDeviceToHost, d.stream));
         d.check("router layer " + std::to_string(index));
-        std::array<std::int32_t, 3 * 10> ids{};
-        std::array<float, 3 * 10> weights{};
+        if (ffn_probe) {
+            observe("ffn_router_logits_raw", d.f(9), 512);
+            observe("ffn_router_probabilities", d.f(10), 512);
+        }
+        auto& ids = d.route_ids;
+        auto& weights = d.route_weights;
         for (int t = 0; t < tokens; ++t) {
             const float* row = probabilities.data() + t * 512;
             std::array<int, 512> order{}; std::iota(order.begin(), order.end(), 0);
@@ -436,50 +719,109 @@ struct Layer {
                 ids[t * 10 + i] = order[i]; weights[t * 10 + i] = row[order[i]] * inverse;
             }
         }
+        if (ffn_probe) {
+            // Exact semantic ID->F32 conversion (0..511), never reinterpret I32
+            // bytes. f(22) is dead until the wide rank fold's weight upload.
+            std::vector<float> selected_ids(static_cast<std::size_t>(tokens) * 10);
+            std::transform(ids.begin(), ids.begin() + tokens * 10, selected_ids.begin(),
+                [](std::int32_t id) { return static_cast<float>(id); });
+            hip(hipMemcpyAsync(d.f(22), selected_ids.data(), selected_ids.size() * sizeof(float), hipMemcpyHostToDevice, d.stream));
+            observe("ffn_selected_expert_ids_exact_f32", d.f(22), 10);
+            // Observe completes the stream before host lifetime/scratch reuse.
+            hip(hipMemcpyAsync(d.f(22), weights.data(), tokens * 10 * sizeof(float), hipMemcpyHostToDevice, d.stream));
+            observe("ffn_selected_weights", d.f(22), 10);
+        }
         // Dedicated input copy: the common quantization workspace is overwritten
         // by expert down inputs. f(21) reserves ALL original Q8 X columns until
         // every group finishes. f(23) is separate gathered Q8, not common d.q8.
-        hip(launch_quantize_q8_1(d.f(6), d.q8.get<Q8_1>(), H, tokens, d.flag(), d.stream));
+        tiles(tokens, [&](int first, int count) {
+            hip(launch_quantize_q8_1(d.f(6) + first * H, d.q8.get<Q8_1>() + first * (H / 32), H, count, d.flag(), d.stream));
+        });
         hip(hipMemcpyAsync(d.f(21), d.q8.get<Q8_1>(), tokens * (H / 32) * sizeof(Q8_1), hipMemcpyDeviceToDevice, d.stream));
         hip(hipMemsetAsync(d.f(20), 0, tokens * H * sizeof(float), d.stream));
         const auto* original = reinterpret_cast<const Q8_1*>(d.f(21));
         if (tokens == 1) {
             // Retain N1 physical cache/LRU order and immediate rank-order adds.
-            for (int rank = 0; rank < 10; ++rank) experts.run(d, ids[rank], original, weights[rank], stats);
+            for (int rank = 0; rank < 10; ++rank) {
+                experts.run(d, ids[rank], original, weights[rank], stats);
+                // Read after scaled-add's consumer, before the next rank reuses
+                // f(19). No change to physical cache or numerical add order.
+                if (ffn_probe) observe("ffn_expert_down_unweighted_rank_" + std::to_string(rank), d.f(19), H);
+            }
         } else {
             d.routes->prepare(std::span(ids).first(tokens * 10), std::span(weights).first(tokens * 10), tokens);
-            auto* gathered = reinterpret_cast<Q8_1*>(d.f(23));
-            auto* contributions = d.routed_contributions.get();
-            for (int expert = 0; expert < 512; ++expert) {
-                const auto group = d.routes->group(expert);
-                if (group.empty()) continue;
-                const int columns = static_cast<int>(group.size()); // unique per token, <=3
-                for (int c = 0; c < columns; ++c)
-                    hip(hipMemcpyAsync(gathered + c * (H / 32), original + group[c].token * (H / 32),
-                        (H / 32) * sizeof(Q8_1), hipMemcpyDeviceToDevice, d.stream));
-                // One canonical triplet acquisition/upload per group. Every
-                // additional group column is a logical hit, even on a cold miss.
-                experts.run_group(d, expert, gathered, columns, stats);
-                for (int c = 0; c < columns; ++c)
-                    hip(hipMemcpyAsync(contributions + (group[c].token * 10 + group[c].rank) * H,
-                        d.f(19) + c * H, H * sizeof(float), hipMemcpyDeviceToDevice, d.stream));
-                // All scatters precede the next f(16..19)/f(23)/slot reuse on
-                // this same stream. d.q8 contains DOWN input, never original X.
+            if (tokens > 3) experts.run_chunk(d, original, stats);
+            else {
+                auto* gathered = reinterpret_cast<Q8_1*>(d.f(23));
+                auto* contributions = d.routed_contributions.get();
+                for (int expert = 0; expert < 512; ++expert) {
+                    const auto group = d.routes->group(expert);
+                    if (group.empty()) continue;
+                    const int columns = static_cast<int>(group.size()); // unique per token, <=3
+                    for (int c = 0; c < columns; ++c)
+                        hip(hipMemcpyAsync(gathered + c * (H / 32), original + group[c].token * (H / 32),
+                            (H / 32) * sizeof(Q8_1), hipMemcpyDeviceToDevice, d.stream));
+                    // One canonical triplet acquisition/upload per group. Every
+                    // additional group column is a logical hit, even on a cold miss.
+                    experts.run_group(d, expert, gathered, columns, stats);
+                    for (int c = 0; c < columns; ++c)
+                        hip(hipMemcpyAsync(contributions + (group[c].token * 10 + group[c].rank) * H,
+                            d.f(19) + c * H, H * sizeof(float), hipMemcpyDeviceToDevice, d.stream));
+                    // Scatters precede f(16..19)/f(23)/slot reuse on this stream.
+                }
             }
             // Execution order may group experts, but numerical reduction cannot:
             // scatter UNWEIGHTED down results, then left-fold original ranks0..9
             // with separately rounded normalized-weight MUL and accumulator ADD.
-            for (int t = 0; t < tokens; ++t)
+            if (tokens <= 3) {
+                for (int t = 0; t < tokens; ++t)
+                    for (int rank = 0; rank < 10; ++rank)
+                        hip(launch_scaled_add(d.routed_contributions.get() + (t * 10 + rank) * H, weights[t * 10 + rank], H,
+                            d.f(20) + t * H, d.flag(), d.stream));
+            } else {
+                // f(22) is dead diagnostic scratch here. Upload raw normalized
+                // FP32 bits, then one pointwise left-fold per <=128 row slice.
+                hip(hipMemcpyAsync(d.f(22), weights.data(), tokens * 10 * sizeof(float), hipMemcpyHostToDevice, d.stream));
+                tiles(tokens, [&](int first, int count) {
+                    hip(launch_routed_fold(d.routed_contributions.get() + first * 10 * H, d.f(22) + first * 10,
+                        count, d.f(20) + first * H, d.flag(), d.stream));
+                });
+            }
+        }
+        if (ffn_probe) {
+            if (tokens > 1) {
+                // ALL scatters/fold consumers are queued. Storage is immutable
+                // [token][original-rank][H], not a contiguous rank-major matrix.
                 for (int rank = 0; rank < 10; ++rank)
-                    hip(launch_scaled_add(contributions + (t * 10 + rank) * H, weights[t * 10 + rank], H,
-                        d.f(20) + t * H, d.flag(), d.stream));
+                    observe("ffn_expert_down_unweighted_rank_" + std::to_string(rank),
+                        d.routed_contributions.get() + rank * H, H, -1, 10 * H);
+            }
+            observe("ffn_routed_weighted_aggregate", d.f(20), H);
         }
         shared_gate.apply(d, d.f(6), d.f(16), tokens); shared_up.apply(d, d.f(6), d.f(17), tokens);
-        hip(launch_silu_up(d.f(16), d.f(17), tokens * 640, d.f(18), d.flag(), d.stream));
+        if (ffn_probe) {
+            observe("ffn_shared_gate_raw", d.f(16), 640);
+            observe("ffn_shared_up_raw", d.f(17), 640);
+        }
+        tiles(tokens, [&](int first, int count) {
+            hip(launch_silu_up(d.f(16) + first * 640, d.f(17) + first * 640, count * 640, d.f(18) + first * 640, d.flag(), d.stream));
+        });
         shared_down.apply(d, d.f(18), d.f(19), tokens);
-        blas(launch_dense_linear(d.handle, {shared_weight.get(), H, 1}, d.f(6), tokens, d.f(16), d.stream));
+        if (ffn_probe) {
+            observe("ffn_shared_silu_middle", d.f(18), 640);
+            observe("ffn_shared_down", d.f(19), H);
+        }
+        // KEEP the qualified dense MMVF arithmetic for this direct scalar projection.
+        // Chronological <=8 slices preserve the same X/weights and H/1 token strides.
+        for (int first = 0; first < tokens; first += 8) {
+            const int count = std::min(8, tokens - first);
+            blas(launch_dense_linear(d.handle, {shared_weight.get(), H, 1}, d.f(6) + first * H, count, d.f(16) + first, d.stream));
+        }
+        if (ffn_probe) observe("ffn_shared_scalar_gate_raw", d.f(16), 1);
         if (tokens == 1) hip(launch_shared_sigmoid_add(d.f(19), d.f(16), H, d.f(20), d.flag(), d.stream));
-        else hip(launch_shared_sigmoid_add_rows(d.f(19), d.f(16), tokens, H, d.f(20), d.flag(), d.stream));
+        else tiles(tokens, [&](int first, int count) {
+            hip(launch_shared_sigmoid_add_rows(d.f(19) + first * H, d.f(16) + first, count, H, d.f(20) + first * H, d.flag(), d.stream));
+        });
     }
 };
 }
@@ -505,7 +847,7 @@ struct Session::Impl {
     struct Pinned {
         float* pointer = nullptr;
         std::size_t bytes;
-        explicit Pinned(int tokens) : bytes(tokens * W * sizeof(float)) {
+        explicit Pinned(int tokens) : bytes(checked_size(checked_size(tokens, W), sizeof(float))) {
             hip(hipHostMalloc(&pointer, bytes, hipHostMallocDefault));
         }
         ~Pinned() { if (pointer) cleanup(hipHostFree(pointer)); }
@@ -519,7 +861,7 @@ struct Session::Impl {
 
     Impl(const std::string& path, SessionConfig cfg)
         : model(path), config(checked_config(std::move(cfg))), ple_hash(ple_hash_config(model, 1)),
-          ple_lookup(model, ple_hash.state().config()), host_logits(config.max_batch_tokens * V) {
+          ple_lookup(model, ple_hash.state().config()), host_logits(checked_size(config.max_batch_tokens, V)) {
         if (!config.trace_directory.empty()) {
             const std::filesystem::path path(config.trace_directory);
             const auto parent = path.has_parent_path() ? path.parent_path() : std::filesystem::path(".");
@@ -562,9 +904,14 @@ struct Session::Impl {
         reset();
     }
     ~Impl() {
-        for (auto& d : devices) if (d) { cleanup(hipSetDevice(d->id)); cleanup(hipStreamSynchronize(d->stream)); }
+        for (auto& d : devices) if (d) d->drain_cleanup();
     }
     void reset() {
+        // Also orders exceptional partial bands before any flag/state/host reuse.
+        for (auto& d : devices) {
+            d->drain();
+            for (auto& stage : d->stages) if (stage) stage->used = false;
+        }
         for (auto& l : layers) l->reset();
         hip(hipSetDevice(0)); hip(hipMemsetAsync(ple_history.get<void>(), 0, ple_history.bytes(), devices[0]->stream));
         for (auto& d : devices) { hip(hipSetDevice(d->id)); d->clear(); hip(hipStreamSynchronize(d->stream)); }
@@ -584,6 +931,7 @@ struct Session::Impl {
         for (int id = 0; id < 2; ++id) {
             auto& out = result.devices[id];
             auto& d = *devices[id];
+            d.drain();
             out.device = id; out.first_layer = id * 24; out.last_layer = id * 24 + 23;
             auto add = [&](std::uint64_t& category, const Buffer& b) {
                 if (!b.bytes()) {
@@ -600,7 +948,12 @@ struct Session::Impl {
             for (const auto& b : d.scratch) add(out.workspace, b);
             for (const auto* b : {&d.q8, &d.error, &d.logits, &d.gathered_k, &d.gathered_v,
                     &d.partial_o, &d.partial_ms, &d.histogram, &d.select_state, &d.candidates,
-                    &d.ids, &d.block_ids, &d.counts, &d.routed_contributions}) add(out.workspace, *b);
+                    &d.ids, &d.block_ids, &d.counts, &d.routed_contributions, &d.ds4,
+                    &d.append_packed, &d.append_work}) add(out.workspace, *b);
+            for (const auto& stage : d.stages) if (stage) {
+                add(out.workspace, stage->data);
+                result.pinned_expert_staging += expert_stage_bytes;
+            }
             for (const auto& pointer : layers) {
                 const auto& l = *pointer;
                 if (l.index / 24 != id) continue;
@@ -631,7 +984,6 @@ struct Session::Impl {
             if (out.owned_bytes != Buffer::live_bytes[id] || out.owned_buffers != Buffer::live_buffers[id])
                 throw std::runtime_error("Session allocation ledger omitted a live Buffer");
             out.owned_peak_bytes = Buffer::peak_bytes[id];
-            hip(hipSetDevice(id)); hip(hipStreamSynchronize(d.stream));
             std::size_t free = 0, total = 0; hip(hipMemGetInfo(&free, &total));
             out.total_vram = total; out.free_vram = free;
         }
@@ -671,15 +1023,35 @@ struct Session::Impl {
         capture_batch(d, "ple_embedding", d.f(9), H, tokens, 1);
         ple_key.apply(d, d.f(9), d.f(10), tokens); ple_value.apply(d, d.f(9), d.f(11), tokens);
         capture_batch(d, "ple_key_raw", d.f(10), W, tokens, 1); capture_batch(d, "ple_value_raw", d.f(11), H, tokens, 1);
-        hip(launch_group_rms_norm(d.f(10), ple_key_norm.get(), tokens, W, H, epsilon, false, d.f(12), d.flag(), d.stream));
-        hip(launch_group_rms_norm(residual, ple_query_norm.get(), tokens, W, H, epsilon, false, d.f(13), d.flag(), d.stream));
-        hip(launch_ple_gate(d.f(12), d.f(13), d.f(11), tokens, d.f(14), d.flag(), d.stream));
+        tiles(tokens, [&](int first, int count) {
+            hip(launch_group_rms_norm(d.f(10) + first * W, ple_key_norm.get(), count, W, H, epsilon, false,
+                d.f(12) + first * W, d.flag(), d.stream));
+        });
+        tiles(tokens, [&](int first, int count) {
+            hip(launch_group_rms_norm(residual + first * W, ple_query_norm.get(), count, W, H, epsilon, false,
+                d.f(13) + first * W, d.flag(), d.stream));
+        });
+        // Keep the qualified N1 PLE dot reduction geometry on identical rows.
+        // Only gate launches are sliced; logical PLE/history work stays whole.
+        for (int first = 0; first < tokens; first += 8) {
+            const int count = std::min(8, tokens - first);
+            hip(launch_ple_gate(d.f(12) + first * W, d.f(13) + first * W, d.f(11) + first * H,
+                count, d.f(14) + first * W, d.flag(), d.stream));
+        }
         capture_batch(d, "ple_gated_value", d.f(14), W, tokens, 1);
-        hip(launch_group_rms_norm(d.f(14), ple_conv_norm.get(), tokens, W, H, epsilon, false, d.f(15), d.flag(), d.stream));
-        hip(launch_ple_causal_conv(d.f(14), d.f(15), ple_conv.get(), ple_history.get(), tokens, nullptr,
-            {d.f(16), ple_stage_history.get(), nullptr}, d.flag(), d.stream));
-        hip(launch_publish_ple_history(ple_stage_history.get(), ple_history.get(), d.flag(), d.stream));
-        hip(launch_add(residual, d.f(16), tokens * W, alternate, d.flag(), d.stream)); std::swap(residual, alternate);
+        tiles(tokens, [&](int first, int count) {
+            hip(launch_group_rms_norm(d.f(14) + first * W, ple_conv_norm.get(), count, W, H, epsilon, false,
+                d.f(15) + first * W, d.flag(), d.stream));
+        });
+        tiles(tokens, [&](int first, int count) {
+            hip(launch_ple_causal_conv(d.f(14) + first * W, d.f(15) + first * W, ple_conv.get(), ple_history.get(), count, nullptr,
+                {d.f(16) + first * W, ple_stage_history.get(), nullptr}, d.flag(), d.stream));
+            hip(launch_publish_ple_history(ple_stage_history.get(), ple_history.get(), d.flag(), d.stream));
+        });
+        tiles(tokens, [&](int first, int count) {
+            hip(launch_add(residual + first * W, d.f(16) + first * W, count * W, alternate + first * W, d.flag(), d.stream));
+        });
+        std::swap(residual, alternate);
         capture_batch(d, "ple_residual", residual, W, tokens, 1);
     }
     std::span<const float> step_batch(std::span<const std::int32_t> window) {
@@ -732,7 +1104,7 @@ struct Session::Impl {
                             else capture(*d, name, x, count, l, token_offset);
                         }
                     });
-                hip(launch_hc_combine(residual, d->f(9), d->f(8), tokens, alternate, d->flag(), d->stream));
+                combine(*d, residual, d->f(9), tokens, alternate);
                 std::swap(residual, alternate);
                 layer.ffn_hc.mix(*d, residual, epsilon, tokens);
                 if (l == 0 || l == 1 || l == 2 || l == 3 || l == 6 || l == 8 || l == 19 || l == 22 || l == 47) {
@@ -741,9 +1113,15 @@ struct Session::Impl {
                     capture_batch(*d, "hc_ffn_gate_raw", d->f(5), W, tokens, l);
                     capture_batch(*d, "hc_ffn_inject_raw", d->f(7), 4, tokens, l);
                 }
-                layer.ffn(statistics, tokens);
+                layer.ffn(statistics, tokens,
+                    [&](const std::string& name, const float* x, int width, int token_offset = -1, int stride = 0) {
+                        if (l != 0 || !trace_metadata.is_open()) return;
+                        if (token_offset >= 0) capture(*d, name, x, width, l, token_offset);
+                        else for (int t = 0; t < tokens; ++t)
+                            capture(*d, name, x + t * (stride ? stride : width), width, l, t);
+                    });
                 if (l == 0 || l == 1 || l == 2 || l == 3 || l == 6 || l == 8 || l == 19 || l == 22 || l == 47) capture_batch(*d, "ffn_out", d->f(20), H, tokens, l);
-                hip(launch_hc_combine(residual, d->f(20), d->f(8), tokens, alternate, d->flag(), d->stream));
+                combine(*d, residual, d->f(20), tokens, alternate);
                 std::swap(residual, alternate);
                 d->check("layer " + std::to_string(l));
                 capture_batch(*d, "l_last-" + std::to_string(l), residual, W, tokens, l);
@@ -757,7 +1135,13 @@ struct Session::Impl {
             statistics.consumed_tokens += static_cast<std::uint64_t>(tokens);
             statistics.last_completed_ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - begin).count();
             return result;
-        } catch (...) { usable = false; throw; }
+        } catch (...) {
+            usable = false;
+            // In-flight DMA may still read pinned bands, RAM or resident slots.
+            // Finish both streams before reset/destruction can release any owner.
+            for (auto& d : devices) d->drain_cleanup();
+            throw;
+        }
     }
 };
 

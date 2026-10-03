@@ -125,7 +125,7 @@ struct Fixture {
         w={allocate<float>(capacity*10240),allocate<float>(786432),allocate<float>(30720),allocate<float>(capacity*6144),
             nullptr,nullptr,allocate<int>(1)};
         state=allocate<float>(786432); history=allocate<float>(30720); output=allocate<float>(capacity*6144);
-        const int slots=std::min(capacity,3)+1;
+        const int slots=capacity+1;
         rp=allocate<float>(slots*786432); hp=allocate<float>(slots*30720);
         reset(); check(hipStreamSynchronize(stream));
     }
@@ -169,13 +169,14 @@ void exact_short_cases(Fixture &f,const Data &data) {
     // Part of the existing correctness fixture, not another JSON record/counter.
     // Exact-size inputs/scratch/output/prefixes exercise the last legal token and
     // slot; no hidden N128 input tail can mask a short-window indexing error.
-    for(int n:{2,3}) {
+    for(int n:{2,3,4,8,16,32,128}) {
+        const Data window=data.expanded(n+2);
         Fixture short_f(f.device); short_f.initialize(data,n);
         for(bool occupied:{false,true}) {
             short_f.reset();
             if(occupied) { short_f.upload(data.input(0,2)); short_f.launch_steps(2); short_f.valid(); }
             const auto before=short_f.get(short_f.state,786432),history=short_f.get(short_f.history,30720);
-            short_f.upload(data.input(2,n)); short_f.launch_steps(n,true); short_f.valid();
+            short_f.upload(window.input(2,n)); short_f.launch_steps(n,true); short_f.valid();
             const auto output=short_f.get(short_f.output,n*6144),state=short_f.get(short_f.state,786432);
             const auto after_history=short_f.get(short_f.history,30720);
             const auto rp=short_f.get(short_f.rp,(n+1)*786432),hp=short_f.get(short_f.hp,(n+1)*30720);
@@ -183,6 +184,13 @@ void exact_short_cases(Fixture &f,const Data &data) {
             exact(std::span(hp).first(30720),history,"GDN N1 prefix zero history");
             exact(std::span(rp).subspan(n*786432,786432),state,"GDN N1 final prefix state");
             exact(std::span(hp).subspan(n*30720,30720),after_history,"GDN N1 final prefix history");
+            if(n>=4) {
+                // Extra N4..128 CPU comparisons keep the original frozen gates.
+                qwen::GdnCpu cpu(data.c,data.parameters()); std::vector<float> expected(n*6144);
+                if(occupied) cpu.run(data.input(0,2),2,std::span(expected).first(2*6144));
+                cpu.run(window.input(2,n),n,expected);
+                Errors errors; near(output,expected,false,errors); short_f.compare(cpu.state(),errors);
+            }
             for(bool prefixes:{true,false}) {
                 short_f.put(short_f.state,before); short_f.put(short_f.history,history);
                 // Poison previous results so missing final stores/prefixes
@@ -194,7 +202,7 @@ void exact_short_cases(Fixture &f,const Data &data) {
                 check(hipMemsetAsync(short_f.output,0xff,n*6144*4,short_f.stream));
                 check(hipMemsetAsync(short_f.rp,0xff,(n+1)*786432*4,short_f.stream));
                 check(hipMemsetAsync(short_f.hp,0xff,(n+1)*30720*4,short_f.stream));
-                short_f.upload(data.input(2,n)); short_f.launch(n,prefixes); short_f.valid();
+                short_f.upload(window.input(2,n)); short_f.launch(n,prefixes); short_f.valid();
                 exact(short_f.get(short_f.output,n*6144),output,"GDN short-window exact N1 output");
                 exact(short_f.get(short_f.state,786432),state,"GDN short-window exact N1 state");
                 exact(short_f.get(short_f.history,30720),after_history,"GDN short-window exact N1 history");
@@ -212,6 +220,57 @@ void exact_short_cases(Fixture &f,const Data &data) {
                         exact(short_f.get(short_f.output,6144),replay_output,"GDN short-window exact restored output");
                         exact(short_f.get(short_f.state,786432),replay_state,"GDN short-window exact restored state");
                         exact(short_f.get(short_f.history,30720),replay_history,"GDN short-window exact restored history");
+                    }
+                }
+            }
+            if(n==4 || n==8 || n==32) {
+                // Silent mandatory cases: six late-invalid families for each
+                // N4/N8/N32, zero/occupied state and prefixes on/off. Check the full
+                // caller transaction with clean/opposite-bit initial flags,
+                // sticky bits, then exact valid reuse.
+                const std::vector<float> sentinel(n*6144,-123.0f);
+                auto unchanged=[&] {
+                    exact(short_f.get(short_f.state,786432),before,"GDN extended failure state publication");
+                    exact(short_f.get(short_f.history,30720),history,"GDN extended failure history publication");
+                    exact(short_f.get(short_f.output,n*6144),sentinel,"GDN extended failure output publication");
+                };
+                for(bool prefixes:{false,true}) for(int family=0;family<6;++family) for(bool seeded:{false,true}) {
+                    auto invalid=window;
+                    if(family<3) {
+                        const float bad=family==0?std::numeric_limits<float>::quiet_NaN():
+                            family==1?std::numeric_limits<float>::infinity():std::numeric_limits<float>::max();
+                        std::fill(invalid.qkv.begin()+(n+1)*10240,invalid.qkv.end(),bad);
+                    } else {
+                        auto &control=family==3?invalid.z:family==4?invalid.alpha:invalid.beta;
+                        control.back()=std::numeric_limits<float>::quiet_NaN();
+                    }
+                    short_f.put(short_f.state,before); short_f.put(short_f.history,history);
+                    short_f.put(short_f.output,sentinel); short_f.upload(invalid.input(2,n));
+                    // Existing input bit must survive a late arithmetic failure,
+                    // and existing arithmetic bit must survive an input failure.
+                    const int sticky=seeded?(family==2?1:2):0;
+                    check(hipMemcpyAsync(short_f.w.error,&sticky,4,hipMemcpyHostToDevice,short_f.stream));
+                    short_f.launch(n,prefixes);
+                    const int flags=short_f.flag();
+                    const int expected_flags=seeded?3:(family==2?2:1);
+                    if((flags&3)!=expected_flags) throw std::runtime_error("GDN extended numeric bits");
+                    unchanged();
+                    const auto valid=window.input(2,n);
+                    short_f.put(const_cast<float*>(short_f.in.qkv),valid.qkv);
+                    short_f.put(const_cast<float*>(short_f.in.z),valid.z);
+                    short_f.put(const_cast<float*>(short_f.in.alpha),valid.alpha);
+                    short_f.put(const_cast<float*>(short_f.in.beta),valid.beta);
+                    short_f.launch(n,prefixes);
+                    if(short_f.flag()!=flags) throw std::runtime_error("GDN extended error was not sticky");
+                    unchanged();
+                    check(hipMemsetAsync(short_f.w.error,0,4,short_f.stream));
+                    short_f.launch(n,prefixes); short_f.valid();
+                    exact(short_f.get(short_f.output,n*6144),output,"GDN extended valid reuse output");
+                    exact(short_f.get(short_f.state,786432),state,"GDN extended valid reuse state");
+                    exact(short_f.get(short_f.history,30720),after_history,"GDN extended valid reuse history");
+                    if(prefixes) {
+                        exact(short_f.get(short_f.rp,(n+1)*786432),rp,"GDN extended valid reuse state prefixes");
+                        exact(short_f.get(short_f.hp,(n+1)*30720),hp,"GDN extended valid reuse history prefixes");
                     }
                 }
             }

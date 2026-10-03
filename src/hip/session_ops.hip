@@ -15,7 +15,9 @@
 #endif
 #pragma clang fp contract(off)
 
-// Donor-first: FP32 N1/2/3, Q24/K2/D256/rotary64, router512, expert640.
+// Donor-first: FP32 microtiles N1..128, Q24/K2/D256/rotary64, router512,
+// expert640. Extending the pointwise/independent-row grids changes no arithmetic;
+// Session still slices a larger logical chunk before calling these launchers.
 // ADAPT mx dcd685463d597d31f5ca759d32c94592a2740fa4, ggml/src/ggml-cuda/
 // rope.cu::rope_neox / rope_multi: split-half pair j/j+rotary_dim/2 and text
 // absolute positions. One thread owns both pair members for race-free exact
@@ -239,6 +241,27 @@ __global__ void scaled_add(const float* input, float scale, int count,
     report(flags, error);
 }
 
+// WRITE OURS original-rank pointwise fold; the grouped execution order never
+// enters this numerical reduction. Preserve ten separately rounded MUL/ADDs.
+__global__ void routed_fold(const float* contributions, const float* weights,
+                           int count, float* output, int* error) {
+    const unsigned i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i >= static_cast<unsigned>(count)) return;
+    constexpr unsigned width = 2560, ranks = 10;
+    const unsigned token = i / width, component = i % width;
+    int flags = 0;
+    float value = 0.0f;
+#pragma unroll
+    for (unsigned rank = 0; rank < ranks; ++rank) {
+        const float x = operand(contributions[(token * ranks + rank) * width + component], flags);
+        const float scale = operand(weights[token * ranks + rank], flags);
+        const float contribution = arithmetic(scale * x, flags);
+        value = arithmetic(value + contribution, flags);
+    }
+    output[i] = flags == 0 ? value : 0.0f;
+    report(flags, error);
+}
+
 template<bool RowBroadcast>
 __global__ void shared_sigmoid_add(const float* input, const float* raw_gate, int count, int width,
                                  float* accumulator, int* error) {
@@ -380,6 +403,16 @@ hipError_t launch_router_softmax(const float* logits, int tokens, float* probabi
     if (!valid_ranges(std::array{range(logits, count), range(probabilities, count, true),
             range(error, 1, true)})) return hipErrorInvalidValue;
     router_softmax<<<tokens, router_width, 0, stream>>>(logits, probabilities, error);
+    return hipGetLastError();
+}
+
+hipError_t launch_routed_fold(const float* contributions, const float* weights,
+        int tokens, float* output, int* error, hipStream_t stream) noexcept {
+    if (!valid_tokens(tokens)) return hipErrorInvalidValue;
+    const int count = tokens * 2560;
+    if (!valid_ranges(std::array{range(contributions, count * 10), range(weights, tokens * 10),
+            range(output, count, true), range(error, 1, true)})) return hipErrorInvalidValue;
+    routed_fold<<<ceil_div(count, threads), threads, 0, stream>>>(contributions, weights, count, output, error);
     return hipGetLastError();
 }
 

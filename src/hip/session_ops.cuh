@@ -4,7 +4,7 @@
 
 namespace qwen {
 
-inline constexpr int session_ops_max_tokens = 3;
+inline constexpr int session_ops_max_tokens = 128;
 inline constexpr int session_ops_qsa_query_heads = 24;
 inline constexpr int session_ops_qsa_key_heads = 2;
 inline constexpr int session_ops_qsa_head_dim = 256;
@@ -44,12 +44,12 @@ inline constexpr int session_ops_error_arithmetic = 2;
 // expf/cosf/sinf/powf are not fast intrinsics.
 
 // projected [N][24][512], each head contains Q[256] then RAW gate[256].
-// query/gate [N][24][256]; N=1..3. Capacities projected=N*12288,
+// query/gate [N][24][256]; N=1..128. Capacities projected=N*12288,
 // query=gate=N*6144. No normalization, activation or rearrangement within Q.
 [[nodiscard]] hipError_t launch_qsa_split_q_gate(const float* projected, int tokens,
         float* query, float* gate, int* error, hipStream_t stream) noexcept;
 
-// input/output [N][heads][256], heads=24 (main Q) or 2 (main K), N=1..3.
+// input/output [N][heads][256], heads=24 (main Q) or 2 (main K), N=1..128.
 // Capacities input/output=N*heads*256, inverse_frequencies=32. Frequencies are
 // supplied finite radians/position, including any caller-selected scaling.
 // For token t use absolute position start_position+t; start_position>=0 and
@@ -91,6 +91,15 @@ inline constexpr int session_ops_error_arithmetic = 2;
 [[nodiscard]] hipError_t launch_scaled_add(const float* input, float scale, int count,
         float* accumulator, int* error, hipStream_t stream) noexcept;
 
+// Wide Session's pointwise original-rank reduction, no atomic/group-order sum.
+// contributions [N][10][2560] are UNWEIGHTED; weights [N][10] contain original
+// normalized FP32 bits. N=1..128, output [N][2560]. Output/error are disjoint
+// from all reads and each other; the general read-only alias rule applies.
+// Starting at +0, left-fold ranks0..9, each contribution MUL and accumulator ADD
+// rounded separately exactly as ten ordered scaled-add launches on finite data.
+[[nodiscard]] hipError_t launch_routed_fold(const float* contributions, const float* weights,
+        int tokens, float* output, int* error, hipStream_t stream) noexcept;
+
 // Same separately rounded multiply/add, with one DEVICE raw gate scalar.
 // Capacities input=accumulator=count, raw_gate=1. Computes the direct HIP
 // sigmoid before broadcasting, avoiding a CPU-libm/backend rounding change.
@@ -100,13 +109,13 @@ inline constexpr int session_ops_error_arithmetic = 2;
 
 // Token-major row broadcast with the SAME direct device sigmoid and separately
 // rounded MUL/ADD as above: input/accumulator [tokens][width], raw_gate[tokens].
-// tokens=1..3, width>0 and tokens*width<=INT_MAX. Capacities input/accumulator=
+// tokens=1..128, width>0 and tokens*width<=INT_MAX. Capacities input/accumulator=
 // tokens*width, raw_gate=tokens, error=1. Same borrowed stream/error/alias rules;
 // validates the whole shape/ranges before any HIP call, no allocation or sync.
 [[nodiscard]] hipError_t launch_shared_sigmoid_add_rows(const float* input, const float* raw_gate,
         int tokens, int width, float* accumulator, int* error, hipStream_t stream) noexcept;
 
-// logits/probabilities [N][512], N=1..3; capacities N*512 each. Stable FP32
+// logits/probabilities [N][512], N=1..128; capacities N*512 each. Stable FP32
 // exp(logit-row_max)/sum(exp(...)), one logical width32 group per row on wave64.
 // Per-lane ascending strided sixteen-term sum, then qualified DPP XOR stages
 // 1/2/4/8/16, matching production topk-moe.cu, followed by reciprocal multiply.

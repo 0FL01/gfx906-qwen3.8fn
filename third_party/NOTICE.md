@@ -33,7 +33,9 @@
   `kernels/gdn_recurrent_batched_v2.cpp` at the Apache-2.0 revision above.
   Modifications: fixed tiled GGUF geometry, canonical FP32/FMA PRE-state dot
   and decay-after-reduction/update ordering, additive Q/K epsilon,
-  chronological prefixes, N1/2/3 CPW2 resident register-state token loop,
+  chronological prefixes, exact N1..128 CPW2 register-state chronological token
+  loop (extended from the earlier N1/2/3 dispatch), strengthened exact
+  state/prefix/continuation and late-error atomic-publication fixtures,
   checked conv/L2/RMS/sigmoid preprocessing,
   no fast intrinsics, finite staging and chunk-atomic publication.
   No graph/cache/runtime code is imported. CPU dense/GDN oracles are original;
@@ -59,7 +61,9 @@
 
 - `src/hip/linear.hip` adapts mx canonical Q4_0/Q4_1/Q5_0/Q8_0/Q6_K
   `vecdotq.cuh`, Q8_1 `quantize.cu` and qualified R1 register-reuse/DPP patterns.
-  Modifications: borrowed checked buffers, N1/2/3 reuse, mx `mmvq.cu` two-wave
+  Modifications: borrowed checked buffers, N1/2/3 reuse plus a separate checked
+  N1..8 short-column launcher over the same templates (the original N≤3 API
+  remains unchanged), mx `mmvq.cu` two-wave
   topology and format-specific fragments with explicit FMA, canonical Q6 MMVQ
   slices, unchanged raw-sum/half-product ABI,
   representable-scale and finite activation errors. `linear_reference.cpp`
@@ -70,13 +74,16 @@
   Sinkhorn), canonical logical reductions/direct unary expressions, strict finite
   arithmetic and provisional outputs. PLE dot/reduction/scale adapts mx
   `sumrows.cu`, `reduce_rows.cuh`, `scale.cu`; dilation3 state/prefix staging and
-  conditional history publication are original.
+  conditional history publication are original. Short PLE scheduling retains
+  the existing 512-thread gate reduction for tiles of at most eight, with
+  unchanged hash, normalization and convolution arithmetic.
   Reinstinct RMS is a layout/design reference, not an imported runtime.
   Copyright (c) 2023-2026 The ggml authors; MIT in `mx-LICENSE`.
 
 - `src/hip/dense.hip` adapts mx `mmvf.cu` pairwise FMA accumulation and padded
-  two-stage DPP/LDS reductions for aligned even-K N1/2/3; other shapes retain
-  the existing rocBLAS dependency. BF16 values are decoded exactly to F32.
+  two-stage DPP/LDS reductions for aligned even-K N1..8 (extended from N1/2/3);
+  N9..128 and other unsupported MMVF shapes retain the existing rocBLAS
+  dependency. BF16 values are decoded exactly to F32.
   Copyright (c) 2023-2026 The ggml authors; MIT in `mx-LICENSE`, same mx pin above.
 - `src/hip/session_ops.hip` adapts mx `rope.cu`, `topk-moe.cu`, `common.cuh`
   and direct `unary.cu`/`unary.cuh` arithmetic. Modified: supplied text geometry,
@@ -89,6 +96,18 @@
   multi-column linear primitives above. Stable CPU route grouping, original-rank
   scatter/fold, same-stream slot lifetime and row-wise shared-gate orchestration
   are original code; no donor expert scheduler or runtime is imported.
+  Bounded prefill orchestration is original code informed by the pinned mx
+  `src/llama-moecache.cpp`, `docs/development/moe-cache-prefill.md` and
+  `ggml/src/ggml-cuda/ggml-cuda.cu` staging/layout-aware D2D designs, furnace
+  `ggml-cuda.cu` pipeline ordering, and reinstinct `moe_expert_sort.cpp`,
+  gather/scatter patterns and `src/runtime/pipeline.rs`. It groups routes once
+  per full logical chunk, acquires one canonical triplet per expert group,
+  and uses chronological nonexpert/shared/expert compute tiles of at most eight.
+  Band16/two-stage-per-device `copy_ready`/`consumer_done` lifetime is original;
+  donor scheduler, GPU-resident expert slab and whole-runtime infrastructure
+  are not imported. This scheduling introduces no new weight/activation ABI,
+  arithmetic or dependency; the existing mx/furnace MIT and reinstinct
+  Apache-2.0 attribution above remains applicable to the adapted primitives.
 
 - `src/hip/mmq.hip` adapts mx `mmq-load-tiles.cuh`, `mmq-vec-dot.cuh`,
   `mmq.cuh` and `vecdotq.cuh` canonical Q4 DP4A tile/load/dot/writeback seams

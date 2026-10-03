@@ -183,7 +183,7 @@ __global__ __launch_bounds__(256) void normalize_qk(float* convolved, int tokens
 
 // ADAPT furnace gated_delta_net_cpw<2>: four waves/block, two V columns/wave,
 // two K components/lane, Q/K reused across the two independent column updates.
-// N=1..3 keeps the CPW2 state registers resident across the chronological token
+// N=1..128 keeps the CPW2 state registers resident across the chronological token
 // loop. Every token uses the qualified N1 PRE-dot/decay-after/FMA arithmetic;
 // Q stays unscaled until the completed read reduction. No tail prefetch.
 template<bool Prefixes>
@@ -272,7 +272,8 @@ __device__ __forceinline__ float column_sum(float x) {
     return x + __shfl_xor(x, 32, 64);
 }
 
-// ADAPT furnace gated_delta_net_lds_wave64<16>, N>=4. 48*8 wave workgroups;
+// ADAPT furnace gated_delta_net_lds_wave64<16>, retained for diagnostic source
+// review; dispatch uses canonical CPW2 for all N=1..128. 48*8 wave workgroups;
 // each owns a 16-column state slab for the entire causal loop. State occupies
 // 8 KiB LDS, Q/K another 1 KiB; XOR swizzle avoids the 16-column bank conflict.
 // Only ingress/egress and optional prefixes use the external unswizzled ABI.
@@ -496,7 +497,9 @@ void launch_impl(GdnDeviceParameters p, GdnDeviceInput in, int tokens,
     check_launch(hipGetLastError());
     normalize_qk<<<tokens * (2 * key_heads) / 4, 256, 0, stream>>>(w.convolved, tokens, w.error);
     check_launch(hipGetLastError());
-    if (tokens <= 3) {
+    // Public validation admits only N=1..128, all using canonical CPW2.
+    // Keep the unreachable LDS arm instantiated for strict diagnostic builds.
+    if (tokens <= gdn_device_max_tokens) {
         recurrent_decode<Prefixes><<<dim3(value_heads, 1, head_dim / (4 * 2)), dim3(64, 4), 0, stream>>>(
             p, in, tokens, active_recurrent, w);
     } else {

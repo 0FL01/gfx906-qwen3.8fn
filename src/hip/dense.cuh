@@ -10,8 +10,8 @@ struct DenseDeviceMatrix {
     int input = 0;
     int output = 0;
 };
-// ADAPT: production MMVF for pair-aligned even K at N1/2/3; KEEP R0-qualified
-// rocBLAS SGEMM for PP and other valid geometry/alignment, not a GEMM library.
+// ADAPT: production MMVF for pair-aligned even K at N1..8; KEEP R0-qualified
+// rocBLAS SGEMM at N9..128 and other valid geometry/alignment, not a GEMM library.
 // Dimensions 1..16384, columns 1..128. Capacities: input*output weight floats,
 // input*columns activation floats and output*columns destination floats.
 // All pointers must be float-aligned, nonwrapping; output disjoint from reads.

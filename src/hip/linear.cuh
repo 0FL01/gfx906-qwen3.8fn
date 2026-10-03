@@ -7,6 +7,7 @@ namespace qwen {
 
 inline constexpr int linear_device_max_dimension = 16384;
 inline constexpr int linear_device_max_columns = 3;
+inline constexpr int linear_device_short_max_columns = 8;
 
 // Borrowed canonical GGML weights: contiguous [output][input/block_elements]
 // blocks, without padding or repack. input/output are element dimensions.
@@ -19,7 +20,7 @@ struct QuantizedDeviceMatrix {
     int output = 0;
 };
 
-// Both launches use the caller's current gfx906 device and explicitly supplied
+// All launches use the caller's current gfx906 device and explicitly supplied
 // raw stream (including nullptr if the caller deliberately selects HIP's default
 // stream). No allocation, device/stream query, copy, synchronization or exception.
 // Caller owns allocation capacities, residency, lifetimes and ordering against
@@ -42,14 +43,14 @@ struct QuantizedDeviceMatrix {
 // No additional workspace. Output is overwritten (no bias, alpha or beta).
 //
 // Arithmetic uses the 36-byte Q8_1 ABI in quant.hpp, not dequantized F32 GEMM:
-// Q4_0: d4*(unsigned_dot*d8 - 8*s8); Q5_0: d5*(unsigned_dot*d8 - 16*s8).
-// Q4_1: unsigned_dot*half_RNE(d4*d8) + half_RNE(m4*s8).
-// Q8_0: (d0*d8)*signed_dot, with FP32 products. Q6_K: per two-word slice,
-// d6*(d8a*float(dot_a*scale_a) + d8b*float(dot_b*scale_b)); signed integer
-// dot*scale products are computed before FP32 conversion, as in the donor.
-// Q4/Q5/Q8 use full-block32 integer dots before scaling, rather than the
-// donor MMVQ wrapper's smaller fragments; Q6 retains MMVQ's two-word slices.
-// DPP wave sums change accumulation order versus the ascending CPU row loop.
+// Q4/Q5 use two block32 fragments (16 codes each): explicit inner FMA applies
+// half the raw-sum correction (4*s8 / 8*s8), then weight-scale/accumulator FMA.
+// Q4_1 uses half_RNE(d4*d8) and half_RNE(m4*s8), inner FMA with half the offset,
+// then a separate accumulator add. Q8 uses four 8-code fragments with FP32
+// d0*d8 and accumulator FMA. Q6_K retains two-word slices: integer dot*scale
+// before FP32 conversion, explicit pair FMAs then weight-scale/accumulator FMA.
+// Two cooperating wave64s (128 threads) merge lane-wise through LDS BEFORE
+// ascending-XOR DPP sum64, unlike the ascending CPU row loop.
 // These expressions intentionally differ from dequantize-then-F32-dot, notably
 // raw-sum corrections and Q4_1 half products; compare with a common-Q8 oracle.
 // Input half scales/sums and weight scales must already be valid/finite; this
@@ -57,8 +58,16 @@ struct QuantizedDeviceMatrix {
 [[nodiscard]] hipError_t launch_quantized_linear(QuantizedDeviceMatrix matrix,
         const Q8_1* input, int columns, float* output, hipStream_t stream) noexcept;
 
+// Separate checked short-column seam, N=1..8. All other shape/type/range,
+// alignment/overlap, arithmetic and lifetime contracts above are identical.
+// Instantiates the same MMVQ templates, reusing weight registers across columns;
+// no per-column launches, DS4 conversion or additional workspace. The existing
+// launch_quantized_linear contract remains N=1..3 and still rejects N=4.
+[[nodiscard]] hipError_t launch_quantized_linear_short(QuantizedDeviceMatrix matrix,
+        const Q8_1* input, int columns, float* output, hipStream_t stream) noexcept;
+
 // Reusable float -> canonical Q8_1 workspace producer, also usable for prefill:
-// width is 32-divisible, width/columns are 1..16384 (linear currently only N<=3).
+// width is 32-divisible, width/columns are 1..16384 (linear N<=3, short N<=8).
 // input[column*width+i]; output[column*(width/32)+block]. Required capacities:
 // width*columns floats, (width/32)*columns Q8_1 blocks, one device int error.
 // All three pointers need 4-byte alignment. Both writable ranges (output/error)
