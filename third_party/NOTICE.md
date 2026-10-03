@@ -101,4 +101,16 @@
   scheduler or whole GGML backend is imported.
   Copyright (c) 2023-2026 The ggml authors; MIT in `mx-LICENSE`.
 
+- `src/hip/mmq_wide.hip` adapts the same pinned mx canonical Q5_0/Q8_0/Q6_K
+  `mmq-load-tiles.cuh`, `mmq-vec-dot.cuh`, `mmq.cuh` and `vecdotq.cuh` seams.
+  Modified: literal format-specific gfx906 tiles, unchanged DS4 half headers,
+  alignment2 loads, uniquely owned LDS writes and predicated zero tails.
+  Q5 keeps unsigned codes and the original raw-sum correction rather than the
+  donor's centered-code/code-sum approximation. Q6 retains signed subscale
+  integer grouping before conversion; explicit FMA association is qualified
+  against common-Q8 inputs. Q4 forwards to the existing implementation.
+  I128 launch bounds reflect one-block LDS capacity, not claimed occupancy.
+  No donor quantizer, allocation/runtime/configuration framework is imported.
+  Copyright (c) 2023-2026 The ggml authors; MIT in `mx-LICENSE`.
+
 Upstream URLs and rejected donor options: RECON.md section 16.

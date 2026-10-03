@@ -703,3 +703,60 @@ For a fresh candidate run, use the previous section's `core-mmq` command and
 entrypoint, then current `core-mmq`, then the same baseline, with one GPU workload
 at a time and no heavy compilation during events. Keep revisions/protocols from
 their actual binaries. Wide-format and bounded full-model PP qualification follows.
+
+## R4b wide projections: canonical Q5/Q8/Q6 and complete LM head
+
+`launch_mmq_linear` accepts canonical Q4_0/Q4_1/Q5_0/Q8_0/Q6_K and the unchanged
+144-byte DS4 input. Q4 forwards to the existing kernel. The other formats use
+specialized LDS loaders and literal gfx906 tiles; Q5 preserves the **raw-sum**
+correction, Q8 uses the FP32 scale product, and Q6 combines signed integer
+subscale products before FP32 conversion. All partial tiles use owned zero
+storage. Borrowed-buffer, explicit-stream, alignment/range/alias contracts remain;
+there is no requantization, allocation or hidden synchronization in the launcher.
+The sole large-output exception is Q6_K **[K2560,M248320]**, N≤128.
+
+On the target, after the usual source sync/build, use new log names:
+
+```sh
+set -eu
+set -C
+docker run --rm --name core-mmq-wide-repro \
+  --device /dev/kfd --device /dev/dri --group-add video --ipc host \
+  --security-opt seccomp=unconfined --entrypoint /core/build/core-mmq-wide \
+  -v /home/radneon/gfx906-core:/core \
+  -v /home/radneon/models-nvme:/models:ro \
+  llama.cpp-gfx906:cmake-4.4.3 /models/qwen38-keep1-Q4_0.gguf \
+  > /home/radneon/gfx906-core/runs/NEW-mmq-wide.jsonl \
+  2> /home/radneon/gfx906-core/runs/NEW-mmq-wide.err
+python3 -B /home/radneon/gfx906-core/src/tools/record_mmq_wide.py \
+  --raw /home/radneon/gfx906-core/runs/NEW-mmq-wide.jsonl \
+  --results /home/radneon/gfx906-core/results.jsonl
+```
+
+Strict Release build/CTest **26/26**, recorder **33 tests**, and both GPUs passed.
+Each device covers 664 matrix cases, original Q8/DS4 byte identity, signed scales,
+Q5 raw-sum differences, Q6 subscales, poisoned tails, host rejections, reuse and
+canaries. The unchanged gate is `2e-4 + 2e-5*abs(common-Q8 CPU reference)`.
+For the head, **all output elements are checked finite**, while numerical CPU
+coverage is exactly the 24 emitted rows, including 248319—not the entire head.
+The 90 A1/B/A2 records contain 1800 individually completed event intervals,
+validated after every repetition. Allocation, model reads, transfers, quantizing,
+packing, CPU reference, reset and readback are outside the event interval.
+A is diagnostic sliced N≤3 linear, **not** a production PP backend.
+
+Both GPUs show component wins at N32/128 for the actual Q5/Q8 shared-down matrices
+and full Q6 head. N1/3 MMQ loses and must not replace the qualified short-column
+path. This is neither a universal speedup nor full-model PP qualification.
+I128 tiles required a one-block launch-bound hint because their LDS exceeds
+32 KiB; the compiler error was fixed without suppressing warnings or gates.
+Standalone gfx906 codegen is wave64: Q6 has no spills; Q5 J64 and Q8 J64/J128
+report VGPR spills 30/3/55 and private bytes 124/16/208. This is static codegen
+evidence, not a runtime occupancy trace or an end-to-end performance claim.
+
+Raw artifacts: `runs/r4-mmq-wide.jsonl`, `r4-mmq-wide-build-fixed.log`,
+`r4-mmq-wide-codegen-metadata.log`. Compiled provenance is `996addaf…`, dirty1.
+After SSH lost job539's status, the persisted build/CTest log and separate
+docker-wait job541 established the GPU process exit0; no second workload was
+started blindly. The canonical journal adds one `r4b_mmq_wide` record after
+sixteen unchanged records. Bounded causal Session PP integration is next and
+remains unqualified.
