@@ -4,13 +4,17 @@ Standalone C++20/HIP core under implementation. `core-session` now executes the
 own 48-layer model with Q4_0 K/V on both gfx906 GPUs. R3 teacher32/reset/generation
 are qualified; short, logical-wide and real4K/16K teacher fixtures pass
 same-Session N1 full-logit parity and continuation with observed expert groups
-over 128. The latest exclusive job completed strict CXX20/HIP20 Release build,
-CTest32/32, both-GPU actual Q8 underflow capture, long fixtures and sequential
-Session/default-memory regressions. Primary-sampling CLI prerequisites are
-integrated; parent local collection of both downloaded actual long raws passed,
-and exactly two long-result records were appended to the canonical journal.
-Full R4–R8, 512-output request/peak-VRAM qualification,
-MTP, serving and end-to-end speed goals remain open.
+over 128. The completed full correctness build passed CTest32/32. A subsequent
+strict targeted `core-session` build and request-results/VRAM-observer gates
+passed, followed by eight fresh 4K/16K requests with 512 actual sampled outputs.
+Trace-free chunk128/chunk1024/chunk128 comparisons establish a same-own-config
+PP/request improvement; separate observed runs provide sampled driver VRAM.
+The actual512 measurement slice is accepted and closed: all eight downloaded
+request logs and both observer joins passed local collection; the canonical
+journal's exact history and +9/-0 diff are verified. A completed diagnostic
+rocprofv3 run identifies the per-assignment GPU route-copy seam for the next gates.
+Full R4–R8, exact peak-VRAM qualification, MTP, serving and the
+400–600PP/30–40TG speed targets remain open; those targets are not met.
 Scope and acceptance are in [PLAN.md](PLAN.md); current evidence in [STATE.md](STATE.md).
 
 ## Remote build and R0 probe
@@ -984,7 +988,8 @@ This closes logical-wide1024 same-Session N1 self-parity, observed group>128 and
 multi-microtile/stage-reuse correctness at this scale. The later real4K/16K
 correctness and primary-sampling prerequisites are qualified below; they retain
 their own compiled provenance and do not expand the historical wide fixture's
-scope. Full 512-output requests and peak VRAM/performance gates remain open.
+scope. The later 512-output request comparisons are documented below;
+exact peak VRAM, full R4 and the project speed targets remain open.
 
 ## R4: real4K/16K long correctness and primary-sampling prerequisites
 
@@ -1108,7 +1113,8 @@ script remains mode100644 and requires `sh /core/src/tools/build.sh`.
 CLI/sampler integration is covered by the strict build/CTest above. Prior
 job729's actual32-output primary-sampling smoke, seed42, gave the same IDs
 with chunk1 and chunk32 and consumed exactly32 RNG draws; legacy greedy32
-also passed. These are sampling prerequisites, **not a qualified full512 series**.
+also passed. That historical smoke qualifies sampling prerequisites only;
+the later actual512 request series has its own evidence below.
 Greedy remains diagnostic-only; count actual emitted tokens and retain the
 final emitted token as pending. A fresh short primary-sampling reproduction is:
 
@@ -1128,11 +1134,220 @@ docker run --rm --name core-session-sampling-repro \
   2> /home/radneon/gfx906-core/runs/NEW-primary-sampling32.err
 ```
 
-The current task is paired4K/16K **512 actual-output requests** using fixed R0 text
-fixture IDs at4K and a separately saved new16K text fixture, without prefix
-reuse, with primary sampling, PP/TG/full elapsed and sampled observed VRAM on
-both GPUs, then paired performance gates and the next measured bottleneck.
-Intended closure scope is long correctness plus sampling prerequisites. The
-parent's new VRAM observer/synthetic tests and future CPU-expert/shadow or
-speculative helpers have no runtime qualification in this closure. Full R4,
-R5–R8, occupied128K, MTP2 and end-to-end speed goals remain open.
+## R4: closed actual512 chunk A/B/A measurement slice; full R4 open
+
+Exclusive performance job `1791040898917-746` **completed with exit 0 after
+1h40m26s**. Its source/binaries were frozen at
+`b522429c5933f493a5838317dc0bfc26ee4158aa`, **dirtytrue**; a later closure
+commit must not retag these artifacts. The strict targeted `core-session`
+build passed. New request-results and VRAM-observer CTest gates passed
+**2/2 in 5.18 s**, containing **49 and 23 tests** respectively. The previous
+full-build job742 remains closed at **32/32**; a full **33/33** run has not
+been established by the targeted build.
+
+### Inputs, ordering and completed-output accounting
+
+At each length, four separate processes construct **fresh Sessions** with
+112 expert slots per layer, Q4_0 target K/V and no prefix reuse. The source
+records are request **protocol1**, primary stochastic sampling:
+temperature1.0/top-p0.95/top-k20, seed12345, `--ignore-eos`, 512 actual outputs,
+MTP off. Expert-cache warmness is recorded as unknown, not fully warm.
+
+- **4K** uses the exact 4096 IDs saved by R0's generated archive/code text
+  fixture: `ROOT/runs/r0-20261001T154816Z-4sffu3gz/4k.prompt-ids.json`.
+- **16K** is four concatenated copies of those IDs, saved separately in
+  `ROOT/runs/r4-fullrequest-b522-16k.prompt-ids.json`. It is not retokenized
+  text, the original user's prompt, or a production-baseline16K fixture.
+- The performance order is **A1 chunk128 → B chunk1024 → A2 chunk128**,
+  unobserved and trace-free; then a **separate B_VRAM chunk1024** request at
+  each length. Observed requests do not enter the performance comparison.
+- Each request emits 512 tokens, performs **511 TG forwards / 512 RNG draws**,
+  and consumes **4607 inputs at4K / 16895 at16K**. The first output comes from
+  prefill and the last remains pending. Within each length, all four complete
+  512-ID arrays are exactly equal. This is a measured diagnostic, not a universal
+  bitwise-generation contract or baseline-RNG equivalence claim.
+
+All **8/8 actual collectors**, including both request/observer joins, passed.
+Rates below are completed wall measurements: PP uses the actual prompt count;
+TG uses the 511 remaining output forwards. Request timing includes sampling
+and CLI I/O, with model load and cleanup separate; it is not host enqueue-time
+or a sum of overlapping GPU events.
+
+| Length / trace-free run | PP tokens/s | TG tokens/s |
+| --- | ---: | ---: |
+| 4K A1, chunk128 | 13.7598351 | 10.0684460 |
+| 4K B, chunk1024 | 24.8487818621 | 10.2822355241 |
+| 4K A2, chunk128 | 13.4884100 | 9.9265480 |
+| 16K A1, chunk128 | 12.6972088 | 9.6139253 |
+| 16K B, chunk1024 | 22.2115183863 | 9.9343829824 |
+| 16K A2, chunk128 | 12.5701114 | 9.7421264 |
+
+| Completed paired measurement | 4K | 16K |
+| --- | ---: | ---: |
+| B PP elapsed (ms) | 164837.054095 | 737635.298724 |
+| B TG elapsed (ms) | 49697.363847 | 51437.51765 |
+| B full-request elapsed (ms), load separate | 214535.87483 | 789074.279015 |
+| Mean A1/A2 PP elapsed (ms) | 300673.048345 | 1296885.815248 |
+| Mean-A PP elapsed / B PP elapsed | 1.82406225345× | 1.75816669497× |
+| Mean-A full-request elapsed / B full-request elapsed | 1.63977185394× | 1.71047221484× |
+
+These are **same-own-config chunk comparisons only**. They establish no speedup
+over the external production MTP2 baseline. The **400–600PP / 30–40TG targets
+are not met**, and full-project/full-R4 performance remains open. Wide MMQ
+component measurements are not relabeled as this Session's production path.
+
+Full-request expert uploads are **1,139,677,491,200 bytes** in each 4K A run
+versus **305,853,440,000 bytes** in B; at16K, each A uploads
+**4,264,348,979,200 bytes** versus B's **890,465,689,600 bytes**.
+These counters span the whole request. Per-phase upload bytes were not emitted,
+so this is neither PP-only traffic nor proof that uploads are the residual
+bottleneck.
+
+### Separate sampled driver-VRAM observations
+
+The stdlib-only `tools/observe_vram.py` samples at **0.1 s**, before spawn,
+through the attached child lifetime, and after wait. Its exact scope is
+`sampled_global_driver_VRAM_not_exact_instantaneous_peak`. Parent independently
+verified the actual R0 HIP mapping: **HIP0 → 0000:05:00.0**,
+**HIP1 → 0000:08:00.0**; the observer/collector itself does not attest HIP indices.
+Both driver totals are **17,163,091,968 bytes**.
+
+| Separate B_VRAM request | 4K | 16K |
+| --- | ---: | ---: |
+| Sample rounds per device | 2892 | 8643 |
+| Observed maximum used, GPU0 (bytes) | 12,004,397,056 | 12,079,910,912 |
+| Observed maximum used, GPU1 (bytes) | 12,487,217,152 | 12,562,612,224 |
+| Observed minimum free, GPU0 (bytes) | 5,158,694,912 | 5,083,181,056 |
+| Observed minimum free, GPU1 (bytes) | 4,675,874,816 | 4,600,479,744 |
+
+These are **sampled global driver** values, not HIP-owned allocations, exact
+instantaneous peaks or per-phase peaks. Observer elapsed includes Docker
+startup/load/cleanup and observation overhead; it is not the native request
+benchmark. `record_request.py --vram-log` validates the complete two-device
+observer and a closed, direct attached Docker argv shape against the request
+source. Shell-wrapped/detached commands are outside that join. Matching argv
+does not attest binary or mount identity. No dependency/license was added.
+
+### Raw evidence, journal status and fresh reproduction
+
+Here `ROOT=/home/radneon/gfx906-core`. Actual request logs are
+`ROOT/runs/r4-fullrequest-b522-{4k,16k}-{a1,b,a2,b-vram}.jsonl`; observers are
+`ROOT/runs/r4-fullrequest-b522-{4k,16k}-b-vram-vram.jsonl`.
+The same series preserves `r4-fullrequest-b522-fixture-source.json`,
+`r4-fullrequest-b522-16k.prompt-ids.json`, `r4-fullrequest-b522-build.log` and
+`r4-fullrequest-b522-series.log` under `ROOT/runs/`.
+
+The canonical `ROOT/results.jsonl` received **exactly nine rows, 21→30**:
+eight `r4_request` plus one `r4_prefill_ab`. All eight actual raws were downloaded;
+local collection and both VRAM joins passed, and the complete seeded512-ID arrays
+match across all four variants within each length. The downloaded local canonical
+journal is **2,150,750 bytes / 30 rows**. Its old21-row byte prefix and parsed
+history match Git HEAD exactly; numstat is **+9/-0**. Artifact/local-collector,
+journal, local49/23-test suites, readback/status/diff/log and whitespace acceptance
+gates are complete. **The actual512 measurement-only slice is accepted and
+closed; full R4 remains open.** The accepted slice contains docs, CMake,
+observer/request tools and tests, and results; experimental Session/GPU/R5/
+speculative changes are outside it. Accepted
+artifacts retain frozen b522/dirtytrue. Existing accepted raws must not be
+appended again.
+
+For a fresh trace-free 4K B run on the GPU host, use the existing fixed ID file
+and fresh fixed log names. This reproduction explicitly sizes capacity4608;
+the recorded source configuration remains authoritative for each actual run.
+Use the explicit `sh /core/src/tools/build.sh` build invocation shown above
+(source mode100644) with the synchronized source's actual revision/dirty flag.
+
+```sh
+set -eu
+set -C
+ROOT=/home/radneon/gfx906-core
+PROMPT="$ROOT/runs/r0-20261001T154816Z-4sffu3gz/4k.prompt-ids.json"
+docker run --rm --name core-fullrequest-4k-b-repro \
+  --device /dev/kfd --device /dev/dri --group-add video --ipc host \
+  --security-opt seccomp=unconfined --entrypoint /core/build/core-session \
+  -v /home/radneon/gfx906-core:/core \
+  -v /home/radneon/models-nvme:/models:ro \
+  llama.cpp-gfx906:cmake-4.4.3 \
+  --capacity 4608 --slots 112 --prefill-chunk 1024 \
+  --generate 512 --ignore-eos --sample --seed 12345 \
+  --temperature 1.0 --top-p 0.95 --top-k 20 \
+  /models/qwen38-keep1-Q4_0.gguf \
+  $(python3 -B -c 'import json,sys; print(*json.load(open(sys.argv[1])))' "$PROMPT") \
+  > "$ROOT/runs/NEW-fullrequest-4k-b.jsonl" \
+  2> "$ROOT/runs/NEW-fullrequest-4k-b.err"
+# Only after exit0; this collector appends one validated new request record.
+python3 -B "$ROOT/src/tools/record_request.py" \
+  --raw "$ROOT/runs/NEW-fullrequest-4k-b.jsonl" \
+  --results "$ROOT/results.jsonl"
+```
+
+For paired reproduction, run the same command sequentially as A1 with
+`--prefill-chunk 128` / `NEW-fullrequest-4k-a1`, then B with1024, then A2
+with128 / `NEW-fullrequest-4k-a2` (both `.jsonl` and `.err` names).
+For16K use the saved `r4-fullrequest-b522-16k.prompt-ids.json`, capacity16896
+and fresh `NEW-fullrequest-16k-{a1,b,a2}` names; do not tokenize again.
+Check every run/collector exit status, with one GPU workload and no heavy
+compilation or tracing. The three 512-output performance requests are separate
+from the B_VRAM observation.
+
+For a separate B_VRAM reproduction, prefix that direct Docker command with
+`python3 -B "$ROOT/src/tools/observe_vram.py" --interval 0.1 --device-0 /sys/bus/pci/devices/0000:05:00.0 --device-1 /sys/bus/pci/devices/0000:08:00.0 --output "$ROOT/runs/NEW-fullrequest-4k-b-vram-vram.jsonl" --`,
+retaining chunk1024 and using fresh child stdout/stderr names
+`NEW-fullrequest-4k-b-vram.jsonl` / `NEW-fullrequest-4k-b-vram.err`.
+After observer and child exit0, collect that new request with
+`--vram-log "$ROOT/runs/NEW-fullrequest-4k-b-vram-vram.jsonl"` and the explicit
+canonical `--results "$ROOT/results.jsonl"`. Keep Docker as the direct attached
+argv after `--`; the observer requires a fresh output file.
+
+### Current measured work and open gates
+
+Parent rocprofv3 job `1791052186288-750` **completed exit0 in 2m14s**, using
+the same frozen `b522429c5933f493a5838317dc0bfc26ee4158aa`/dirtytrue binary.
+The diagnostic request used a **1024-token R0 text prefix / 32 outputs / 31 TG
+forwards** and passed natively: PP **43116.686375 ms**, TG **4488.729555 ms**,
+model load **70708.105268 ms**. These traced timings are diagnostic, not
+performance qualification or a replacement for the trace-free actual512 series.
+
+The profile aggregates **PP and TG together**. HIP/API, GPU and memory-DMA
+intervals overlap; their duration sums are **not total request latency**, are
+not additive across categories, and do not isolate PP-only costs.
+
+| Profile category / operation | Calls or events | Summed duration (s) | Share of summed GPU duration |
+| --- | ---: | ---: | ---: |
+| HIP/API total | 2,760,730 | 36.11848 | — |
+| `hipMemcpyAsync` API | 1,062,432 | 30.0312 | — |
+| HIP launch API | 839,656 | 5.11047 | — |
+| GPU total | 1,831,186 | 28.37233 | — |
+| `fattn_dec_chunk` | 12,660 | 9.362744 | 33% |
+| `Q4_0matrix32<2,8,2>` | 193,474 | 5.847864 | 20.61% |
+| `copyBuffer` | 989,831 | 3.537115 | 12.47% |
+| Q6 head `matrix6<8,2>` | 896 | 0.712313 | 2.51% |
+| Memory DMA | 72,646 | 5.562979 | — |
+
+Memory-DMA events are distinct from the nearly million small GPU D2D
+`copyBuffer` operations. Neither the aggregate duration sums nor full-request
+upload bytes prove a RAM/expert-DMA/memcpy residual bottleneck. The Q6 head is
+not dominant in this diagnostic; head skipping is not the next major-win target.
+
+The source-accounted narrow seam is **per-assignment GPU Q8 gather/down scatter**:
+for1024 PP rows, `2 * (1024 * 10 * 48) = 983040` small D2D `hipMemcpyAsync`
+calls. This is an identified mechanism to remove, not an accepted speedup.
+The prepared candidate replaces it with **one 80*N-byte route DTO upload per
+layer** and indexed gather/scatter kernels per canonical microtile **≤8**,
+preserving all copied bits and the existing expert-contribution fold order.
+Parent-local R5 Session/CPU-expert/shadow/hybrid changes plus the new route
+kernels/fixture are experimental/default-off, **unmirrored and unqualified**;
+there is no actual HIP/model or speed result for them.
+
+Raw profile stdout/stderr are `ROOT/runs/r4-profile-b522-1024.jsonl` / `.err`;
+trace/stats CSVs remain under `ROOT/runs/r4-profile-b522-1024/`, with the nested
+summary at `prefill_/core/runs/r4-profile-b522-1024-summary.txt.txt` relative to
+that directory. The full **554 MB trace remains remote and was not downloaded**;
+no model was copied for this profiling/documentation update.
+
+Next: strict target build, route-copy correctness on **both GPUs**, the current
+CPU-expert shadow/hybrid fixture and full-model gates, including full33/33;
+then trace-off paired full-request validation before qualifying a candidate.
+R6 speculative pure-math helpers are prepared, not trained-MTP integration.
+Exact peak VRAM, full R4/R5–R8, occupied128K, MTP2 and project speed targets
+remain open.

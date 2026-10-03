@@ -94,6 +94,54 @@ def encoded(rows):
     return ("\n".join(json.dumps(row, ensure_ascii=False, separators=(",", ":")) for row in rows) + "\n").encode()
 
 
+def vram_fixture(request):
+    """Synthetic observer transcription; BDF strings are not HIP attestation."""
+    origin, config, sampling = request[0], request[0]["config"], request[0]["sampling"]
+    command = ["docker", "run", "--rm", "--name", "synthetic-request",
+               "--device", "/dev/kfd", "--device", "/dev/dri", "--group-add", "video",
+               "--ipc", "host", "--security-opt", "seccomp=unconfined",
+               "--entrypoint", "/core/build/core-session",
+               "-v", "/home/radneon/gfx906-core:/core",
+               "-v", "/home/radneon/models-nvme:/models:ro", "llama.cpp-gfx906:cmake-4.4.3",
+               "--capacity", str(config["capacity"]), "--slots", str(config["expert_slots"]),
+               "--prefill-chunk", str(config["max_batch_tokens"]),
+               "--generate", str(config["requested_output_tokens"])]
+    if config["ignore_eos"]:
+        command.append("--ignore-eos")
+    for flag, key in (("--trace", "trace_directory"), ("--logits", "logits_path")):
+        if config[key]:
+            command.extend([flag, config[key]])
+    if sampling["mode"] == "stochastic":
+        command.extend(["--sample", "--seed", str(sampling["seed"]),
+                        "--temperature", str(sampling["temperature"]),
+                        "--top-p", str(sampling["top_p"]), "--top-k", str(sampling["top_k"])])
+    command.extend([origin["model"], *map(str, origin["prompt_ids"])])
+    scope = "sampled_global_driver_VRAM_not_exact_instantaneous_peak"
+    total, rounds = 17163091968, 130
+    paths = ["/sys/devices/pci0000:00/0000:00:03.0/0000:05:00.0",
+             "/sys/devices/pci0000:00/0000:00:03.0/0000:08:00.0"]
+    return [{
+        "kind": "vram_source", "protocol": 1, "scope": scope,
+        "mapping_attestation": "caller_supplied_labels_no_HIP_index_attestation",
+        "value_source": "AMD_sysfs_mem_info_vram_used_and_mem_info_vram_total",
+        "sampling_window": "pre_spawn_through_child_lifetime_and_post_wait",
+        "elapsed_scope": "monotonic_before_Popen_through_completed_child_wait_includes_spawn_and_observer_overhead",
+        "command_argv": command, "interval_seconds": .1,
+        "devices": [{"label": f"device_{i}", "supplied_path": f"/sys/class/drm/card{i}/device",
+                     "resolved_path": path, "used_file": path + "/mem_info_vram_used",
+                     "total_file": path + "/mem_info_vram_total", "total_bytes": total}
+                    for i, path in enumerate(paths)],
+    }, {
+        "kind": "vram_complete", "protocol": 1, "scope": scope,
+        "observation_complete": True, "child_started": True, "child_returncode": 0,
+        "observer_returncode": 0, "completed_child_elapsed_seconds": 15.,
+        "sample_rounds": rounds, "post_wait_sampled": True, "observer_error": None,
+        "devices": [{"label": f"device_{i}", "total_bytes": total, "sample_count": rounds,
+                     "observed_max_used_bytes": 12000000000 + i,
+                     "observed_min_free_bytes": total - 12000000000 - i} for i in range(2)],
+    }]
+
+
 class RequestResultsTest(unittest.TestCase):
     def setUp(self):
         self.temporary = tempfile.TemporaryDirectory(prefix="request-results-")
@@ -655,6 +703,481 @@ class RequestResultsTest(unittest.TestCase):
         self.assertEqual(len(result.splitlines()), 4)
         for line in result.splitlines()[2:]:
             self.assertEqual(json.loads(line)["complete"], self.rows[-1])
+
+
+class VramRequestResultsTest(unittest.TestCase):
+    def setUp(self):
+        self.temporary = tempfile.TemporaryDirectory(prefix="request-vram-results-")
+        self.addCleanup(self.temporary.cleanup)
+        self.root = Path(self.temporary.name)
+        self.raw, self.vram, self.results = (self.root / name for name in
+                                            ("request.jsonl", "vram.jsonl", "results.jsonl"))
+        self.rows = fixture()
+        self.observation = vram_fixture(self.rows)
+        self.raw.write_bytes(encoded(self.rows))
+        self.vram.write_bytes(encoded(self.observation))
+
+    def collect(self, observation=None, request=None):
+        if request is not None:
+            self.raw.write_bytes(encoded(request))
+        if observation is not None:
+            self.vram.write_bytes(encoded(observation))
+        return MODULE.collect(self.raw, self.vram)
+
+    def reject(self, observation):
+        with self.assertRaises(ValueError):
+            self.collect(observation)
+
+    def change(self, index, path, bad):
+        observation = copy.deepcopy(self.observation)
+        target = observation[index]
+        for key in path[:-1]:
+            target = target[key]
+        target[path[-1]] = bad
+        with self.subTest(index=index, path=path, bad=bad):
+            self.reject(observation)
+
+    def reject_command(self, command):
+        self.change(0, ("command_argv",), command)
+
+    def cli(self, destination=None, vram=None):
+        return subprocess.run([sys.executable, "-B", str(SCRIPT), "--raw", str(self.raw),
+                               "--vram-log", str(self.vram if vram is None else vram), "--results",
+                               str(self.results if destination is None else destination)],
+                              cwd=self.root, capture_output=True, text=True, timeout=30)
+
+    def test_optional_object_preserves_all_observer_metadata_and_native_record(self):
+        before = self.raw.read_bytes(), self.vram.read_bytes()
+        plain = MODULE.collect(self.raw)
+        result = self.collect()
+        observation = result.pop("vram_observation")
+        self.assertEqual(observation, {
+            "scope": "sampled_global_driver_VRAM_not_exact_instantaneous_peak",
+            "mapping_attestation": "caller_supplied_labels_no_HIP_index_attestation",
+            "command_join_scope": "direct_Docker_core_session_structured_argv_matches_request_source_only_no_binary_or_mount_identity_attestation",
+            "source": self.observation[0], "complete": self.observation[1], "passed": True,
+        })
+        self.assertEqual(result["raw_logs"].pop("vram"), str(self.vram.resolve()))
+        result.pop("timestamp")
+        plain.pop("timestamp")
+        self.assertEqual(result, plain)
+        self.assertEqual((self.raw.read_bytes(), self.vram.read_bytes()), before)
+        for key in ("peak_vram_qualification_claim", "performance_claim", "speedup_claim", "mtp"):
+            self.assertIs(result[key], False)
+        self.assertNotIn("device", observation["source"]["devices"][0])
+        self.assertEqual(observation["source"]["command_argv"], self.observation[0]["command_argv"])
+
+    def test_without_vram_exact_compatibility_and_explicit_none(self):
+        self.vram.write_bytes(b"bad observer log, deliberately ignored")
+        with mock.patch.object(MODULE, "vram_records") as read:
+            plain, explicit = MODULE.collect(self.raw), MODULE.collect(self.raw, None)
+            read.assert_not_called()
+        plain.pop("timestamp")
+        explicit.pop("timestamp")
+        self.assertEqual(plain, explicit)
+        self.assertNotIn("vram_observation", plain)
+        self.assertEqual(plain["raw_logs"], {"request": str(self.raw.resolve())})
+        process = subprocess.run([sys.executable, "-B", str(SCRIPT), "--raw", str(self.raw),
+                                  "--results", str(self.results)], cwd=self.root,
+                                 capture_output=True, text=True, timeout=30)
+        self.assertEqual(process.returncode, 0, process.stderr)
+        saved = json.loads(self.results.read_bytes())
+        saved.pop("timestamp")
+        self.assertEqual(saved, plain)
+
+    def test_join_accepts_diagnostics_prompt_only_eos_and_exact_custom_sampling(self):
+        cases = (fixture("greedy_diagnostic"), fixture("greedy_diagnostic", outputs=[]),
+                 fixture(outputs=[EOS], requested=3), fixture(ignore=True),
+                 fixture(chunk=1, trace='trace "dir"'), fixture(logits="logits\\capture\n.bin"))
+        for request in cases:
+            with self.subTest(config=request[0]["config"]):
+                self.assertIs(self.collect(vram_fixture(request), request)["vram_observation"]["passed"], True)
+        for seed in (0, (1 << 64) - 1):
+            request = fixture()
+            request[0]["series"] = "custom_sampling"
+            request[0]["sampling"].update(seed=seed, temperature=.7, top_p=1, top_k=0)
+            self.assertIs(self.collect(vram_fixture(request), request)["passed"], True)
+
+    def test_native_defaults_typed_numbers_and_options_among_positionals(self):
+        request = fixture(chunk=1)
+        request[0]["config"]["capacity"] = 4096
+        request[0]["sampling"]["temperature"] = 1  # Native prints binary64 1 as JSON integer.
+        observation = vram_fixture(request)
+        argv = observation[0]["command_argv"]
+        start = argv.index("--capacity")
+        argv[start:] = [request[0]["model"], "0248044", "--generate", "03", "100", "--sample",
+                        "--seed", "00042", "101", "--temperature", "1.e+0", "--top-p", ".95e0",
+                        "102", "103"]
+        self.assertIs(self.collect(observation, request)["passed"], True)
+        # Omitted default filters, slots and capacity still join by their typed values.
+        argv[start:] = ["--sample", "--seed", "42", "--generate", "3", request[0]["model"],
+                        *map(str, request[0]["prompt_ids"])]
+        self.assertIs(self.collect(observation, request)["passed"], True)
+        request = fixture("greedy_diagnostic", outputs=[], chunk=1)
+        request[0]["config"]["capacity"] = 4096
+        observation = vram_fixture(request)
+        observation[0]["command_argv"][start:] = ["--prefill-chunk", "1", request[0]["model"],
+                                                 *map(str, request[0]["prompt_ids"])]
+        self.assertIs(self.collect(observation, request)["passed"], True)
+        del observation[0]["command_argv"][start:start + 2]
+        self.reject(observation)  # Same defaults, but the legacy CLI path is not protocol 1.
+
+    def test_exact_closed_source_footer_and_device_schemas(self):
+        for index, record in enumerate(self.observation):
+            for key in record:
+                observation = copy.deepcopy(self.observation)
+                del observation[index][key]
+                with self.subTest(index=index, missing=key):
+                    self.reject(observation)
+            for key in ("unknown", "passed", "peak_vram", "HIP_index_attestation"):
+                self.change(index, (key,), True)
+            for i, device in enumerate(record["devices"]):
+                for key in device:
+                    observation = copy.deepcopy(self.observation)
+                    del observation[index]["devices"][i][key]
+                    self.reject(observation)
+                self.change(index, ("devices", i, "unknown"), 0)
+        for index, key, bad in (
+            (0, "protocol", True), (1, "protocol", True), (0, "scope", "exact_peak"),
+            (1, "scope", "per_phase_peak"), (0, "mapping_attestation", "HIP_index_verified"),
+            (0, "value_source", "HIP_owned"), (0, "sampling_window", "TG_only"),
+            (0, "elapsed_scope", "GPU_events"),
+        ):
+            self.change(index, (key,), bad)
+
+    def test_rejects_failure_nonzero_children_observer_errors_and_incomplete_sampling(self):
+        for field, bads in {
+            "kind": ("vram_failure", "session_request_complete"), "observation_complete": (False, 1),
+            "child_started": (False, 1), "child_returncode": (1, -9, None, False, 0.),
+            "observer_returncode": (1, -1, None, False, 0.), "post_wait_sampled": (False, 1),
+            "observer_error": ({"stage": "sample", "type": "OSError", "message": "synthetic"}, "", False),
+            "sample_rounds": (0, 1, 2, True, 130., -1, 1 << 64),
+        }.items():
+            for bad in bads:
+                self.change(1, (field,), bad)
+        for index in (0, 1):
+            for bad in ([], self.observation[index]["devices"][:1],
+                        self.observation[index]["devices"] * 2, {}, None):
+                self.change(index, ("devices",), bad)
+            self.change(index, ("devices",), list(reversed(self.observation[index]["devices"])))
+        for i in range(2):
+            for bad in (129, 131, True, 130., 1 << 64):
+                self.change(1, ("devices", i, "sample_count"), bad)
+
+    def test_device_totals_extrema_uint64_bounds_and_paths_not_mapping_attestation(self):
+        for i in range(2):
+            for index in (0, 1):
+                for bad in (0, -1, True, 17163091968., 1 << 64):
+                    self.change(index, ("devices", i, "total_bytes"), bad)
+                self.change(index, ("devices", i, "label"), f"device_{1 - i}")
+            for bad in (-1, True, 12000000000., 17163091969, 1 << 64):
+                self.change(1, ("devices", i, "observed_max_used_bytes"), bad)
+            for bad in (-1, True, 5163091968., 0, 17163091969):
+                self.change(1, ("devices", i, "observed_min_free_bytes"), bad)
+            for bad in ("", "bad\0path", "bad\ud800path", False):
+                self.change(0, ("devices", i, "supplied_path"), bad)
+            for bad in ("relative/device", "/sys/../device", "/sys/./device", "/sys//device",
+                        "//sys/device", "/sys/device/", "bad\0path", False):
+                self.change(0, ("devices", i, "resolved_path"), bad)
+            for key in ("used_file", "total_file"):
+                self.change(0, ("devices", i, key), self.observation[0]["devices"][1 - i][key])
+        observation = copy.deepcopy(self.observation)
+        for key in ("resolved_path", "used_file", "total_file"):
+            observation[0]["devices"][1][key] = observation[0]["devices"][0][key]
+        self.reject(observation)
+        for total in (1, (1 << 64) - 1):
+            for used in (0, total):
+                observation = copy.deepcopy(self.observation)
+                for index in (0, 1):
+                    for device in observation[index]["devices"]:
+                        device["total_bytes"] = total
+                for device in observation[1]["devices"]:
+                    device.update(observed_max_used_bytes=used, observed_min_free_bytes=total - used,
+                                  sample_count=3)
+                observation[1]["sample_rounds"] = 3
+                # No collector-side sysfs lookup, hardcoded BDF or real-capacity assertion.
+                for i, device in enumerate(observation[0]["devices"]):
+                    path = f"/synthetic/remote/device_{i}"
+                    device.update(resolved_path=path, used_file=path + "/mem_info_vram_used",
+                                  total_file=path + "/mem_info_vram_total")
+                self.assertIs(self.collect(observation)["passed"], True)
+
+    def test_elapsed_conservative_load_plus_request_lower_bound_no_speed_or_phase_gate(self):
+        lower = (self.rows[-1]["load_ms"] + self.rows[-1]["total_ms"]) / 1000
+        for elapsed in (lower, math.nextafter(lower, -math.inf), 1e100):
+            observation = copy.deepcopy(self.observation)
+            observation[1]["completed_child_elapsed_seconds"] = elapsed
+            result = self.collect(observation)
+            self.assertEqual(result["timings_ms"]["total_ms"], self.rows[-1]["total_ms"])
+        for bad in (0, self.rows[-1]["total_ms"] / 1000, lower - .001, -1, True, None, "15",
+                    float("nan"), float("inf")):
+            self.change(1, ("completed_child_elapsed_seconds",), bad)
+        for interval in (.001, 10):
+            observation = copy.deepcopy(self.observation)
+            observation[0]["interval_seconds"] = interval
+            self.assertIs(self.collect(observation)["passed"], True)
+        for bad in (0, .0009, 10.001, -1, True, None, ".1", float("nan"), float("inf")):
+            self.change(0, ("interval_seconds",), bad)
+
+    def test_join_rejects_changed_model_prompt_config_sampling_and_output_budget(self):
+        baseline = self.observation[0]["command_argv"]
+        for flag, bad in (("--capacity", "64"), ("--slots", "111"), ("--prefill-chunk", "1"),
+                          ("--generate", "4"), ("--seed", "43"), ("--temperature", ".7"),
+                          ("--top-p", ".8"), ("--top-k", "0")):
+            argv = list(baseline)
+            argv[argv.index(flag) + 1] = bad
+            self.reject_command(argv)
+        argv = list(baseline)
+        argv[argv.index(self.rows[0]["model"])] = "/models/different.gguf"
+        self.reject_command(argv)
+        for tail in (["248044", "100", "101", "102", "104"], ["248044", "100"],
+                     ["248044", "100", "101", "102", "103", "104"], ["248044", "101", "100", "102", "103"]):
+            self.reject_command(baseline[:-5] + tail)
+        for extra in (["--ignore-eos"], ["--trace", "trace-dir"], ["--logits", "capture.bin"]):
+            self.reject_command(baseline + extra)
+        argv = list(baseline)
+        argv.remove("--sample")
+        self.reject_command(argv)
+        argv = list(baseline)
+        first = argv.index("--seed")
+        del argv[first:first + 2]
+        self.reject_command(argv)
+
+    def test_native_closed_grammar_duplicates_unknown_ambiguous_and_numeric_values(self):
+        baseline = self.observation[0]["command_argv"]
+        for flag in ("--capacity", "--slots", "--prefill-chunk", "--generate", "--seed",
+                     "--temperature", "--top-p", "--top-k"):
+            value = baseline[baseline.index(flag) + 1]
+            self.reject_command(baseline + [flag, value])
+            self.reject_command(baseline + [flag])
+        self.reject_command(baseline + ["--sample"])
+        self.reject_command(baseline + ["--ignore-eos", "--ignore-eos"])
+        for flag in ("--help", "--unknown", "--", "--seed=42", "--capacity=32"):
+            self.reject_command(baseline + [flag])
+        for flag, bads in {
+            "--capacity": ("+32", " 32", "32 ", "32.0", "0x20", "2147483648", "-2147483649"),
+            "--seed": ("-0", "-42", "+42", "42.0", "42x", str(1 << 64), "9" * 5000),
+            "--temperature": ("+1", " 1", "1_0", "NaN", "Infinity", "1e999", "0x1p0", "1x"),
+            "--top-p": (".95x", "0", "-0.95"), "--top-k": ("20.0", "+20", "true"),
+        }.items():
+            for bad in bads:
+                argv = list(baseline)
+                argv[argv.index(flag) + 1] = bad
+                self.reject_command(argv)
+        for bad in ("100.0", "+100", " 100", "-1", str(VOCAB), "$(seq 100 103)"):
+            argv = list(baseline)
+            argv[-4] = bad
+            self.reject_command(argv)
+        for flag in ("--trace", "--logits"):
+            self.reject_command(baseline + [flag, ""])
+            self.reject_command(baseline + [flag, "x", flag, "x"])
+
+    def test_docker_prefix_closed_attached_shape_no_shell_detachment_or_overrides(self):
+        baseline = self.observation[0]["command_argv"]
+        for bad in (None, {}, "docker run ...", [], [True], ["docker", "run", None],
+                    ["docker", "run", "bad\0arg"], ["docker", "run", "bad\ud800arg"]):
+            self.reject_command(bad)
+        for argv in (["bash", "-c", " ".join(baseline)], ["sudo", *baseline], ["env", *baseline],
+                     ["sh", "-c", "exec docker run"], [*baseline[:2], "-d", *baseline[2:]],
+                     [*baseline[:2], "--detach", *baseline[2:]],
+                     [*baseline[:2], "-e", "HIP_VISIBLE_DEVICES=1,0", *baseline[2:]],
+                     [*baseline[:2], "--rm", *baseline[2:]]):
+            self.reject_command(argv)
+        for flag, bad in (("--entrypoint", "/bin/bash"), ("--device", "/dev/other"),
+                          ("--group-add", "root"), ("--ipc", "private"),
+                          ("--security-opt", "different"), ("--name", "--detach"),
+                          ("-v", "/wrong:/different")):
+            argv = list(baseline)
+            argv[argv.index(flag) + 1] = bad
+            self.reject_command(argv)
+        for value in ("relative:/core", "/host:/core:ro", "/host:/core:rw,ro", "/host:/models",
+                      "/host:/models:rw", "/host:/core:rw:extra"):
+            argv = list(baseline)
+            argv[argv.index("-v") + 1] = value
+            self.reject_command(argv)
+        for flag in ("--rm", "--name", "--group-add", "--ipc", "--security-opt", "--entrypoint", "--device", "-v"):
+            argv = list(baseline)
+            first = argv.index(flag)
+            del argv[first:first + (1 if flag == "--rm" else 2)]
+            if flag == "--name":
+                self.assertIs(self.collect([{**self.observation[0], "command_argv": argv}, self.observation[1]])["passed"], True)
+            else:
+                self.reject_command(argv)
+        image = baseline.index("llama.cpp-gfx906:cmake-4.4.3")
+        self.reject_command(baseline[:image] + ["different:image"] + baseline[image + 1:])
+        self.reject_command(baseline[:image])
+        self.reject_command(baseline[:image] + ["--entrypoint", "/core/build/core-session"] + baseline[image:])
+        self.reject_command(baseline[:image] + ["--device", "/dev/dri"] + baseline[image:])
+        self.reject_command(baseline[:image] + ["-v", "/other:/core"] + baseline[image:])
+
+    def test_vram_json_duplicates_nonfinite_utf8_and_finished_exact_two_record_order(self):
+        original = encoded(self.observation)
+        for field in ("kind", "protocol", "command_argv", "interval_seconds", "label", "total_bytes",
+                      "sample_count", "sample_rounds", "observer_error", "child_returncode"):
+            key = ('"' + field + '":').encode()
+            self.vram.write_bytes(original.replace(key, key + b"0," + key, 1))
+            with self.assertRaisesRegex(ValueError, "duplicate JSON key"):
+                self.collect()
+        for bad in (b"NaN", b"Infinity", b"-Infinity", b"1e999"):
+            self.vram.write_bytes(original.replace(b'"interval_seconds":0.1', b'"interval_seconds":' + bad))
+            with self.assertRaisesRegex(ValueError, "nonfinite"):
+                self.collect()
+        for raw in (b"", original[:-1], original[:-20], original + b"\n", b"\n" + original,
+                    b"[]\n" + original, b"null\n" + original, b"\xef\xbb\xbf" + original,
+                    original.replace(b"vram_source", b"\xff", 1), original + b"observe_vram: failure\n"):
+            self.vram.write_bytes(raw)
+            with self.assertRaises(ValueError):
+                self.collect()
+        for rows in (self.observation[:1], self.observation[1:], list(reversed(self.observation)),
+                     self.observation * 2, [self.observation[0], self.observation[0]],
+                     [self.observation[1], self.observation[1]]):
+            self.reject(rows)
+
+    def test_vram_read_total_per_record_bounds_before_after_open_and_during_read(self):
+        self.assertEqual(MODULE.MAX_VRAM_BYTES, 2 * 1024 * 1024)
+        self.assertEqual(MODULE.MAX_VRAM_RECORD_BYTES, 1024 * 1024)
+        self.vram.write_bytes(b" " * (MODULE.MAX_VRAM_BYTES + 1))
+        with mock.patch.object(MODULE.os, "open") as opened:
+            with self.assertRaisesRegex(ValueError, "oversized"):
+                MODULE.vram_records(self.vram)
+            opened.assert_not_called()
+        self.vram.write_bytes(encoded(self.observation))
+        with mock.patch.object(MODULE.os, "fdopen", return_value=mock.MagicMock()) as opened:
+            stream = opened.return_value.__enter__.return_value
+            stream.read.return_value = b"x" * (MODULE.MAX_VRAM_BYTES + 1)
+            with self.assertRaisesRegex(ValueError, "oversized"):
+                MODULE.vram_records(self.vram)
+            stream.read.assert_called_once_with(MODULE.MAX_VRAM_BYTES + 1)
+        oversized = self.root / "oversized"
+        oversized.write_bytes(b" " * (MODULE.MAX_VRAM_BYTES + 1))
+        with mock.patch.object(MODULE.os, "fstat", return_value=oversized.stat()):
+            with mock.patch.object(MODULE.os, "fdopen") as opened:
+                with self.assertRaisesRegex(ValueError, "oversized"):
+                    MODULE.vram_records(self.vram)
+                opened.assert_not_called()
+        lines = encoded(self.observation).splitlines()
+        self.vram.write_bytes(lines[0].ljust(MODULE.MAX_VRAM_RECORD_BYTES, b" ") + b"\n" + lines[1] + b"\n")
+        with self.assertRaisesRegex(ValueError, "oversized VRAM record"):
+            self.collect()
+        self.vram.write_bytes(b"".join(line.ljust(MODULE.MAX_VRAM_RECORD_BYTES - 1, b" ") + b"\n" for line in lines))
+        self.assertEqual(self.vram.stat().st_size, MODULE.MAX_VRAM_BYTES)
+        self.assertIs(self.collect()["passed"], True)
+
+    def test_vram_regular_path_missing_symlink_and_nonblocking_substitution_guard(self):
+        for path in (self.root, self.root / "fifo"):
+            if path.name == "fifo":
+                os.mkfifo(path)
+            with self.assertRaisesRegex(ValueError, "regular file"):
+                MODULE.collect(self.raw, path)
+        with self.assertRaises(OSError):
+            MODULE.collect(self.raw, self.root / "missing")
+        alias = self.root / "vram-symlink"
+        alias.symlink_to(self.vram)
+        self.assertEqual(MODULE.collect(self.raw, alias)["raw_logs"]["vram"], str(self.vram.resolve()))
+        fifo, real_open = self.root / "fifo", os.open
+        with mock.patch.object(MODULE.os, "open", side_effect=lambda _, flags: real_open(fifo, flags)) as opened:
+            with self.assertRaisesRegex(ValueError, "regular file"):
+                MODULE.vram_records(self.vram)
+            self.assertEqual(opened.call_args.args[1], os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW)
+
+    def test_cli_appends_after_both_validate_preserves_history_inputs_and_optional_object(self):
+        history = b'{ "kind":"first" }\n{"kind":"second","vram":null}\n'
+        self.results.write_bytes(history)
+        before = self.raw.read_bytes(), self.vram.read_bytes()
+        process = self.cli()
+        self.assertEqual(process.returncode, 0, process.stderr)
+        self.assertEqual(process.stdout, "")
+        saved = self.results.read_bytes()
+        self.assertTrue(saved.startswith(history))
+        self.assertEqual(len(saved.splitlines()), 3)
+        record = json.loads(saved.splitlines()[-1])
+        self.assertEqual(record["vram_observation"]["source"], self.observation[0])
+        self.assertEqual(record["vram_observation"]["complete"], self.observation[1])
+        self.assertEqual(record["raw_logs"], {"request": str(self.raw.resolve()), "vram": str(self.vram.resolve())})
+        self.assertEqual((self.raw.read_bytes(), self.vram.read_bytes()), before)
+        with mock.patch.object(MODULE, "append_record") as append:
+            self.assertEqual(MODULE.main(["--raw", str(self.raw), "--vram-log", str(self.vram),
+                                          "--results", str(self.results)]), 0)
+            append.assert_called_once()
+            self.assertEqual(append.call_args.args[1]["vram_observation"]["complete"], self.observation[1])
+
+    def test_bad_vram_or_native_input_never_appends_or_creates_results(self):
+        original = encoded(self.observation)
+        failure = copy.deepcopy(self.observation)
+        failure[1].update(kind="vram_failure", child_returncode=1, observer_returncode=1)
+        command = copy.deepcopy(self.observation)
+        argv = command[0]["command_argv"]
+        argv[argv.index("--seed") + 1] = "43"
+        bads = (original[:-1], encoded(failure), encoded(command), original + b"\n",
+                original.replace(b'"observer_error":null', b'"observer_error":{"unknown":true}'))
+        history = b'{ "kind":"history" }\n'
+        for bad in bads:
+            for existing in (False, True):
+                self.vram.write_bytes(bad)
+                if self.results.exists():
+                    self.results.unlink()
+                if existing:
+                    self.results.write_bytes(history)
+                process = self.cli()
+                self.assertEqual(process.returncode, 1, process.stderr)
+                self.assertEqual(self.raw.read_bytes(), encoded(self.rows))
+                self.assertEqual(self.vram.read_bytes(), bad)
+                if existing:
+                    self.assertEqual(self.results.read_bytes(), history)
+                else:
+                    self.assertFalse(self.results.exists())
+        self.vram.write_bytes(original)
+        self.raw.write_bytes(encoded(self.rows)[:-1])
+        self.assertEqual(self.cli().returncode, 1)
+        self.assertEqual(self.results.read_bytes(), history)
+        self.raw.write_bytes(encoded(self.rows))
+        self.assertEqual(self.cli(vram=self.root / "missing").returncode, 1)
+        self.assertEqual(self.results.read_bytes(), history)
+
+    def test_raw_vram_results_alias_preflight_lexical_symlink_and_hardlink(self):
+        history = b'{"kind":"history"}\n'
+        self.results.write_bytes(history)
+        for artifact in (self.raw, self.vram):
+            before = artifact.read_bytes()
+            symlink, hardlink = self.root / (artifact.name + ".sym"), self.root / (artifact.name + ".hard")
+            symlink.symlink_to(artifact)
+            os.link(artifact, hardlink)
+            for destination in (artifact, symlink, hardlink):
+                process = self.cli(destination=destination)
+                self.assertEqual(process.returncode, 1)
+                self.assertIn("paths must be distinct", process.stderr)
+                self.assertEqual(artifact.read_bytes(), before)
+                with mock.patch.object(MODULE, "collect") as collect, mock.patch.object(MODULE, "append_record") as append:
+                    with mock.patch("sys.stderr", new_callable=io.StringIO):
+                        self.assertEqual(MODULE.main(["--raw", str(self.raw), "--vram-log", str(self.vram),
+                                                      "--results", str(destination)]), 1)
+                    collect.assert_not_called()
+                    append.assert_not_called()
+        for vram in (self.raw, self.root / (self.raw.name + ".sym"), self.root / (self.raw.name + ".hard")):
+            with mock.patch.object(MODULE, "records") as read, mock.patch.object(MODULE, "vram_records") as observe:
+                with self.assertRaisesRegex(ValueError, "paths must be distinct"):
+                    MODULE.collect(self.raw, vram)
+                read.assert_not_called()
+                observe.assert_not_called()
+            self.assertEqual(self.cli(vram=vram).returncode, 1)
+        self.assertEqual(self.results.read_bytes(), history)
+
+    def test_locked_append_rechecks_vram_alias_and_retains_shared_guards(self):
+        record = self.collect()
+        self.results.write_bytes(b'{"kind":"old"}\n')
+        before = self.vram.read_bytes()
+        real_open = Path.open
+
+        def replace_before_open(path, *args, **kwargs):
+            self.results.unlink()
+            os.link(self.vram, self.results)
+            return real_open(path, *args, **kwargs)
+
+        with mock.patch.object(Path, "open", autospec=True, side_effect=replace_before_open):
+            with self.assertRaisesRegex(ValueError, "input artifact"):
+                MODULE.append_result(self.results, record)
+        self.assertEqual(self.vram.read_bytes(), before)
+        self.assertIs(MODULE.append_record, record_memory.append_result)
 
 
 if __name__ == "__main__":

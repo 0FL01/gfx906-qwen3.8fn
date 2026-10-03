@@ -127,8 +127,29 @@
   recording reuse these original collectors without new donor code/dependencies.
   Diagnostic trace-range capture and CLI/primary-sampling integration
   are original code; the long correctness/sampling-prerequisite closure imports
-  no donor whole runtime. Parent VRAM observer/synthetic tests and future CPU
-  expert/shadow/speculative helpers are outside this runtime qualification.
+  no donor whole runtime. Protocol1 full-request timing/output/expert-counter
+  telemetry, the request collector and paired chunk A/B/A recording are original
+  code. `tools/observe_vram.py` is an original Python-stdlib-only sampled global
+  AMD driver-VRAM observer. Its request join in `tools/record_request.py` accepts
+  the closed direct attached Docker argv shape, matches structured native options
+  and prompt IDs to the request source, and validates both completed device
+  observations. It imports no shell/runtime machinery, attests no binary/mount
+  identity or HIP-index mapping, and does not turn samples into exact peaks or
+  HIP-owned allocations. All8 actual raws were downloaded and passed local
+  collection, including both observer joins; canonical30-row/2,150,750-byte
+  history preservation and +9/-0 diff were verified. The accepted, closed
+  measurement-only slice contains docs/CMake/observer/request tools/tests/results;
+  experimental Session/GPU/R5/speculative changes are outside it. No new dependency,
+  donor component or license is introduced by this telemetry/join.
+  Completed frozen-b522/dirtytrue rocprofv3 diagnostics are measurement evidence,
+  not an imported runtime or candidate qualification; PP+TG overlapping duration
+  sums do not identify total latency or prove a RAM/expert-DMA bottleneck.
+  Parent-local experimental/default-off Session/new route kernels/fixture and
+  CPU-expert/shadow/hybrid work are prepared/unmirrored/unqualified. The route
+  candidate uses one 80*N-byte DTO upload per layer and indexed Q8 gather/down
+  scatter per microtile<=8, preserving copied bits/expert fold order; no actual
+  HIP/model/speed result is claimed. Prepared R6 speculative pure-math helpers
+  are not trained-MTP integration.
   Existing mx/furnace MIT and reinstinct Apache-2.0 attribution is retained.
 
 - `src/hip/mmq.hip` adapts mx `mmq-load-tiles.cuh`, `mmq-vec-dot.cuh`,

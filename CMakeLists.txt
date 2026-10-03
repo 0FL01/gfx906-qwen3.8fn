@@ -112,7 +112,9 @@ if(BUILD_TESTING)
     -s ${CMAKE_CURRENT_SOURCE_DIR}/tests -p prefill_long_results_test.py)
   add_test(NAME request-results COMMAND ${Python3_EXECUTABLE} -B -m unittest discover
     -s ${CMAKE_CURRENT_SOURCE_DIR}/tests -p request_results_test.py)
-  set_tests_properties(session-comparison session-results memory-results batch-results mmq-results mmq-wide-results prefill-results prefill-wide-results prefill-long-results request-results PROPERTIES
+  add_test(NAME vram-observer COMMAND ${Python3_EXECUTABLE} -B -m unittest discover
+    -s ${CMAKE_CURRENT_SOURCE_DIR}/tests -p observe_vram_test.py)
+  set_tests_properties(session-comparison session-results memory-results batch-results mmq-results mmq-wide-results prefill-results prefill-wide-results prefill-long-results request-results vram-observer PROPERTIES
     ENVIRONMENT "TMPDIR=${CMAKE_CURRENT_BINARY_DIR}")
 endif()
 if(CORE_WITH_HIP)
