@@ -292,9 +292,12 @@ void quantize_q8(std::span<const float> input, std::span<Q8_1> output) {
             continue;
         }
         const float d = amax / 127.0f;
+        if (d == 0.0f) invalid("quant: Q8 original FP32 scale underflows to zero for nonzero block");
         result.d = float_to_half(d);
         if ((result.d & 0x7c00U) == 0x7c00U) invalid("quant: Q8 scale overflows half");
-        if (result.d == 0) invalid("quant: Q8 scale underflows to zero for nonzero block");
+        // mx ggml/src/ggml-cuda/quantize.cu:89..101 at dcd685463d597d31f5ca759d32c94592a2740fa4
+        // stores half(d,sum) independently of codes selected with FP32 d.
+        // A stored zero d is valid even with nonzero codes and a nonzero raw sum.
         // In-place paired updates are exactly the ascending XOR butterfly;
         // both lanes read the preceding stage, matching the GPU DPP order.
         for (std::size_t mask = 1; mask < 32; mask <<= 1) {
@@ -309,8 +312,14 @@ void quantize_q8(std::span<const float> input, std::span<Q8_1> output) {
         result.s = float_to_half(sums[0]);
         if (!std::isfinite(sums[0]) || (result.s & 0x7c00U) == 0x7c00U)
             invalid("quant: Q8 raw sum overflows half");
-        for (std::size_t i = 0; i < 32; ++i)
-            result.qs[i] = static_cast<std::int8_t>(std::roundf(input[block * 32 + i] / d));
+        for (std::size_t i = 0; i < 32; ++i) {
+            const float code = std::roundf(input[block * 32 + i] / d);
+            // FP32 subnormal d can make the ratio exceed the canonical range.
+            // Check before conversion: an out-of-range float-to-int cast is UB.
+            if (!std::isfinite(code) || code < -127.0f || code > 127.0f)
+                invalid("quant: Q8 rounded code outside finite [-127,127] range");
+            result.qs[i] = static_cast<std::int8_t>(code);
+        }
         output[block] = result;
     }
 }

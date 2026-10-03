@@ -7,6 +7,17 @@
 - `src/hip/expert.hip` adapts mx canonical SDOT4/Q4 arithmetic,
   Q8_1 activation quantization and byte-preserving Q4_0 planar packing
   from that revision (`vecdotq.cuh`, `quantize.cu`, `q8_repack/`).
+  The CPU `src/quant.cpp` arithmetic contract and GPU quantizers in
+  `src/hip/expert.hip` / `src/hip/linear.hip` retain the pinned
+  `quantize.cu::quantize_q8_1` original-FP32-scale codes and independent raw
+  input sum when a legitimate positive scale rounds to stored FP16 zero.
+  The long-fixture repair corrects validation of this existing ABI, separately
+  from optimization: nonzero-input blocks with original FP32 scale0, unsafe
+  rounded codes±128, nonfinite values and FP16 Inf/NaN headers still reject
+  before unsafe int8 conversion; logical32 reduction groups remain isolated
+  within wave64.
+  It introduces no weight/precision/epsilon/gate change, NaN clamp or all-zero
+  replacement of valid blocks. No new donor component or dependency is added.
   Runtime/graph/cache code is not imported.
 - Multi-column, two-output-row weight reuse in `src/hip/expert.hip`
   is adapted from sixvolts/reinstinct
@@ -66,7 +77,8 @@
   remains unchanged), mx `mmvq.cu` two-wave
   topology and format-specific fragments with explicit FMA, canonical Q6 MMVQ
   slices, unchanged raw-sum/half-product ABI,
-  representable-scale and finite activation errors. `linear_reference.cpp`
+  checked finite headers/original FP32 scale and safe-code activation errors,
+  including valid stored-half-zero scales as described above. `linear_reference.cpp`
   is an original independently decoded common-Q8 scalar oracle.
 - `src/hip/blocks.hip` adapts mx `norm.cu` strided/wave/LDS reductions and
   furnace `dsv4-hc.cu` coalesced pre/post patterns at the revisions above.
@@ -109,8 +121,15 @@
   arithmetic or dependency; the existing mx/furnace MIT and reinstinct
   Apache-2.0 attribution above remains applicable to the adapted primitives.
   Completed-call `SessionRouteStats`/`route_stats()` diagnostics and the logical
-  wide-prefill fixture/collector are original code. They measure assignments
-  before physical tiling and introduce no new donor component or license.
+  wide/real4K/16K long-prefill fixtures/collectors are original code. They measure
+  assignments before physical tiling and introduce no new donor component or
+  license. Completed remote/local actual-log validation and canonical journal
+  recording reuse these original collectors without new donor code/dependencies.
+  Diagnostic trace-range capture and CLI/primary-sampling integration
+  are original code; the long correctness/sampling-prerequisite closure imports
+  no donor whole runtime. Parent VRAM observer/synthetic tests and future CPU
+  expert/shadow/speculative helpers are outside this runtime qualification.
+  Existing mx/furnace MIT and reinstinct Apache-2.0 attribution is retained.
 
 - `src/hip/mmq.hip` adapts mx `mmq-load-tiles.cuh`, `mmq-vec-dot.cuh`,
   `mmq.cuh` and `vecdotq.cuh` canonical Q4 DP4A tile/load/dot/writeback seams

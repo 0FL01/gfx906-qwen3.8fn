@@ -50,6 +50,8 @@ SessionConfig checked_config(SessionConfig config) {
         config.expert_slots < 1 || config.expert_slots > 512 ||
         config.max_batch_tokens < 1 || config.max_batch_tokens > 1024)
         throw std::invalid_argument("Session capacity/slots/max_batch_tokens");
+    if (config.trace_first_token < 0 || config.trace_first_token > config.capacity)
+        throw std::invalid_argument("Session trace_first_token");
     return config;
 }
 void hip(hipError_t e) {
@@ -479,6 +481,7 @@ struct Layer {
     Buffer conv, dt, a, gdn_norm, recurrent, history;
     Buffer q_norm, k_norm, iq_norm, ik_norm, frequencies, kv_k, kv_v, pooled, tail;
     Buffer stage_recurrent, stage_history;
+    bool failure_probe = false;
     bool state_probe = false;
     bool ffn_probe = false;
     Layer(const Model& m, Device& d, int l, const SessionConfig& cfg, float rope_base)
@@ -491,7 +494,8 @@ struct Layer {
           shared_weight(parameter(m, d, "blk." + std::to_string(l) + ".ffn_gate_inp_shexp.weight", {H})),
           experts(m, d, "blk." + std::to_string(l) + ".", cfg.expert_slots) {
         const std::string p = "blk." + std::to_string(l) + ".";
-        state_probe = !cfg.trace_directory.empty() && l == 22;
+        failure_probe = !cfg.trace_directory.empty() && cfg.trace_first_token > 0 && l == 8;
+        state_probe = (!cfg.trace_directory.empty() && l == 22) || failure_probe;
         ffn_probe = !cfg.trace_directory.empty() && l == 0;
         hip(hipSetDevice(d.id));
         if ((l + 1) % 4) {
@@ -526,7 +530,7 @@ struct Layer {
         auto& d = device; hip(hipSetDevice(d.id));
         for (auto* b : {&recurrent, &history, &tail}) if (b->bytes()) hip(hipMemsetAsync(b->get<void>(), 0, b->bytes(), d.stream));
     }
-    template<class Observe> void attention_chunk(int position, int capacity, float epsilon, int tokens, Observe&& observe) {
+    template<class Observe> void attention_chunk(int position, int capacity, float epsilon, int tokens, bool trace_stages, Observe&& observe) {
         auto& d = device;
         // All projections belong to the logical chunk; only their borrowed
         // launch geometry is tiled. Recurrent/append work retains active history
@@ -543,6 +547,9 @@ struct Layer {
                     {d.f(14) + first * W, stage_recurrent.get(), stage_history.get(), d.f(15) + first * 6144,
                      nullptr, nullptr, d.flag()}, d.stream);
             });
+            // GDN publishes output/state only when the sticky flag is zero. In
+            // the diagnostic layer, check before observing unpublished scratch.
+            if (failure_probe && trace_stages) d.check("GDN layer 8");
             // Large recurrent/control witnesses are explicitly N1-only.
             observe("gdn_convolved_normalized", d.f(14), W);
             observe("final_output", d.f(13), 6144);
@@ -606,10 +613,11 @@ struct Layer {
             hip(hipMemcpyAsync(d.f(13), d.f(9), tokens * 6144 * sizeof(float), hipMemcpyDeviceToDevice, d.stream));
         }
         attn_output.apply(d, d.f(13), d.f(9), tokens);
+        if (failure_probe && trace_stages) d.check("attention output layer 8");
         observe("block_attention_out", d.f(9), H);
     }
-    template<class Observe> void attention(int position, int capacity, float epsilon, int tokens, Observe&& observe) {
-        if (tokens > 3) { attention_chunk(position, capacity, epsilon, tokens, observe); return; }
+    template<class Observe> void attention(int position, int capacity, float epsilon, int tokens, bool trace_stages, Observe&& observe) {
+        if (tokens > 3) { attention_chunk(position, capacity, epsilon, tokens, trace_stages, observe); return; }
         auto& d = device;
         qkv.apply(d, d.f(6), d.f(9), tokens);
         if ((index + 1) % 4) {
@@ -618,12 +626,13 @@ struct Layer {
             observe("alpha", d.f(11), 48); observe("beta", d.f(12), 48);
             // The large state/control witness is N1-only. Do not label a whole
             // window's pre/post state as per-token chronological prefixes.
-            if (state_probe && tokens == 1) {
+            if (state_probe && tokens == 1 && trace_stages) {
                 observe("gdn_state_pre", recurrent.get(), 786432);
                 // Recomputed through the same GPU helper, NOT a capture of
                 // recurrence registers. f(22) is diagnostic-only scratch.
                 launch_gdn_control_witness({conv.get(), dt.get(), a.get(), gdn_norm.get(), epsilon},
                     {d.f(9), d.f(10), d.f(11), d.f(12)}, d.f(22), d.flag(), d.stream);
+                if (failure_probe && trace_stages) d.check("GDN controls layer 8");
                 observe("gdn_control_log_decay_recomputed", d.f(22), 48);
                 observe("gdn_control_beta_recomputed", d.f(22) + 48, 48);
                 observe("gdn_control_decay_recomputed", d.f(22) + 96, 48);
@@ -631,7 +640,8 @@ struct Layer {
             launch_gdn({conv.get(), dt.get(), a.get(), gdn_norm.get(), epsilon},
                        {d.f(9), d.f(10), d.f(11), d.f(12)}, tokens, recurrent.get(), history.get(), d.f(13),
                        {d.f(14), stage_recurrent.get(), stage_history.get(), d.f(15), nullptr, nullptr, d.flag()}, d.stream);
-            if (state_probe && tokens == 1) observe("gdn_state_post", recurrent.get(), 786432);
+            if (failure_probe && trace_stages) d.check("GDN layer 8");
+            if (state_probe && tokens == 1 && trace_stages) observe("gdn_state_post", recurrent.get(), 786432);
             observe("gdn_convolved_normalized", d.f(14), 10240);
             observe("final_output", d.f(13), 6144);
         } else {
@@ -680,10 +690,14 @@ struct Layer {
             hip(hipMemcpyAsync(d.f(13), d.f(9), tokens * 6144 * sizeof(float), hipMemcpyDeviceToDevice, d.stream));
         }
         attn_output.apply(d, d.f(13), d.f(9), tokens);
+        if (failure_probe && trace_stages) d.check("attention output layer 8");
         observe("block_attention_out", d.f(9), H);
     }
-    template<class Observe> void ffn(SessionStats& stats, SessionRouteStats& call_routes, int tokens, Observe&& observe) {
+    template<class Observe> void ffn(SessionStats& stats, SessionRouteStats& call_routes, int tokens, bool trace_observations, Observe&& observe) {
         auto& d = device;
+        // Besides skipping captures, skip diagnostic H2D/host temporaries before
+        // the range. selected_ids relies on a captured row draining its upload.
+        const bool probe = ffn_probe && trace_observations;
         router.apply(d, d.f(6), d.f(9), tokens);
         tiles(tokens, [&](int first, int count) {
             hip(launch_router_softmax(d.f(9) + first * 512, count, d.f(10) + first * 512, d.flag(), d.stream));
@@ -691,7 +705,7 @@ struct Layer {
         auto& probabilities = d.route_probabilities;
         hip(hipMemcpyAsync(probabilities.data(), d.f(10), tokens * 512 * sizeof(float), hipMemcpyDeviceToHost, d.stream));
         d.check("router layer " + std::to_string(index));
-        if (ffn_probe) {
+        if (probe) {
             observe("ffn_router_logits_raw", d.f(9), 512);
             observe("ffn_router_probabilities", d.f(10), 512);
         }
@@ -719,7 +733,7 @@ struct Layer {
                 ids[t * 10 + i] = order[i]; weights[t * 10 + i] = row[order[i]] * inverse;
             }
         }
-        if (ffn_probe) {
+        if (probe) {
             // Exact semantic ID->F32 conversion (0..511), never reinterpret I32
             // bytes. f(22) is dead until the wide rank fold's weight upload.
             std::vector<float> selected_ids(static_cast<std::size_t>(tokens) * 10);
@@ -749,7 +763,7 @@ struct Layer {
                 experts.run(d, ids[rank], original, weights[rank], stats);
                 // Read after scaled-add's consumer, before the next rank reuses
                 // f(19). No change to physical cache or numerical add order.
-                if (ffn_probe) observe("ffn_expert_down_unweighted_rank_" + std::to_string(rank), d.f(19), H);
+                if (probe) observe("ffn_expert_down_unweighted_rank_" + std::to_string(rank), d.f(19), H);
             }
         } else {
             d.routes->prepare(std::span(ids).first(tokens * 10), std::span(weights).first(tokens * 10), tokens);
@@ -798,7 +812,7 @@ struct Layer {
                 });
             }
         }
-        if (ffn_probe) {
+        if (probe) {
             if (tokens > 1) {
                 // ALL scatters/fold consumers are queued. Storage is immutable
                 // [token][original-rank][H], not a contiguous rank-major matrix.
@@ -809,7 +823,7 @@ struct Layer {
             observe("ffn_routed_weighted_aggregate", d.f(20), H);
         }
         shared_gate.apply(d, d.f(6), d.f(16), tokens); shared_up.apply(d, d.f(6), d.f(17), tokens);
-        if (ffn_probe) {
+        if (probe) {
             observe("ffn_shared_gate_raw", d.f(16), 640);
             observe("ffn_shared_up_raw", d.f(17), 640);
         }
@@ -817,7 +831,7 @@ struct Layer {
             hip(launch_silu_up(d.f(16) + first * 640, d.f(17) + first * 640, count * 640, d.f(18) + first * 640, d.flag(), d.stream));
         });
         shared_down.apply(d, d.f(18), d.f(19), tokens);
-        if (ffn_probe) {
+        if (probe) {
             observe("ffn_shared_silu_middle", d.f(18), 640);
             observe("ffn_shared_down", d.f(19), H);
         }
@@ -827,7 +841,7 @@ struct Layer {
             const int count = std::min(8, tokens - first);
             blas(launch_dense_linear(d.handle, {shared_weight.get(), H, 1}, d.f(6) + first * H, count, d.f(16) + first, d.stream));
         }
-        if (ffn_probe) observe("ffn_shared_scalar_gate_raw", d.f(16), 1);
+        if (probe) observe("ffn_shared_scalar_gate_raw", d.f(16), 1);
         if (tokens == 1) hip(launch_shared_sigmoid_add(d.f(19), d.f(16), H, d.f(20), d.flag(), d.stream));
         else tiles(tokens, [&](int first, int count) {
             hip(launch_shared_sigmoid_add_rows(d.f(19) + first * H, d.f(16) + first, count, H, d.f(20) + first * H, d.flag(), d.stream));
@@ -1003,6 +1017,8 @@ struct Session::Impl {
     }
     void capture(Device& d, const std::string& name, const float* x, int count, int layer = -1, int token_offset = 0) {
         if (!trace_metadata.is_open()) return;
+        const auto position = statistics.consumed_tokens + static_cast<std::uint64_t>(token_offset);
+        if (position < static_cast<std::uint64_t>(config.trace_first_token)) return;
         std::vector<float> values(static_cast<std::size_t>(count));
         hip(hipMemcpyAsync(values.data(), x, values.size() * sizeof(float), hipMemcpyDeviceToHost, d.stream));
         hip(hipStreamSynchronize(d.stream));
@@ -1013,7 +1029,7 @@ struct Session::Impl {
         if (!output) throw std::runtime_error("trace write");
         // Additional diagnostic layer 2 does not change the frozen allowlist
         // of gate-required/optional named captures in compare_session.py.
-        trace_metadata << "{\"name\":" << std::quoted((layer == 2 || layer == 6 || layer == 8 || layer == 19 || layer == 22) ? "debug_" + name : name) << ",\"layer\":" << layer << ",\"position\":" << statistics.consumed_tokens + static_cast<std::uint64_t>(token_offset)
+        trace_metadata << "{\"name\":" << std::quoted((layer == 2 || layer == 6 || layer == 8 || layer == 19 || layer == 22) ? "debug_" + name : name) << ",\"layer\":" << layer << ",\"position\":" << position
                        << ",\"type\":\"F32\",\"elements\":" << count << ",\"file\":" << std::quoted(file) << "}\n";
         trace_metadata.flush(); if (!trace_metadata) throw std::runtime_error("trace metadata write");
     }
@@ -1077,6 +1093,11 @@ struct Session::Impl {
         for (const auto token : window) if (token < 0 || token >= V) throw std::invalid_argument("token ID");
         const int tokens = static_cast<int>(window.size());
         const int position = static_cast<int>(statistics.consumed_tokens);
+        const bool trace_observations = trace_metadata.is_open() &&
+            statistics.consumed_tokens + window.size() > static_cast<std::uint64_t>(config.trace_first_token);
+        // Diagnostic checks never clear the sticky flag. Their labels identify
+        // the first observed failing interval, not necessarily its last kernel.
+        const bool trace_stages = trace_observations && position >= config.trace_first_token;
         const auto begin = std::chrono::steady_clock::now();
         try {
             SessionRouteStats call_routes{};
@@ -1103,13 +1124,14 @@ struct Session::Impl {
                 auto& layer = *layers[l];
                 if (l == 1) ple(*d, window, residual, alternate);
                 layer.attention_hc.mix(*d, residual, epsilon, tokens);
+                if (layer.failure_probe && trace_stages) d->check("attention HC layer 8");
                 if (l == 0 || l == 1 || l == 2 || l == 3 || l == 6 || l == 8 || l == 19 || l == 22 || l == 47) {
                     capture_batch(*d, "hc_attn_mix", d->f(6), H, tokens, l);
                     capture_batch(*d, "hc_attn_norm", d->f(2), W, tokens, l);
                     capture_batch(*d, "hc_attn_gate_raw", d->f(5), W, tokens, l);
                     capture_batch(*d, "hc_attn_inject_raw", d->f(7), 4, tokens, l);
                 }
-                layer.attention(position, config.capacity, epsilon, tokens,
+                layer.attention(position, config.capacity, epsilon, tokens, trace_stages,
                     [&](const char* name, const float* x, int count, int token_offset = -1) {
                         if (l == 0 || l == 1 || l == 2 || l == 3 || l == 6 || l == 8 || l == 19 || l == 22 || l == 47) {
                             if (token_offset < 0) capture_batch(*d, name, x, count, tokens, l);
@@ -1117,15 +1139,17 @@ struct Session::Impl {
                         }
                     });
                 combine(*d, residual, d->f(9), tokens, alternate);
+                if (layer.failure_probe && trace_stages) d->check("attention combine layer 8");
                 std::swap(residual, alternate);
                 layer.ffn_hc.mix(*d, residual, epsilon, tokens);
+                if (layer.failure_probe && trace_stages) d->check("FFN HC layer 8");
                 if (l == 0 || l == 1 || l == 2 || l == 3 || l == 6 || l == 8 || l == 19 || l == 22 || l == 47) {
                     capture_batch(*d, "hc_ffn_mix", d->f(6), H, tokens, l);
                     capture_batch(*d, "hc_ffn_norm", d->f(2), W, tokens, l);
                     capture_batch(*d, "hc_ffn_gate_raw", d->f(5), W, tokens, l);
                     capture_batch(*d, "hc_ffn_inject_raw", d->f(7), 4, tokens, l);
                 }
-                layer.ffn(statistics, call_routes, tokens,
+                layer.ffn(statistics, call_routes, tokens, trace_observations,
                     [&](const std::string& name, const float* x, int width, int token_offset = -1, int stride = 0) {
                         if (l != 0 || !trace_metadata.is_open()) return;
                         if (token_offset >= 0) capture(*d, name, x, width, l, token_offset);

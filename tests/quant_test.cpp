@@ -40,10 +40,13 @@ void near(float actual, float expected, const char* description) {
           std::fabs(actual - expected) <= 1.0e-5f + 1.0e-6f * std::fabs(expected), description);
 }
 
-template<class Function> void rejected(Function function) {
+template<class Function> void rejected(Function function, std::string_view message = {}) {
     try {
         function();
-    } catch (const std::invalid_argument&) {
+    } catch (const std::invalid_argument& error) {
+        if (!message.empty())
+            check(std::string_view(error.what()).find(message) != std::string_view::npos,
+                  "rejection must identify invalid Q8 scaling/code");
         ++rejections;
         check(true, "rejected invalid arguments");
         return;
@@ -303,10 +306,24 @@ void quantize_tests() {
         }
     }
     for (const float tiny : {std::numeric_limits<float>::denorm_min(),
-                             std::numeric_limits<float>::min(), 0.000003f}) {
+                             -std::numeric_limits<float>::denorm_min(),
+                             63.0f * std::numeric_limits<float>::denorm_min(),
+                             -63.0f * std::numeric_limits<float>::denorm_min()}) {
         values.fill(0.0f);
         values[0] = tiny;
-        rejected([&] { qwen::quantize_q8(values, std::span(&result, 1)); });
+        check(std::fabs(tiny) / 127.0f == 0.0f, "genuine FP32-scale-zero fixture");
+        rejected([&] { qwen::quantize_q8(values, std::span(&result, 1)); }, "original FP32 scale");
+    }
+    // A positive original scale can also round too coarsely in FP32, producing
+    // an unsafe code. Both signs must be rejected BEFORE the float-to-int8 cast.
+    for (const float tiny : {128.0f * std::numeric_limits<float>::denorm_min(),
+                             -128.0f * std::numeric_limits<float>::denorm_min()}) {
+        values.fill(0.0f);
+        values[0] = tiny;
+        const float d = std::fabs(tiny) / 127.0f;
+        check(d > 0.0f && std::fabs(std::roundf(tiny / d)) == 128.0f,
+              "nonzero FP32 subnormal scale with unsafe rounded code fixture");
+        rejected([&] { qwen::quantize_q8(values, std::span(&result, 1)); }, "rounded code");
     }
     for (const float huge : {std::numeric_limits<float>::max(), 10000000.0f}) {
         values.fill(0.0f);
@@ -316,6 +333,72 @@ void quantize_tests() {
     }
     values.fill(3000.0f); // Scale is valid, but its raw sum is not finite in half.
     rejected([&] { qwen::quantize_q8(values, std::span(&result, 1)); });
+}
+
+void tiny_scale_tests() {
+    // Canonical donor contract, not a relaxed numerical gate: mx
+    // dcd685463d597d31f5ca759d32c94592a2740fa4 ggml/src/ggml-cuda/quantize.cu:89..101
+    // selects nonzero codes with ORIGINAL FP32 d and stores half(d,RAW sum).
+    // RNE half d=0 is therefore valid, and MUST NOT suppress codes or raw sum.
+    std::array<float, 32> values{};
+    constexpr float tiny = 3.4e-6f;
+    for (const float sign : {1.0f, -1.0f}) {
+        values.fill(sign * tiny);
+        auto result = quantized(values);
+        check(result.d == 0, "tiny constant stored half scale must round to zero");
+        check(result.s == reference_half(32.0f * sign * tiny) && (result.s & 0x7fffU) != 0,
+              "tiny constant must retain nonzero half raw sum");
+        for (const auto code : result.qs)
+            check(code == int(sign) * 127, "tiny constant must retain every nonzero original-scale code");
+
+        for (std::size_t i = 0; i < values.size(); ++i) values[i] = i % 2 == 0 ? 0.0f : -0.0f;
+        values[0] = sign * tiny;
+        values[1] = -sign * tiny;
+        values[2] = sign * tiny * 0.4f;
+        values[3] = -sign * tiny * 0.1f;
+        result = quantized(values);
+        check(result.d == 0 && result.s == reference_half(values[2] + values[3]) &&
+              (result.s & 0x7fffU) != 0, "tiny mixed-sign/zero block retains raw sum with zero scale");
+        const std::array<int, 4> expected{127, -127, 51, -13};
+        for (std::size_t i = 0; i < 32; ++i)
+            check(result.qs[i] == (i < 4 ? int(sign) * expected[i] : 0),
+                  "tiny mixed-sign/zero block original-scale codes");
+    }
+
+    const float midpoint = std::ldexp(127.0f, -25); // amax/127 == 2^-25, RNE tie to half zero.
+    const std::array<float, 3> maxima{std::nextafter(midpoint, 0.0f), midpoint,
+                                    std::nextafter(midpoint, std::numeric_limits<float>::infinity())};
+    for (const float sign : {1.0f, -1.0f}) {
+        for (std::size_t i = 0; i < maxima.size(); ++i) {
+            const float original_d = maxima[i] / 127.0f;
+            check(original_d > 0 && (i == 0 ? original_d < std::ldexp(1.0f, -25) :
+                                    i == 1 ? original_d == std::ldexp(1.0f, -25) :
+                                             original_d > std::ldexp(1.0f, -25)),
+                  "FP16-scale-underflow midpoint must distinguish original FP32 scales");
+            values.fill(sign * maxima[i]);
+            const auto result = quantized(values);
+            check(result.d == (i == 2 ? 1 : 0), "FP16 scale below/tie/above zero midpoint RNE");
+            check(result.s == reference_half(32.0f * values[0]) && (result.s & 0x7fffU) != 0,
+                  "midpoint tiny block retains nonzero raw sum");
+            for (const auto code : result.qs)
+                check(code == int(sign) * 127, "midpoint tiny block retains original-scale codes");
+        }
+    }
+
+    // These formerly failed only because stored half d=0. FP32 normal/subnormal
+    // scales with valid rounded codes remain legal, even when half(s) is also 0.
+    for (const float magnitude : {3.0e-6f, std::numeric_limits<float>::min(),
+                                  127.0f * std::numeric_limits<float>::denorm_min()}) {
+        for (const float sign : {1.0f, -1.0f}) {
+            values.fill(0.0f);
+            values[0] = sign * magnitude;
+            const auto result = quantized(values);
+            check(magnitude / 127.0f > 0 && result.d == 0 && result.qs[0] == int(sign) * 127,
+                  "valid tiny original FP32 scale with zero stored scale");
+            for (std::size_t i = 1; i < 32; ++i)
+                check(result.qs[i] == 0, "tiny sparse block retains zero codes");
+        }
+    }
 }
 
 // Wide integer reference first expands the 32 logical codes, then sums in
@@ -586,6 +669,7 @@ int main() {
         std::cout << "runtime AVX2/FMA/F16C: " << (qwen::cpu_has_avx2() ? "available" : "scalar fallback") << '\n';
         group("half", half_tests);
         group("quantize", quantize_tests);
+        group("tiny canonical Q8", tiny_scale_tests);
         group("dot", dot_tests);
         group("matrix", matrix_tests);
         std::cout << "PASS: " << checks << " checks, " << rejections << " invalid cases rejected, "

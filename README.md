@@ -2,11 +2,15 @@
 
 Standalone C++20/HIP core under implementation. `core-session` now executes the
 own 48-layer model with Q4_0 K/V on both gfx906 GPUs. R3 teacher32/reset/generation
-are qualified; short and logical-wide prefill pass same-Session N1 full-logit
-parity, including chunks128/129/single1024 and observed expert groups over 128.
-Wide-slice closure includes strict Release build/CTest28/28, sequential
-Session/wide/default-memory regressions and one validated journal append.
-Full R4–R8, large-prompt prefill, MTP, serving and end-to-end speed goals remain open.
+are qualified; short, logical-wide and real4K/16K teacher fixtures pass
+same-Session N1 full-logit parity and continuation with observed expert groups
+over 128. The latest exclusive job completed strict CXX20/HIP20 Release build,
+CTest32/32, both-GPU actual Q8 underflow capture, long fixtures and sequential
+Session/default-memory regressions. Primary-sampling CLI prerequisites are
+integrated; parent local collection of both downloaded actual long raws passed,
+and exactly two long-result records were appended to the canonical journal.
+Full R4–R8, 512-output request/peak-VRAM qualification,
+MTP, serving and end-to-end speed goals remain open.
 Scope and acceptance are in [PLAN.md](PLAN.md); current evidence in [STATE.md](STATE.md).
 
 ## Remote build and R0 probe
@@ -70,7 +74,9 @@ python3 -B /home/radneon/gfx906-core/src/tools/record_expert.py \
 Layer0/expert0 retains canonical Q4_0 gate/up and Q4_1 down (2,867,200 bytes).
 Activation ABI is **mx Q8_1, 36 bytes**: FP16 scale, FP16 sum of **raw** float
 inputs, 32 signed codes. Codes use the original FP32 `amax/127` and `roundf`;
-the raw sum uses ascending XOR 1/2/4/8/16. Q4_0 uses
+the raw sum uses ascending XOR 1/2/4/8/16. A positive original FP32 scale may
+round to stored FP16 zero while retaining its original codes and raw sum;
+the long-correctness repair below restores this pinned-mx contract. Q4_0 uses
 `d4*(integer_dot*d8-8*raw_sum)`. Q4_1 keeps mx half-rounded `d4*d8` and
 `m4*raw_sum`, not quietly changed FP32 products. CPU oracle uses portable RNE
 half; production CPU uses checked AVX2/F16C in the complete matrix loop, no
@@ -943,11 +949,12 @@ Separate `record_memory.collect` validation of the actual memory log passed for
 the unchanged default capacity131072/slots112 regression; it did not append a
 duplicate memory record.
 
-Canonical `/home/radneon/gfx906-core/results.jsonl` now has exactly **19 records**:
+At the historical wide-slice closure, canonical
+`/home/radneon/gfx906-core/results.jsonl` reached **19 records**:
 one validated new `r4b_wide_prefill`, **18 → 19**, with the previous byte prefix
 and parsed history unchanged. Compiled source `88bd3e6`/dirtytrue is retained.
-The downloaded journal has one added line and no removed lines; controller
-validation of the downloaded actual raw log also passes unchanged.
+That downloaded wide-slice journal had one added line and no removed lines;
+controller validation of its downloaded actual raw log passed unchanged.
 
 Reproduce on the GPU host after source sync and the explicit-shell build, using
 fresh names in the existing `runs/` parent and one GPU workload at a time:
@@ -974,12 +981,158 @@ to the explicit canonical ROOT journal. Existing accepted raw data need no
 second append.
 
 This closes logical-wide1024 same-Session N1 self-parity, observed group>128 and
-multi-microtile/stage-reuse correctness at this scale. Full 4K/16K teacher logits
-and chunk boundaries beyond the 2052-token QSA budget, full requests with 512
-actual outputs and peak VRAM/performance gates remain next. Prepared
-`src/prefill_long_test.cpp`, sample CLI/sampler changes in `src/session_main.cpp`,
-`src/session_cli.hpp`, `tests/session_cli_test.cpp` and sampling3 are not yet
-accepted/integrated and are outside this wide closure. Neither throughput,
-independent HF parity, occupied128K nor MTP is qualified by this fixture.
-R4–R8 and the original temperature1.0/top-p0.95/top-k20 performance goals remain
-open.
+multi-microtile/stage-reuse correctness at this scale. The later real4K/16K
+correctness and primary-sampling prerequisites are qualified below; they retain
+their own compiled provenance and do not expand the historical wide fixture's
+scope. Full 512-output requests and peak VRAM/performance gates remain open.
+
+## R4: real4K/16K long correctness and primary-sampling prerequisites
+
+Exclusive job `1791030847464-742` **completed with exit 0 after 1h15m35s**.
+Binaries were compiled as `2e9848d43cf9f908dc8280f81e111c0cde86f01c`,
+**dirtytrue**; a future commit must not replace this artifact provenance.
+The full strict **CXX20/HIP20 Release gfx906 build and warning gates** passed,
+with **CTest32/32 in 605.76 s**. After building, the actual Q8 capture passed
+on both devices, followed by real16K then real4K full-logit fixtures and their
+remote collectors. Reset/batch regressions exited0 with passed footers;
+`record_memory.collect` passed on the actual default-capacity131072/slots112
+memory raw. The job ended with the GPUs idle. These durations are correctness
+and build observations, not benchmark results.
+
+### Q8_1 validation-correctness repair, separate from optimization
+
+Earlier job729 failed at N1 offset13206. Diagnostic job733 localized the
+finite attention output at layer8, actual Q8 block117: its original FP32 scale
+was about `2.728e-8`, positive but rounded to stored FP16 zero. The previous
+guard incorrectly rejected this legitimate block. Pinned mx
+`dcd685463d597d31f5ca759d32c94592a2740fa4`, `quantize.cu::quantize_q8_1`,
+keeps the codes selected using the original FP32 scale and the independent raw
+sum even when the stored half scale is zero.
+
+The CPU and GPU repairs preserve those codes/raw sums. Nonzero-input blocks whose
+original FP32 scale is zero, unsafe rounded codes outside [-127,127] (including
+±128), nonfinite values, and FP16 Inf/NaN headers still reject before any unsafe
+float-to-int8 conversion. GPU reductions isolate each logical32 half of wave64.
+This is an accuracy/validation-correctness fix: no weights, precision, epsilon
+or acceptance gates changed, and no NaN clamp or replacement with an all-zero
+block was introduced. Target quantization passed **791975 checks/214 rejects**;
+jobs740/742 prove the **192 actual blocks / 6144 captured F32 values** on both
+GPUs, alongside boundary/rejection/reuse/linear checks. The repaired capture is
+`runs/r4-q8-underflow-actual-b.jsonl`. Trace-range capture is diagnostic-only;
+the default tracing behavior is unchanged.
+
+### Actual long-fixture evidence
+
+`core-prefill-long-test MODEL.gguf ROWS` requires explicit **4096 or 16384**.
+One trace-free Session has capacity `ROWS+32` (4128/16416), **112 expert slots
+per layer** and max logical batch1024. It retains all `ROWS+32` sequential N1
+full-vocabulary reference rows, then resets the same Session for
+`canonical1024` and `occupied5_then997` (five N1 steps, then N997 chunks and a
+final remainder). All three phases include **32 N1 continuations**. Teacher IDs
+are a new BOS248044-then-monotone family (`id[p]=99+p` for p≥1), not original
+text, the user's prompt or a baseline-parity fixture. Reset retains the expert
+cache; initial cold-cache equality is not claimed. Both target K and V remain
+Q4_0 with unchanged loaded GGUF values/types.
+
+The frozen full-vocabulary gate remains `0.02 + 0.002*abs(reference)`, with
+all values finite and zero allowed violations; bit equality is diagnostic
+only. Both actual raws have **zero violations, maximum absolute error, maximum
+bound ratio and diagnostic bit mismatches**:
+
+| Completed evidence | Real16K | Real4K |
+| --- | ---: | ---: |
+| JSONL records / phases | 129 / 3 | 93 / 3 |
+| Timeline rows / actual windows | 49,248 / 16,518 | 12,384 / 4,206 |
+| Full-vocabulary finite values | 12,229,263,360 | 3,075,194,880 |
+| Full-vocabulary compared values | 8,152,842,240 | 2,050,129,920 |
+| Atomic rejects / memory observations | 8 / 16,539 | 8 / 4,227 |
+| Maximum logical expert group / groups>128 | 1024 / 28,064 | 1024 / 6,800 |
+| Minimum observed free VRAM, GPU0 (bytes) | 5,184,978,944 | 5,260,476,416 |
+| Minimum observed free VRAM, GPU1 (bytes) | 4,704,731,136 | 4,780,228,608 |
+| Diagnostic completed-call wall sum (ms), **not benchmark** | 2,679,118.940426 | 607,945.098957 |
+
+Actual accepted rows/call offsets cover visibility2047–2056 and all mod4 tail
+phases beyond the QSA budget. This is logical causal-boundary evidence, **not a
+GPU selected-ID trace**. Atomic argument rejection preserves the live logits,
+public stats/route stats, fixture guards and memory ledger before continuation.
+Routing counts describe assignments to one expert/layer before physical tiling;
+canonical compute microtiles≤8 and chronological GDN slices≤128 are retained.
+The full logits use a retained same-Session N1 self-reference, **not independent
+HF parity**. Steady owned ledgers/aggregate floors and observed free VRAM do not
+qualify individual-buffer capacities, full RAM, wide/long owned-buffer release,
+peak VRAM, physical128-column tiles, occupied128K, performance or full R4.
+
+Logs are `runs/r4-prefill-repaired-b-build.log`,
+`runs/r4-prefill-long-b-{16384,4096}.jsonl`, and
+`runs/r4-prefill-repaired-{reset,batch,memory}-b.jsonl`, plus the actual Q8 raw
+above. Remote prevalidation of both actual long raws and parent local
+`collect(downloaded_actual_raw)` for real16K and real4K **passed**. Parent
+`record_prefill_long.main` appended **exactly two records** to canonical ROOT
+`/home/radneon/gfx906-core/results.jsonl`, **19→21**. The old byte prefix and
+parsed19-record history are exactly preserved. The last two records have kind
+`r4b_long_prefill`, teacher rows **16384 then4096**, both `passed=true` and
+`R4_complete_claim=false`; their original `2e9848d…`/dirtytrue source is retained.
+The downloaded canonical journal is **1,572,766 bytes** locally; the expected
+Git diff **+2/-0** is verified. The accepted slice retains its compiled artifact
+provenance independently of the closure commit.
+
+Reproduce on the GPU host after source sync and the explicit-shell build, with
+fresh names and one GPU workload at a time:
+
+```sh
+set -eu
+set -C
+ROWS=16384  # Choose exactly 4096 or 16384; each is an explicit large-RAM fixture.
+docker run --rm --name core-prefill-long-repro \
+  --device /dev/kfd --device /dev/dri --group-add video --ipc host \
+  --security-opt seccomp=unconfined --entrypoint /core/build/core-prefill-long-test \
+  -v /home/radneon/gfx906-core:/core \
+  -v /home/radneon/models-nvme:/models:ro \
+  llama.cpp-gfx906:cmake-4.4.3 /models/qwen38-keep1-Q4_0.gguf "$ROWS" \
+  > /home/radneon/gfx906-core/runs/NEW-prefill-long-$ROWS.jsonl \
+  2> /home/radneon/gfx906-core/runs/NEW-prefill-long-$ROWS.err
+# Only after process exit0; validate before one append to the explicit ROOT journal.
+python3 -B /home/radneon/gfx906-core/src/tools/record_prefill_long.py \
+  --raw /home/radneon/gfx906-core/runs/NEW-prefill-long-$ROWS.jsonl \
+  --results /home/radneon/gfx906-core/results.jsonl
+```
+
+Check the collector exit status; repeat with the other ROWS value using a fresh
+log. Existing actual raws must not be appended a second time. The source build
+script remains mode100644 and requires `sh /core/src/tools/build.sh`.
+
+### Integrated CLI/sampling prerequisite and remaining request gate
+
+`core-session` accepts `--prefill-chunk 1..1024` (default1) and
+`--sample --seed UINT64 --temperature 1.0 --top-p 0.95 --top-k 20`.
+CLI/sampler integration is covered by the strict build/CTest above. Prior
+job729's actual32-output primary-sampling smoke, seed42, gave the same IDs
+with chunk1 and chunk32 and consumed exactly32 RNG draws; legacy greedy32
+also passed. These are sampling prerequisites, **not a qualified full512 series**.
+Greedy remains diagnostic-only; count actual emitted tokens and retain the
+final emitted token as pending. A fresh short primary-sampling reproduction is:
+
+```sh
+set -eu
+set -C
+docker run --rm --name core-session-sampling-repro \
+  --device /dev/kfd --device /dev/dri --group-add video --ipc host \
+  --security-opt seccomp=unconfined --entrypoint /core/build/core-session \
+  -v /home/radneon/gfx906-core:/core \
+  -v /home/radneon/models-nvme:/models:ro \
+  llama.cpp-gfx906:cmake-4.4.3 \
+  --prefill-chunk 32 --generate 32 --ignore-eos --sample --seed 42 \
+  --temperature 1.0 --top-p 0.95 --top-k 20 \
+  /models/qwen38-keep1-Q4_0.gguf 248044 $(seq 100 130) \
+  > /home/radneon/gfx906-core/runs/NEW-primary-sampling32.jsonl \
+  2> /home/radneon/gfx906-core/runs/NEW-primary-sampling32.err
+```
+
+The current task is paired4K/16K **512 actual-output requests** using fixed R0 text
+fixture IDs at4K and a separately saved new16K text fixture, without prefix
+reuse, with primary sampling, PP/TG/full elapsed and sampled observed VRAM on
+both GPUs, then paired performance gates and the next measured bottleneck.
+Intended closure scope is long correctness plus sampling prerequisites. The
+parent's new VRAM observer/synthetic tests and future CPU-expert/shadow or
+speculative helpers have no runtime qualification in this closure. Full R4,
+R5–R8, occupied128K, MTP2 and end-to-end speed goals remain open.

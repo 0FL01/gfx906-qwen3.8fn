@@ -10,6 +10,10 @@ struct Q4_1 { std::uint16_t d, m; std::uint8_t qs[16]; };
 // mx GPU Q8_1 activation ABI: half(d), half(sum of RAW float inputs), 32 int8.
 // Scale uses amax/127 before half rounding; codes use roundf(x/original_d).
 // Raw sum uses ascending XOR butterfly 1/2/4/8/16 (matching gfx906 DPP).
+// A nonzero original FP32 scale may round to stored half d=0 while s and qs
+// remain nonzero, as in mx dcd685463d597d31f5ca759d32c94592a2740fa4 quantize.cu.
+// Reject nonfinite inputs/headers, original FP32 d=0 for nonzero blocks, and
+// nonfinite/out-of-range rounded codes; never zero or clamp valid tiny blocks.
 struct Q8_1 { std::uint16_t d, s; std::int8_t qs[32]; };
 static_assert(sizeof(Q4_0)==18 && sizeof(Q4_1)==20 && sizeof(Q8_1)==36);
 

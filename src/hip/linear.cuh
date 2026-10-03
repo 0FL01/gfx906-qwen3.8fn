@@ -78,8 +78,10 @@ struct QuantizedDeviceMatrix {
 //
 // Caller initializes error=0 in stream order and checks it AFTER completion
 // before consuming any dependent results. launch never clears or gates on it.
-// Sticky bits: 1 = nonfinite source, 2 = nonzero scale rounding to half zero,
-// or scale/raw-sum rounding to half infinity/NaN. A failing 32-value block is
+// Stored half d=0 is valid when original FP32 d>0: retain codes and raw sum.
+// Sticky bits: 1 = nonfinite source, 2 = original FP32 scale zero for nonzero
+// input, unsafe rounded code, or scale/raw-sum rounding to half infinity/NaN.
+// A failing 32-value block is
 // written as all-zero Q8_1; other blocks still quantize. Failure is per block.
 // Reusing buffers after failure requires the caller to reset/check error again.
 [[nodiscard]] hipError_t launch_quantize_q8_1(const float* input, Q8_1* output,

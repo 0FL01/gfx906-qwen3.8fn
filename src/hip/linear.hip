@@ -110,16 +110,24 @@ __global__ void quantize(const float* input, Q8_1* output, int elements, int* er
     }
     const float sum = sum32(x), d = amax / 127.0f;
     const auto hd = to_half(d), hs = to_half(sum);
+    // KEEP mx quantize.cu::quantize_q8_1: codes use original FP32 d;
+    // half(d)==0 is a valid rounded header, not a zero input block. Preserve
+    // its codes and independent raw sum (actual layer8/position13206 witness).
     const bool representable = isfinite(sum) && (hs & 0x7c00) != 0x7c00 &&
-                              (hd & 0x7c00) != 0x7c00 && (amax == 0.0f || hd != 0);
-    const bool valid = !bad && representable;
+                              (hd & 0x7c00) != 0x7c00 && (amax == 0.0f || d > 0.0f);
+    const float code = !bad && representable && amax != 0.0f ? roundf(x / d) : 0.0f;
+    int bad_code = !isfinite(code) || code < -127.0f || code > 127.0f;
+    // Original FP32 subnormal scales can yield unsafe rounded codes. Check
+    // before conversion and sanitize only this logical32 group, not wave64.
+    for (int mask = 1; mask < 32; mask *= 2)
+        bad_code |= __shfl_xor(bad_code, mask, 32);
+    const bool valid = !bad && representable && !bad_code;
     auto& block = output[index / 32];
-    block.qs[lane] = valid && amax != 0.0f ?
-                    static_cast<std::int8_t>(roundf(x / d)) : 0;
+    block.qs[lane] = valid ? static_cast<std::int8_t>(code) : 0;
     if (lane == 0) {
         block.d = valid && amax != 0.0f ? hd : 0;
         block.s = valid && amax != 0.0f ? hs : 0;
-        const int bits = (bad ? 1 : 0) | (representable ? 0 : 2);
+        const int bits = (bad ? 1 : 0) | (representable && !bad_code ? 0 : 2);
         if (bits) atomicOr(error, bits);
     }
 }

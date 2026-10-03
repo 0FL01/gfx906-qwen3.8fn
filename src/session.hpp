@@ -18,6 +18,10 @@ struct SessionConfig {
     // Append after the existing fields
     // so positional aggregate initialization keeps its source contract.
     int max_batch_tokens = 1;
+    // Diagnostic capture starts at this absolute consumed-token position, 0..capacity.
+    // capacity captures nothing; an empty trace_directory still disables tracing.
+    // Appended so existing aggregate initializers retain their meaning.
+    int trace_first_token = 0;
 };
 
 struct SessionStats {
