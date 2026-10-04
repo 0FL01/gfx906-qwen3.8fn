@@ -4,15 +4,23 @@ Standalone C++20/HIP core under implementation. `core-session` now executes the
 own 48-layer model with Q4_0 K/V on both gfx906 GPUs. R3 teacher32/reset/generation
 are qualified; short, logical-wide and real4K/16K teacher fixtures pass
 same-Session N1 full-logit parity and continuation with observed expert groups
-over 128. The completed full correctness build passed CTest32/32. A subsequent
-strict targeted `core-session` build and request-results/VRAM-observer gates
-passed, followed by eight fresh 4K/16K requests with 512 actual sampled outputs.
+over 128. Latest completed correctness job765 exited0 in 34m46s: full strict
+CXX20/HIP20 gfx906 Release/warning gates, CTest35/35 (735.71s), both-GPU
+route-copy/paired-middle fixtures, the full CPUlinear_GPUmiddle fixture and
+default reset/batch/wide1024/capacity131072 regressions passed. Its compiled
+snapshot is `a4b55d84724ba15bbae7013d5a107b7671b7a409`/dirtytrue.
+The earlier strict targeted `core-session` build and request-results/VRAM-observer
+gates passed, followed by eight fresh 4K/16K requests with 512 actual sampled outputs.
 Trace-free chunk128/chunk1024/chunk128 comparisons establish a same-own-config
 PP/request improvement; separate observed runs provide sampled driver VRAM.
 The actual512 measurement slice is accepted and closed: all eight downloaded
 request logs and both observer joins passed local collection; the canonical
 journal's exact history and +9/-0 diff are verified. A completed diagnostic
-rocprofv3 run identifies the per-assignment GPU route-copy seam for the next gates.
+rocprofv3 run identified the per-assignment GPU route-copy seam. Current route-copy
+and CPU-linear/canonical-GPU-middle correctness slice is accepted: local actual
+hybrid collection and exact journal history/+1/-0 verification passed. Exclusive
+trace-off paired GPU-copy full-request job `1791073403122-769` is RUNNING;
+it has no accepted performance result yet. See the current-work and R5 sections.
 Full R4–R8, exact peak-VRAM qualification, MTP, serving and the
 400–600PP/30–40TG speed targets remain open; those targets are not met.
 Scope and acceptance are in [PLAN.md](PLAN.md); current evidence in [STATE.md](STATE.md).
@@ -1142,8 +1150,9 @@ Exclusive performance job `1791040898917-746` **completed with exit 0 after
 commit must not retag these artifacts. The strict targeted `core-session`
 build passed. New request-results and VRAM-observer CTest gates passed
 **2/2 in 5.18 s**, containing **49 and 23 tests** respectively. The previous
-full-build job742 remains closed at **32/32**; a full **33/33** run has not
-been established by the targeted build.
+full-build job742 passed **32/32**; this targeted measurement build did not
+establish a subsequent full-build result. Latest job765 independently passed
+**35/35**, with its separate source and correctness scope documented below.
 
 ### Inputs, ordering and completed-output accounting
 
@@ -1241,8 +1250,8 @@ The canonical `ROOT/results.jsonl` received **exactly nine rows, 21→30**:
 eight `r4_request` plus one `r4_prefill_ab`. All eight actual raws were downloaded;
 local collection and both VRAM joins passed, and the complete seeded512-ID arrays
 match across all four variants within each length. The downloaded local canonical
-journal is **2,150,750 bytes / 30 rows**. Its old21-row byte prefix and parsed
-history match Git HEAD exactly; numstat is **+9/-0**. Artifact/local-collector,
+journal at this historical closure was **2,150,750 bytes / 30 rows**. Its old21-row
+byte prefix and parsed history match Git HEAD exactly; numstat is **+9/-0**. Artifact/local-collector,
 journal, local49/23-test suites, readback/status/diff/log and whitespace acceptance
 gates are complete. **The actual512 measurement-only slice is accepted and
 closed; full R4 remains open.** The accepted slice contains docs, CMake,
@@ -1332,12 +1341,12 @@ not dominant in this diagnostic; head skipping is not the next major-win target.
 The source-accounted narrow seam is **per-assignment GPU Q8 gather/down scatter**:
 for1024 PP rows, `2 * (1024 * 10 * 48) = 983040` small D2D `hipMemcpyAsync`
 calls. This is an identified mechanism to remove, not an accepted speedup.
-The prepared candidate replaces it with **one 80*N-byte route DTO upload per
+The current candidate replaces it with **one 80*N-byte route DTO upload per
 layer** and indexed gather/scatter kernels per canonical microtile **≤8**,
 preserving all copied bits and the existing expert-contribution fold order.
-Parent-local R5 Session/CPU-expert/shadow/hybrid changes plus the new route
-kernels/fixture are experimental/default-off, **unmirrored and unqualified**;
-there is no actual HIP/model or speed result for them.
+Job765 has now passed both-GPU route-copy and full-model hybrid correctness
+gates. The CPU-linear scheduler remains opt-in (`cpu_workers=0` by default);
+route-copy/hybrid performance and a measured admission threshold remain open.
 
 Raw profile stdout/stderr are `ROOT/runs/r4-profile-b522-1024.jsonl` / `.err`;
 trace/stats CSVs remain under `ROOT/runs/r4-profile-b522-1024/`, with the nested
@@ -1345,9 +1354,184 @@ summary at `prefill_/core/runs/r4-profile-b522-1024-summary.txt.txt` relative to
 that directory. The full **554 MB trace remains remote and was not downloaded**;
 no model was copied for this profiling/documentation update.
 
-Next: strict target build, route-copy correctness on **both GPUs**, the current
-CPU-expert shadow/hybrid fixture and full-model gates, including full33/33;
-then trace-off paired full-request validation before qualifying a candidate.
-R6 speculative pure-math helpers are prepared, not trained-MTP integration.
+### Running trace-off GPU-copy full-request comparison
+
+Exclusive job **`1791073403122-769` is RUNNING**, not a completed result or a
+candidate speed winner. It uses the **already-built job765** candidate
+`/core/build/core-session`, source
+`a4b55d84724ba15bbae7013d5a107b7671b7a409`/dirtytrue, against saved
+`/core/build/core-session-baseline`, source
+`b522429c5933f493a5838317dc0bfc26ee4158aa`/dirtytrue. The series performs no
+rebuild or mirror of future attention edits; retain the saved baseline unchanged.
+
+For each **4K and16K** length, the sequence is **A1 baseline → B candidate →
+A2 baseline**, with **chunk1024 / slots112 on both binaries**, a fresh Session
+per request and no prefix reuse. Primary sampling is temperature1.0/top-p0.95/
+top-k20/seed12345 with ignoreEOS; each request requires **512 actual emitted
+outputs** for acceptance. Inputs remain the exact archived R0 4K IDs and their
+four concatenations for16K, not newly tokenized prompts. This compares route-copy
+binaries, separately from the historical chunk128/1024/128 comparison above.
+Raw stdout/stderr are `ROOT/runs/r4-indexed-a4-{4k,16k}-{a1,b,a2}.jsonl` / `.err`;
+series status and provenance are `ROOT/runs/r4-indexed-a4-series.log` and
+`ROOT/runs/r4-indexed-a4-fixture-source.json`.
+
+Next check the existing job769/process and logs; do not restart it blindly.
+After its accuracy/performance review, qualify the GPU attention-batch component
+on both GPUs and integrate the new B8 tile, then measure CPU workers/admission
+policy. Local attention edits made after765 and the three future Spec/R6 helper
+files are outside this accepted correctness closure; neither has actual
+HIP/model/performance qualification here, and the helpers are not trained-MTP
+integration.
 Exact peak VRAM, full R4/R5–R8, occupied128K, MTP2 and project speed targets
 remain open.
+
+## R5: qualified CPU-linear/canonical-GPU-middle correctness slice
+
+Remote **job765 completed exit0 / 34m46s**; GPUs were idle at that completion,
+before the current exclusive job769 series.
+The full strict **CXX20/HIP20 Release gfx906** build passed all warning gates and
+**CTest35/35 in 735.71s**. Both-GPU indexed route-copy and paired SiLU/Q8 fixtures,
+the full hybrid fixture, default reset/batch/logical-wide1024/default-capacity
+memory regressions and strict actual-log collectors all passed. Compiled source
+is the **snapshot `a4b55d84724ba15bbae7013d5a107b7671b7a409`, dirtytrue**,
+not a later documentation/closure commit.
+
+### Execution method and the rejected whole-CPU path
+
+The qualified method is **CPUlinear_GPUmiddle**: exact CPU gate/up projections,
+**canonical GPU SiLU×up and Q8_1 quantization**, then exact CPU down projections.
+Middle work is aggregated into **one batch per CPU-bearing layer**, with one
+column per CPU assignment. `SessionHybridMode::force_cpu` retains its API name
+but is labeled **CPU_LINEAR_GPU_middle**, not whole-CPU execution. Default
+`cpu_workers=0` retains the historical GPU-only path and allocations.
+
+The original host-libm whole-expert path remains a component oracle, **not a
+qualified Session path**. Historical job755 failed the frozen full-model gate
+at token100/offset1 (logits maxabs .223724, routed-down .018279). Job759's saved
+actual **layer46/expert297** witness had identical CPU/GPU gate/up projections,
+but 24 middle FP32 values differed at ULP scale. Q8 block11 kept identical codes
+and scale while its **raw-sum half bits differed: 13734 versus 13733**. Primitive
+bounds passed, yet the propagated full-model gate failed. Using the canonical
+GPU nonlinear producer fixes this boundary without changing the quantizer ABI,
+GPU math, weights, precision, epsilon or gates; **no tolerance waiver** was used.
+
+The original bounded orchestration uses a persistent **1..15-worker CPU pool**,
+fixed capacity **30 jobs**, and two stages (`gate_up`, `down`). Gate/up temporarily
+uses the existing pinned down-output frame; it is reused for down only after
+**`middle_ready` completes**, protecting its H2D source. Four dedicated GPU
+middle buffers and a dedicated flag on `copy_stream` avoid racing the compute
+stream's shared Q8/scratch/error state. Only CPU-dispatched rank contributions
+are uploaded; `cpu_returned` is recorded **before** the compute-stream wait,
+followed by original-rank fold and shared-expert addition. Captured cache readers,
+pending-ID publication, admission and error/reset lifetimes are correctness
+qualified. The submitted-admission failure is **synthetic**, not proof that CPU
+or GPU work was still in flight at the throw or that useful overlap improves speed.
+
+### Actual fixture evidence and observation limits
+
+`core-session-hybrid-test MODEL` protocol1 uses **three sequential Session owners,
+one simultaneous**, with max batches `[3,1,4]` and workers `[1,1,4]`. A retained
+GPU-N1 reference covers BOS248044,100..130 plus eight continuations131..138.
+The **11 phases / 326 compared windows** include hybrid-off N1/2/3,
+force-CPU-linear/GPU-middle N1/2/3, mixed slots1, forced GPU misses, warm all-hit,
+synthetic failure/reset replay, and N4 GPU fallback followed by short hybrid resume.
+
+| Compared output | Rows | Values | Violations / maxabs / max-bound-ratio / diagnostic bit differences |
+| --- | ---: | ---: | --- |
+| Full vocabulary logits | 528 | 131,112,960 | All zero |
+| All ten unweighted routed-down contributions at all48 layers | 508 | 624,230,400 | All zero |
+| FFN output including shared expert at all48 layers | 508 | 62,423,040 | All zero |
+
+Every compared operand is finite. Frozen gates remain **`.02+.002*abs(ref)`**
+for logits and **`.002+.002*abs(ref)`** for intermediates. N4's20 rows have no
+intermediate probe. Bit identity is a measured diagnostic, not a universal
+CPU/GPU reduction or generation requirement. This is same-runtime GPU-N1
+self-parity, not an independent HF oracle or a PP/TG benchmark.
+
+Accepted compared-window deltas total **106,984 gate/up jobs and 106,984 down
+jobs**, **137,581 GPU middle columns / 10,416 batches**, **704,414,720 H2D bytes**
+for paired gate/up and **99,058,320 D2H bytes** for middle Q8. Reference execution
+and the failed call are excluded. These are projection/transfer counters,
+not request time or performance evidence.
+
+The collector's **175 atomic-rejection checks** are **source-derived required
+driver checks**, not serialized per-rejection observations. Protocol1 does not
+serialize before/after historical stats, route-stats/physical-routing snapshots,
+original input-probe payloads, steady per-category owned ledgers, constructor
+payload reads or complete owned-buffer release. Do not reconstruct these as
+additional measured fields. The model filename is a declared variant alias;
+the actual model path is not emitted by this protocol.
+
+Opt-in middle storage is **four independent buffers per GPU / 252,004 bytes**:
+paired gate/up 153600, middleFP32 76800, middleQ8 21600, flag 4. These enter workspace
+and the existing Buffer ledger; pinned middleQ8 capacity is **43,200 bytes total**.
+`host_input_probe_bytes=855648` is **included** in total
+`host_probe_bytes=33295968`, not added again. Reported capacities/metadata exclude
+allocator slack, worker stacks and full RSS. Individual added-buffer capacities
+are observable, but the hybrid protocol does not measure every old owned buffer's
+release across all owners.
+
+Default GPU-only regressions also passed: logical-wide1024 retained N1 reference
+at **capacity1056 / slots1 / max1024**, with **786,677,760 comparisons and zero
+error**. This is not a new4K/16K run. Default memory **capacity131072 / slots112**
+passed both GPUs: owned **9,515,698,008 / 10,007,105,368 bytes**, free
+**7,166,787,584 / 6,686,539,776 bytes**, and after destruction free
+**16,968,876,032 bytes on each GPU**. This separate capacity/release fixture
+does not establish occupied128K history or hybrid-protocol all-owner release.
+
+### Raw evidence, canonical journal and fresh reproduction
+
+With `ROOT=/home/radneon/gfx906-core`, actual logs are:
+
+- `ROOT/runs/r5-middle-c-build.log`
+- `ROOT/runs/r5-silu-pairs-c.jsonl`
+- `ROOT/runs/r5-route-copy-c.jsonl`
+- `ROOT/runs/r5-session-hybrid-middle-c.jsonl` (**348 records / 272,019 bytes**)
+- `ROOT/runs/r5-middle-default-{reset,batch,wide,memory}-c.jsonl`
+
+The canonical **ROOT/results.jsonl has exactly one new append, 30→31**, kind
+`r5_hybrid`, passed=true, retaining snapshot a4b55d8/dirtytrue and the previous
+30-record byte prefix/parsed history. **Never append this accepted raw again.**
+Parent local `collect(downloaded_actual_r5-session-hybrid-middle-c)` **passed**
+on the **272,019-byte** raw, with all compared metrics zero. The downloaded
+canonical journal is **31 records / 2,167,805 bytes**; its exact old Git HEAD
+30-record byte prefix and parsed history are preserved, and **+1/-0 is verified**.
+The bounded correctness slice is **accepted**. Its closure scope is Session/CPU/
+ops, relevant fixtures, CMake, collector, these docs and journal; the three
+post765 attention files and three future Spec files are excluded. Correctness
+artifact source identities remain a4b55d8/dirtytrue, not a future closure hash.
+
+For a **fresh** fixture on the GPU host, first use the explicit
+`sh /core/src/tools/build.sh` build command above (script source mode100644),
+with the source actually synchronized for that new run. Then:
+
+```sh
+set -eu
+set -C
+ROOT=/home/radneon/gfx906-core
+docker run --rm --name core-hybrid-middle-repro \
+  --device /dev/kfd --device /dev/dri --group-add video --ipc host \
+  --security-opt seccomp=unconfined \
+  --entrypoint /core/build/core-session-hybrid-test \
+  -v /home/radneon/gfx906-core:/core \
+  -v /home/radneon/models-nvme:/models:ro \
+  llama.cpp-gfx906:cmake-4.4.3 /models/qwen38-keep1-Q4_0.gguf \
+  > "$ROOT/runs/NEW-session-hybrid-middle.jsonl" \
+  2> "$ROOT/runs/NEW-session-hybrid-middle.err"
+# Only after executable exit0; append ONE validated fresh record to ROOT only.
+python3 -B "$ROOT/src/tools/record_hybrid.py" \
+  --raw "$ROOT/runs/NEW-session-hybrid-middle.jsonl" \
+  --results "$ROOT/results.jsonl"
+```
+
+This accepted correctness slice does not close fullR5, a GPU-copy/hybrid
+performance win, a measured dispatch threshold or MTP. The exclusive trace-off
+comparison **job769 is RUNNING**, using saved baselineb522 versus already-built
+job765; its protocol and raw paths are above. Check that existing job first.
+After accuracy/performance review, qualify attention-batch on both GPUs and
+integrate the new B8 tile, then measure CPU workers/admission policy.
+Post765 local `src/hip/attention.cuh`, `src/hip/attention.hip` and
+`tests/attention_batch_test.hip` changes and three future Spec/R6 helper files are
+excluded from this closure, with no actual HIP/model/performance claim here.
+Full R4/R5 performance, occupied128K, MTP2 and the **400–600PP / 30–40TG** targets
+remain open and unmet.

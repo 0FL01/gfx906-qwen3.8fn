@@ -38,6 +38,21 @@
 // borrowed-range checks and sticky-error sanitization. No extra forward norms;
 // sigmoid Q gate is applied after inverse Hadamard, route weights after down.
 //
+// Indexed MoE copy donor seams checked mx -> furnace -> reinstinct (RECON16):
+// ADAPT mx dcd685463d597d31f5ca759d32c94592a2740fa4 getrows.cu::
+// k_get_rows_float_vec/get_rows_cuda_float: indexed rows and coalesced 16B
+// traffic, with 4B fallback. Furnace 905021dbad71c5056ef51f9fd45d545403fc989c
+// getrows.cu has the same vector primitive and a short-row variant, not a
+// bounded canonical Q8 route copy. Checked reinstinct
+// 0b79e326351d90d4554a1c18df92da5d0ab692e8 kernels/moe_expert_sort.cpp::
+// moe_gather_xq/moe_scatter_rows: KEEP separate unweighted copy semantics;
+// its 40B BlockQ8/perm ABI is NOT imported. WRITE OURS bounded token/rank DTO,
+// capacity checks and kernels for canonical 36B Q8_1 [N][80] and unweighted
+// FP32 [N][2560], N1/2/3..128. Builtin constant-size byte copies replace donor
+// int4 pointer punning; no dequantization, arithmetic, packer or runtime import.
+// RouteGroups stays CPU-sorted; caller uploads metadata once/full layer and
+// owns all streams/events/cache-slot dependencies. Rank fold remains unchanged.
+//
 // MIT License
 //
 // Copyright (c) 2023-2026 The ggml authors
@@ -107,6 +122,34 @@ bool valid_ranges(const std::array<Range, Count>& buffers) noexcept {
 
 bool valid_tokens(int tokens) noexcept {
     return tokens >= 1 && tokens <= session_ops_max_tokens;
+}
+
+constexpr int q8_row_bytes = moe_copy_q8_blocks * sizeof(Q8_1);
+constexpr int down_row_bytes = moe_copy_width * sizeof(float);
+static_assert(q8_row_bytes == 2880 && down_row_bytes == 10240);
+static_assert(q8_row_bytes % 16 == 0 && down_row_bytes % 16 == 0);
+static_assert(moe_copy_max_input_tokens * moe_copy_ranks * moe_copy_width < std::numeric_limits<int>::max());
+
+template<class T>
+Range copy_range(MoeCopyView<T> view, std::size_t required, bool writable = false) noexcept {
+    // Validate the WHOLE view even when only a late-offset slice is accessed.
+    auto r = range(view.data, view.capacity, writable);
+    if (required == 0 || view.capacity < required ||
+            reinterpret_cast<std::uintptr_t>(view.data) % 4 != 0) r.valid = false;
+    return r;
+}
+
+bool valid_copy_slice(int input_tokens, int metadata_entries, int route_offset,
+                      int count, int column_capacity) noexcept {
+    // Subtraction only after bounding count; offset+count can never overflow.
+    return input_tokens >= 1 && input_tokens <= moe_copy_max_input_tokens &&
+        metadata_entries >= 1 && metadata_entries <= input_tokens * moe_copy_ranks &&
+        count >= 1 && count <= session_ops_max_tokens && column_capacity >= count &&
+        count <= metadata_entries && route_offset >= 0 && route_offset <= metadata_entries - count;
+}
+
+bool aligned16(const void* a, const void* b) noexcept {
+    return (reinterpret_cast<std::uintptr_t>(a) | reinterpret_cast<std::uintptr_t>(b)) % 16 == 0;
 }
 
 unsigned ceil_div(int count, int divisor) noexcept {
@@ -217,6 +260,23 @@ __global__ void silu_up(const float* gate, const float* up, int count,
     report(flags, error);
 }
 
+// Address-only adaptation for the aggregate CPU projection handoff. Keep the
+// original kernel above untouched: this exact small expression is checked
+// against it (including quantized RAW-sum bytes) in the paired-middle fixture.
+__global__ void silu_up_pairs(const float* paired, int count, float* output, int* error) {
+    const unsigned i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i >= static_cast<unsigned>(count)) return;
+    constexpr unsigned width = silu_pairs_width;
+    const unsigned base = (i / width) * (2 * width) + i % width;
+    int flags = 0;
+    const float g = operand(paired[base], flags);
+    const float u = operand(paired[base + width], flags);
+    const float activated = arithmetic(g / (1.0f + expf(-g)), flags);
+    const float value = arithmetic(activated * u, flags);
+    output[i] = flags == 0 ? value : 0.0f;
+    report(flags, error);
+}
+
 __global__ void add(const float* a, const float* b, int count, float* output, int* error) {
     const unsigned i = blockIdx.x * blockDim.x + threadIdx.x;
     if (i >= static_cast<unsigned>(count)) return;
@@ -260,6 +320,55 @@ __global__ void routed_fold(const float* contributions, const float* weights,
     }
     output[i] = flags == 0 ? value : 0.0f;
     report(flags, error);
+}
+
+// Object representations accessed through unsigned char/builtin memcpy only:
+// no Q8/float -> uint32_t/int4 lvalue alias, and no floating-point loads/stores.
+template<int Bytes>
+__device__ __forceinline__ void opaque_copy(unsigned char* destination, const unsigned char* source) {
+    static_assert(Bytes == 4 || Bytes == 16);
+    __builtin_memcpy(__builtin_assume_aligned(destination, Bytes),
+                     __builtin_assume_aligned(source, Bytes), Bytes);
+}
+
+template<int Bytes>
+__global__ void moe_gather_q8(const unsigned char* input, int input_tokens,
+                             const MoeRouteIndex* routes, int route_offset, int count,
+                             unsigned char* gathered, int* error) {
+    const unsigned column = blockIdx.y;
+    const unsigned unit = blockIdx.x * blockDim.x + threadIdx.x;
+    if (column >= static_cast<unsigned>(count) || unit >= q8_row_bytes / Bytes) return;
+    const auto route = routes[static_cast<unsigned>(route_offset) + column];
+    const bool valid = route.token >= 0 && route.token < input_tokens &&
+        route.rank >= 0 && route.rank < moe_copy_ranks;
+    // Destination depends only on the already checked physical column.
+    auto* destination = gathered + std::size_t(column) * q8_row_bytes + unit * Bytes;
+    if (!valid) {
+        if (unit == 0) report(session_ops_error_invalid, error);
+        __builtin_memset(__builtin_assume_aligned(destination, Bytes), 0, Bytes);
+        return;
+    }
+    // Form the indexed source ONLY after checking both signed indices.
+    const auto* source = input + std::size_t(route.token) * q8_row_bytes + unit * Bytes;
+    opaque_copy<Bytes>(destination, source);
+}
+
+template<int Bytes>
+__global__ void moe_scatter(const unsigned char* down, int input_tokens,
+                           const MoeRouteIndex* routes, int route_offset, int count,
+                           unsigned char* contributions, int* error) {
+    const unsigned column = blockIdx.y;
+    const unsigned unit = blockIdx.x * blockDim.x + threadIdx.x;
+    if (column >= static_cast<unsigned>(count) || unit >= down_row_bytes / Bytes) return;
+    const auto route = routes[static_cast<unsigned>(route_offset) + column];
+    if (route.token < 0 || route.token >= input_tokens || route.rank < 0 || route.rank >= moe_copy_ranks) {
+        if (unit == 0) report(session_ops_error_invalid, error);
+        return; // No down read, indexed address formation or payload write.
+    }
+    const auto row = std::size_t(route.token) * moe_copy_ranks + std::size_t(route.rank);
+    auto* destination = contributions + row * down_row_bytes + unit * Bytes;
+    const auto* source = down + std::size_t(column) * down_row_bytes + unit * Bytes;
+    opaque_copy<Bytes>(destination, source);
 }
 
 template<bool RowBroadcast>
@@ -380,6 +489,16 @@ hipError_t launch_silu_up(const float* gate, const float* up, int count, float* 
     return hipGetLastError();
 }
 
+hipError_t launch_silu_up_pairs(const float* paired, int columns, float* output,
+        int* error, hipStream_t stream) noexcept {
+    if (columns < 1 || columns > silu_pairs_max_columns) return hipErrorInvalidValue;
+    const int count = columns * silu_pairs_width;
+    if (!valid_ranges(std::array{range(paired, count * 2), range(output, count, true),
+            range(error, 1, true)})) return hipErrorInvalidValue;
+    silu_up_pairs<<<ceil_div(count, threads), threads, 0, stream>>>(paired, count, output, error);
+    return hipGetLastError();
+}
+
 hipError_t launch_add(const float* a, const float* b, int count, float* output,
         int* error, hipStream_t stream) noexcept {
     if (count <= 0 || !valid_ranges(std::array{range(a, count), range(b, count),
@@ -413,6 +532,56 @@ hipError_t launch_routed_fold(const float* contributions, const float* weights,
     if (!valid_ranges(std::array{range(contributions, count * 10), range(weights, tokens * 10),
             range(output, count, true), range(error, 1, true)})) return hipErrorInvalidValue;
     routed_fold<<<ceil_div(count, threads), threads, 0, stream>>>(contributions, weights, count, output, error);
+    return hipGetLastError();
+}
+
+hipError_t launch_moe_gather_q8(MoeCopyView<const Q8_1> input, int input_tokens,
+        MoeCopyView<const MoeRouteIndex> routes, int metadata_entries, int route_offset,
+        int count, int blocks_per_token, MoeCopyView<Q8_1> gathered, int column_capacity,
+        int* error, hipStream_t stream) noexcept {
+    if (!valid_copy_slice(input_tokens, metadata_entries, route_offset, count, column_capacity) ||
+            blocks_per_token != moe_copy_q8_blocks ||
+            column_capacity > std::numeric_limits<int>::max() / moe_copy_q8_blocks)
+        return hipErrorInvalidValue;
+    if (!valid_ranges(std::array{
+            copy_range(input, std::size_t(input_tokens) * moe_copy_q8_blocks),
+            copy_range(routes, metadata_entries),
+            copy_range(gathered, std::size_t(column_capacity) * moe_copy_q8_blocks, true),
+            range(error, 1, true)})) return hipErrorInvalidValue;
+    const auto* source = reinterpret_cast<const unsigned char*>(input.data);
+    auto* destination = reinterpret_cast<unsigned char*>(gathered.data);
+    if (aligned16(source, destination)) {
+        moe_gather_q8<16><<<dim3(ceil_div(q8_row_bytes / 16, threads), count), threads, 0, stream>>>(
+                source, input_tokens, routes.data, route_offset, count, destination, error);
+    } else {
+        moe_gather_q8<4><<<dim3(ceil_div(q8_row_bytes / 4, threads), count), threads, 0, stream>>>(
+                source, input_tokens, routes.data, route_offset, count, destination, error);
+    }
+    return hipGetLastError();
+}
+
+hipError_t launch_moe_scatter(MoeCopyView<const float> down, int input_tokens,
+        MoeCopyView<const MoeRouteIndex> routes, int metadata_entries, int route_offset,
+        int count, int width, int ranks, MoeCopyView<float> contributions,
+        int column_capacity, int* error, hipStream_t stream) noexcept {
+    if (!valid_copy_slice(input_tokens, metadata_entries, route_offset, count, column_capacity) ||
+            width != moe_copy_width || ranks != moe_copy_ranks ||
+            column_capacity > std::numeric_limits<int>::max() / moe_copy_width)
+        return hipErrorInvalidValue;
+    if (!valid_ranges(std::array{
+            copy_range(down, std::size_t(column_capacity) * moe_copy_width),
+            copy_range(routes, metadata_entries),
+            copy_range(contributions, std::size_t(input_tokens) * moe_copy_ranks * moe_copy_width, true),
+            range(error, 1, true)})) return hipErrorInvalidValue;
+    const auto* source = reinterpret_cast<const unsigned char*>(down.data);
+    auto* destination = reinterpret_cast<unsigned char*>(contributions.data);
+    if (aligned16(source, destination)) {
+        moe_scatter<16><<<dim3(ceil_div(down_row_bytes / 16, threads), count), threads, 0, stream>>>(
+                source, input_tokens, routes.data, route_offset, count, destination, error);
+    } else {
+        moe_scatter<4><<<dim3(ceil_div(down_row_bytes / 4, threads), count), threads, 0, stream>>>(
+                source, input_tokens, routes.data, route_offset, count, destination, error);
+    }
     return hipGetLastError();
 }
 

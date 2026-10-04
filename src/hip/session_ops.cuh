@@ -1,6 +1,10 @@
 #pragma once
 
+#include "quant.hpp"
 #include <hip/hip_runtime_api.h>
+#include <cstddef>
+#include <cstdint>
+#include <type_traits>
 
 namespace qwen {
 
@@ -80,6 +84,15 @@ inline constexpr int session_ops_error_arithmetic = 2;
 [[nodiscard]] hipError_t launch_silu_up(const float* gate, const float* up, int count,
         float* output, int* error, hipStream_t stream) noexcept;
 
+inline constexpr int silu_pairs_width = 640, silu_pairs_max_columns = 30;
+// Opt-in CPUlinear_GPUmiddle handoff: paired [columns][2][640] (gate then up),
+// output [columns][640], columns=1..30. Implied exact capacities 1280*columns,
+// 640*columns, error=1. Same numeric expression/rounding/sanitization as the
+// UNCHANGED launch_silu_up; only addressing differs. All source/output/error
+// ranges validated before ANY HIP call; no alias, allocation, transfer or sync.
+[[nodiscard]] hipError_t launch_silu_up_pairs(const float* paired, int columns,
+        float* output, int* error, hipStream_t stream) noexcept;
+
 // Capacities a=b=output=count. output=a+b; out-of-place even for exact alias.
 [[nodiscard]] hipError_t launch_add(const float* a, const float* b, int count,
         float* output, int* error, hipStream_t stream) noexcept;
@@ -99,6 +112,78 @@ inline constexpr int session_ops_error_arithmetic = 2;
 // rounded separately exactly as ten ordered scaled-add launches on finite data.
 [[nodiscard]] hipError_t launch_routed_fold(const float* contributions, const float* weights,
         int tokens, float* output, int* error, hipStream_t stream) noexcept;
+
+// Indexed MoE copies have a separate BYTE-ONLY contract from the numeric ops.
+inline constexpr int moe_copy_max_input_tokens = 1024;
+inline constexpr int moe_copy_width = 2560;
+inline constexpr int moe_copy_ranks = 10;
+inline constexpr int moe_copy_q8_blocks = 80;
+
+// Explicit upload DTO, NOT a reinterpretation of RouteAssignment (which also
+// has expert and weight). Convert each sorted assignment with {a.token,a.rank},
+// retaining its position. Upload the whole sorted array ONCE per layer outside
+// these helpers; reuse it for all microtiles. No weight is read/applied here.
+struct MoeRouteIndex {
+    std::int32_t token;
+    std::int32_t rank;
+};
+static_assert(std::is_standard_layout_v<MoeRouteIndex> && std::is_trivially_copyable_v<MoeRouteIndex>);
+static_assert(sizeof(std::int32_t) == 4 && sizeof(MoeRouteIndex) == 8 && alignof(MoeRouteIndex) == 4);
+static_assert(offsetof(MoeRouteIndex, token) == 0 && offsetof(MoeRouteIndex, rank) == 4);
+static_assert(std::is_standard_layout_v<Q8_1> && std::is_trivially_copyable_v<Q8_1>);
+static_assert(sizeof(Q8_1) == 36 && offsetof(Q8_1, d) == 0 && offsetof(Q8_1, s) == 2 && offsetof(Q8_1, qs) == 4);
+
+// A borrowed WHOLE contiguous buffer. capacity is in T elements (Q8 blocks,
+// route DTOs, or float elements), not bytes; extra capacity is allowed and is
+// included in address/overlap checks, not touched. No ownership or host access.
+template<class T> struct MoeCopyView {
+    T* data = nullptr;
+    std::size_t capacity = 0;
+};
+
+// Both copies: input_tokens=1..1024 is the ACTUAL valid token count, not an
+// allocation capacity; metadata_entries=1..input_tokens*10 is the valid prefix
+// of routes. route_offset>=0, count=1..128, offset+count<=metadata_entries.
+// column_capacity>=count describes the whole scratch matrix; its element count
+// must fit INT_MAX. All dimensions are explicit and checked before submission.
+// Every view must cover its declared shape. Whole declared capacities must fit
+// PTRDIFF_MAX and nonwrapping addresses; all pointers need 4-byte alignment,
+// including Q8_1 (whose native alignof is only 2). Aligned-16 payload pairs use
+// constant 16-byte copies; otherwise constant 4-byte copies. 2880/10240-byte
+// rows preserve either alignment. No strict-aliasing type punning.
+// Writable whole views and the single int error cannot overlap any read view
+// or one another. Read-only views may overlap. Invalid host calls return
+// hipErrorInvalidValue before ANY HIP call, without flag/data mutation.
+// Current device/stream, actual allocations/residency, slot lifetimes and event
+// dependencies remain caller-owned. No allocations, transfers, queries or sync;
+// one kernel per helper, then hipGetLastError(), not completion.
+//
+// BEFORE payload access each GPU entry checks BOTH token and rank against the
+// actual input_tokens and top10. An invalid entry atomically ORs sticky bit1;
+// gather zeros ONLY its destination column, scatter skips ONLY its write.
+// Valid neighbors still copy even if the flag was already set. No flag clear.
+// Accepted (token,rank) pairs must be unique, as guaranteed by RouteGroups;
+// scatter has no payload atomics. Neither helper inspects Q8 half headers,
+// codes/raw sums, float NaNs or weights. ALL payload bits are opaque and are
+// preserved, including stored half d=0 with nonzero codes/raw sum. Numeric
+// validation belongs to upstream producers/consumers, not these copy helpers.
+
+// input [input_tokens][80], gathered [column_capacity][80]; blocks_per_token
+// must equal 80. gathered[c] = input[routes[route_offset+c].token], c<count.
+// No conversion/requantization or padding; other gathered columns untouched.
+[[nodiscard]] hipError_t launch_moe_gather_q8(MoeCopyView<const Q8_1> input,
+        int input_tokens, MoeCopyView<const MoeRouteIndex> routes, int metadata_entries,
+        int route_offset, int count, int blocks_per_token, MoeCopyView<Q8_1> gathered,
+        int column_capacity, int* error, hipStream_t stream) noexcept;
+
+// down [column_capacity][2560], contributions [input_tokens][10][2560]; width
+// must equal 2560 and ranks equal 10. Copy UNWEIGHTED down[c] to
+// contributions[(token*10+rank)] for routes[route_offset+c], c<count. No fold,
+// scaling, FP arithmetic or float interpretation; other rows untouched.
+[[nodiscard]] hipError_t launch_moe_scatter(MoeCopyView<const float> down,
+        int input_tokens, MoeCopyView<const MoeRouteIndex> routes, int metadata_entries,
+        int route_offset, int count, int width, int ranks, MoeCopyView<float> contributions,
+        int column_capacity, int* error, hipStream_t stream) noexcept;
 
 // Same separately rounded multiply/add, with one DEVICE raw gate scalar.
 // Capacities input=accumulator=count, raw_gate=1. Computes the direct HIP

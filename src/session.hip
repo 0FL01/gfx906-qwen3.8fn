@@ -1,4 +1,5 @@
 #include "session.hpp"
+#include "cpu_expert.hpp"
 #include "dense.hpp"
 #include "ple.hpp"
 #include "routes.hpp"
@@ -15,6 +16,7 @@
 
 #include <algorithm>
 #include <array>
+#include <bit>
 #include <chrono>
 #include <cmath>
 #include <cstdio>
@@ -28,14 +30,21 @@
 #include <stdexcept>
 #include <utility>
 #include <vector>
+#if defined(__linux__)
+#include <sched.h>
+#endif
 
 namespace qwen {
 namespace {
 constexpr int H = 2560, W = 10240, V = 248320;
 constexpr int microtile_tokens = 128, expert_band = 16;
 constexpr std::size_t expert_stage_bytes = 45875200; // 16 canonical Q4_1-down triplets
+constexpr std::size_t short_stage_bytes = expert_stage_bytes / expert_band;
 static_assert(microtile_tokens == blocks_device_max_tokens && microtile_tokens == gdn_device_max_tokens &&
               microtile_tokens == session_ops_max_tokens && microtile_tokens == mmq_device_max_columns);
+static_assert(H == moe_copy_width && H / 32 == moe_copy_q8_blocks && moe_copy_ranks == 10 &&
+              sizeof(RouteAssignment) == 16 && sizeof(MoeRouteIndex) == 8);
+static_assert(silu_pairs_width == 640 && silu_pairs_max_columns == cpu_expert_max_jobs);
 std::size_t checked_size(std::size_t count, std::size_t width) {
     if (width && count > static_cast<std::size_t>(std::numeric_limits<std::ptrdiff_t>::max()) / width)
         throw std::overflow_error("Session allocation size");
@@ -48,10 +57,12 @@ template<class F> void tiles(int tokens, F&& f) {
 SessionConfig checked_config(SessionConfig config) {
     if (config.capacity < 4 || config.capacity > 131072 || config.capacity % 4 ||
         config.expert_slots < 1 || config.expert_slots > 512 ||
-        config.max_batch_tokens < 1 || config.max_batch_tokens > 1024)
+        config.max_batch_tokens < 1 || config.max_batch_tokens > 1024 ||
+        config.cpu_workers < 0 || config.cpu_workers > static_cast<int>(cpu_expert_max_workers))
         throw std::invalid_argument("Session capacity/slots/max_batch_tokens");
     if (config.trace_first_token < 0 || config.trace_first_token > config.capacity)
         throw std::invalid_argument("Session trace_first_token");
+    if (config.hybrid_probe && !config.cpu_workers) throw std::invalid_argument("Session hybrid probe resources");
     return config;
 }
 void hip(hipError_t e) {
@@ -63,6 +74,28 @@ void blas(rocblas_status e) {
 void cleanup(hipError_t e) noexcept {
     if (e != hipSuccess) { std::fprintf(stderr, "HIP cleanup: %s\n", hipGetErrorString(e)); std::abort(); }
 }
+void cpu_ok(CpuExpertStatus status) {
+    if (status != CpuExpertStatus::ok)
+        throw std::runtime_error("Session CPU expert: " + std::string(cpu_expert_status_name(status)));
+}
+struct CoordinatorAffinity {
+#if defined(__linux__)
+    cpu_set_t previous{};
+    bool active = false;
+    explicit CoordinatorAffinity(int cpu) {
+        if (cpu < 0) return;
+        if (sched_getaffinity(0, sizeof(previous), &previous)) throw std::runtime_error("Session coordinator affinity read");
+        cpu_set_t mask; CPU_ZERO(&mask); CPU_SET(cpu, &mask);
+        if (sched_setaffinity(0, sizeof(mask), &mask)) throw std::runtime_error("Session coordinator pin");
+        active = true;
+    }
+    ~CoordinatorAffinity() {
+        if (active && sched_setaffinity(0, sizeof(previous), &previous)) std::abort();
+    }
+#else
+    explicit CoordinatorAffinity(int) {}
+#endif
+};
 
 class Buffer {
 public:
@@ -111,9 +144,10 @@ struct ExpertStage {
     std::byte* host = nullptr;
     hipEvent_t copy_ready = nullptr, consumer_done = nullptr;
     bool used = false;
-    explicit ExpertStage(int id) : device(id), data(expert_stage_bytes) {
+    explicit ExpertStage(int id, std::size_t bytes = expert_stage_bytes) : device(id), data(bytes) {
         try {
-            hip(hipHostMalloc(&host, expert_stage_bytes, hipHostMallocDefault));
+            hip(hipHostMalloc(&host, bytes, hipHostMallocDefault));
+            if (bytes == short_stage_bytes) std::memset(host, 0, bytes); // New short frames first-touch once.
             hip(hipEventCreateWithFlags(&copy_ready, hipEventDisableTiming));
             hip(hipEventCreateWithFlags(&consumer_done, hipEventDisableTiming));
         } catch (...) { release(); throw; }
@@ -127,6 +161,98 @@ struct ExpertStage {
     }
 };
 
+// WRITE OURS bounded CPUlinear_GPUmiddle orchestration. KEEP mx
+// dcd685463d597d31f5ca759d32c94592a2740fa4 common.cuh/vecdotq.cuh canonical/DPP,
+// furnace 905021dbad71c5056ef51f9fd45d545403fc989c ggml-cuda.cu event pattern,
+// reinstinct 0b79e326351d90d4554a1c18df92da5d0ab692e8 moe_expert_sort.cpp and
+// src/runtime/pipeline.rs grouped gather/scatter/lifetime pattern. ADAPT the
+// existing CpuExpert/Pool projections; canonical GPU SiLU/quantization between
+// CPU phases preserves the nonlinear producer contract (witness759). Paired
+// middle addressing alone is new; whole CPU host-libm is only a component oracle.
+struct Device;
+struct HybridInputProbeFrame {
+    std::vector<Q8_1> original;
+    std::vector<std::int32_t> ids;
+    std::vector<float> weights;
+    std::vector<std::uint8_t> available, cpu;
+    void allocate() {
+        original.resize(3 * 48 * (H / 32)); ids.resize(3 * 48 * 10);
+        weights.resize(3 * 48 * 10); available.resize(3 * 48); cpu.resize(3 * 48 * 10);
+    }
+    void begin(int tokens) {
+        std::fill_n(available.data(), tokens * 48, std::uint8_t{0});
+        std::fill_n(cpu.data(), tokens * 48 * 10, std::uint8_t{0});
+    }
+    void capture(const Device&, int layer, int tokens, bool hybrid);
+    std::uint64_t capacity_bytes() const {
+        return original.capacity() * sizeof(Q8_1) + ids.capacity() * sizeof(std::int32_t) +
+            weights.capacity() * sizeof(float) + available.capacity() + cpu.capacity();
+    }
+};
+struct HybridDevice {
+    enum class Work { hit, cpu, gpu_miss };
+    struct Plan {
+        int expert = -1;
+        const std::byte* hit = nullptr; // Immutable physical snapshot, never a map lookup later.
+        Work work = Work::cpu;
+        std::size_t output_column = 0, ticket = 0;
+        CpuExpertJob job{};
+    };
+    int device;
+    Q8_1* input = nullptr;
+    Q8_1* middle = nullptr;
+    float* output = nullptr;
+    int* error = nullptr;
+    Buffer gate_up, middle_float, middle_q8, middle_error;
+    hipEvent_t input_copied = nullptr, middle_ready = nullptr, cpu_returned = nullptr;
+    std::array<Plan, cpu_expert_max_jobs> plans{};
+    // Fixed pageable diagnostic bytes, independent of the pinned dispatch input.
+    // No transfer/read in production or on an all-hit layer, even with probe on.
+    std::array<Q8_1, 3 * (H / 32)> original_probe{};
+    // Only device0 allocates these payloads, only with constructor hybrid_probe.
+    // Keeping metadata in the already-opt-in owner preserves cpu_workers=0
+    // Session::Impl size and ALL historical allocations (including its heap size).
+    std::array<HybridInputProbeFrame, 2> probe_inputs;
+    std::array<std::uint64_t, 6> projection_statistics{}; // Published tail on device0 only.
+    int count = 0, cpu_columns = 0;
+    bool cpu_active = false;
+    static constexpr std::size_t input_bytes = 3 * (H / 32) * sizeof(Q8_1);
+    static constexpr std::size_t output_bytes = 3 * 10 * H * sizeof(float);
+    static constexpr std::size_t gate_up_bytes = 30 * 2 * 640 * sizeof(float);
+    static constexpr std::size_t middle_float_bytes = 30 * 640 * sizeof(float);
+    static constexpr std::size_t middle_bytes = 30 * 20 * sizeof(Q8_1);
+    explicit HybridDevice(int id) : device(id) {
+        try {
+            gate_up = Buffer(gate_up_bytes); middle_float = Buffer(middle_float_bytes);
+            middle_q8 = Buffer(middle_bytes); middle_error = Buffer(sizeof(int));
+            hip(hipHostMalloc(&input, input_bytes, hipHostMallocDefault));
+            hip(hipHostMalloc(&middle, middle_bytes, hipHostMallocDefault));
+            hip(hipHostMalloc(&output, output_bytes, hipHostMallocDefault));
+            hip(hipHostMalloc(&error, sizeof(int), hipHostMallocDefault));
+            hip(hipEventCreateWithFlags(&input_copied, hipEventDisableTiming));
+            hip(hipEventCreateWithFlags(&middle_ready, hipEventDisableTiming));
+            hip(hipEventCreateWithFlags(&cpu_returned, hipEventDisableTiming));
+            std::memset(input, 0, input_bytes); std::memset(middle, 0, middle_bytes);
+            std::memset(output, 0, output_bytes); *error = 0;
+        } catch (...) { release(); throw; }
+    }
+    ~HybridDevice() { release(); }
+    void release() noexcept {
+        cleanup(hipSetDevice(device));
+        if (input_copied) { cleanup(hipEventDestroy(input_copied)); input_copied = nullptr; }
+        if (middle_ready) { cleanup(hipEventDestroy(middle_ready)); middle_ready = nullptr; }
+        if (cpu_returned) { cleanup(hipEventDestroy(cpu_returned)); cpu_returned = nullptr; }
+        if (error) { cleanup(hipHostFree(error)); error = nullptr; }
+        if (output) { cleanup(hipHostFree(output)); output = nullptr; }
+        if (input) { cleanup(hipHostFree(input)); input = nullptr; }
+        if (middle) { cleanup(hipHostFree(middle)); middle = nullptr; }
+    }
+};
+static_assert(HybridDevice::input_bytes == 8640 && HybridDevice::output_bytes == 307200);
+static_assert(HybridDevice::gate_up_bytes == 153600 && HybridDevice::middle_float_bytes == 76800 &&
+              HybridDevice::middle_bytes == 21600 &&
+              HybridDevice::gate_up_bytes + HybridDevice::middle_float_bytes + HybridDevice::middle_bytes + sizeof(int) == 252004);
+
 struct Device {
     int id;
     hipStream_t stream = nullptr;
@@ -135,13 +261,16 @@ struct Device {
     std::vector<Buffer> scratch;
     Buffer q8, error, logits, gathered_k, gathered_v, partial_o, partial_ms;
     Buffer histogram, select_state, candidates, ids, block_ids, counts;
-    Buffer routed_contributions;
+    Buffer routed_contributions, route_metadata;
+    MoeRouteIndex* route_dto = nullptr;
+    int route_tokens = 0, route_entries = 0;
     Buffer ds4, append_packed, append_work;
     std::array<std::unique_ptr<ExpertStage>, 2> stages;
+    std::unique_ptr<HybridDevice> hybrid;
     std::unique_ptr<RouteGroups> routes;
     std::vector<float> route_probabilities, route_weights;
     std::vector<std::int32_t> route_ids;
-    explicit Device(int d, int max_tokens) : id(d) {
+    explicit Device(int d, int max_tokens, bool prepare_hybrid = false) : id(d) {
         hip(hipSetDevice(id));
         hipDeviceProp_t p{}; hip(hipGetDeviceProperties(&p, id));
         const std::string arch(p.gcnArchName);
@@ -166,9 +295,12 @@ struct Device {
             histogram = Buffer(8192 * sizeof(int)); select_state = Buffer(16 * sizeof(std::uint64_t));
             candidates = Buffer(512 * sizeof(std::uint64_t)); ids = Buffer(2051 * sizeof(std::int32_t));
             block_ids = Buffer(512 * sizeof(std::int32_t)); counts = Buffer(2 * sizeof(int));
-            if (max_tokens > 1) {
-                routed_contributions = Buffer(checked_size(checked_size(max_tokens, 10 * H), sizeof(float)));
+            if (max_tokens > 1 || prepare_hybrid) {
+                routed_contributions = Buffer(checked_size(checked_size(prepare_hybrid ? std::max(3, max_tokens) : max_tokens, 10 * H), sizeof(float)));
                 routes = std::make_unique<RouteGroups>(max_tokens);
+                route_metadata = Buffer(checked_size(checked_size(max_tokens, 10), sizeof(MoeRouteIndex)));
+                hip(hipHostMalloc(&route_dto, route_metadata.bytes(), hipHostMallocDefault));
+                std::memset(route_dto, 0, route_metadata.bytes());
             }
             if (max_tokens > 3) {
                 const int bounded = std::min(max_tokens, microtile_tokens);
@@ -179,8 +311,15 @@ struct Device {
                 hip(hipStreamCreateWithFlags(&copy_stream, hipStreamNonBlocking));
                 for (auto& stage : stages) stage = std::make_unique<ExpertStage>(id);
             }
+            if (prepare_hybrid) {
+                if (!copy_stream) hip(hipStreamCreateWithFlags(&copy_stream, hipStreamNonBlocking));
+                if (max_tokens <= 3)
+                    for (auto& stage : stages) stage = std::make_unique<ExpertStage>(id, short_stage_bytes);
+                hybrid = std::make_unique<HybridDevice>(id);
+            }
         } catch (...) {
             drain_cleanup();
+            if (route_dto) { cleanup(hipHostFree(route_dto)); route_dto = nullptr; }
             if (handle) { if (rocblas_destroy_handle(handle) != rocblas_status_success) std::abort(); }
             if (copy_stream) { cleanup(hipStreamDestroy(copy_stream)); copy_stream = nullptr; }
             cleanup(hipStreamDestroy(stream)); stream = nullptr; throw;
@@ -188,6 +327,7 @@ struct Device {
     }
     ~Device() {
         drain_cleanup();
+        if (route_dto) cleanup(hipHostFree(route_dto));
         if (rocblas_destroy_handle(handle) != rocblas_status_success) std::abort();
         if (copy_stream) cleanup(hipStreamDestroy(copy_stream));
         cleanup(hipStreamDestroy(stream));
@@ -204,6 +344,48 @@ struct Device {
     }
     float* f(int i) { return scratch.at(static_cast<std::size_t>(i)).get(); }
     int* flag() { return error.get<int>(); }
+    void upload_routes(int tokens) {
+        if (!routes || !route_dto || tokens < 1 || tokens > moe_copy_max_input_tokens)
+            throw std::runtime_error("Session route metadata resources/tokens");
+        const auto assignments = routes->assignments();
+        if (assignments.size() != static_cast<std::size_t>(tokens) * 10 ||
+                assignments.size() > route_metadata.bytes() / sizeof(MoeRouteIndex))
+            throw std::runtime_error("Session route metadata extent");
+        // Convert the WHOLE prepared, stable expert/token/rank order, never the
+        // 16-byte RouteAssignment ABI. One pinned H2D per grouped layer. The
+        // prior layer's completed check (or failure drain) precedes this refill;
+        // pinned bytes remain immutable through all current layer consumers.
+        // This transfer is metadata, not expert weight upload_bytes.
+        for (std::size_t i = 0; i < assignments.size(); ++i)
+            route_dto[i] = {assignments[i].token, assignments[i].rank};
+        route_tokens = tokens; route_entries = static_cast<int>(assignments.size());
+        hip(hipMemcpyAsync(route_metadata.get<MoeRouteIndex>(), route_dto,
+            assignments.size() * sizeof(MoeRouteIndex), hipMemcpyHostToDevice, stream));
+    }
+    int route_offset(std::span<const RouteAssignment> group, int begin, int count) const {
+        // Every caller borrows group() from this same RouteGroups vector. Its
+        // pointer difference is the global metadata offset, including microtiles.
+        if (group.empty() || begin < 0 || count < 1 || count > microtile_tokens ||
+                static_cast<std::size_t>(begin) > group.size() ||
+                static_cast<std::size_t>(count) > group.size() - static_cast<std::size_t>(begin))
+            throw std::runtime_error("Session route metadata group tile");
+        const auto offset = group.data() - routes->assignments().data() + begin;
+        if (offset < 0 || offset > route_entries || count > route_entries - offset)
+            throw std::runtime_error("Session route metadata group offset");
+        return static_cast<int>(offset);
+    }
+    void gather_routes(const Q8_1* original, std::span<const RouteAssignment> group, int begin, int count) {
+        hip(launch_moe_gather_q8({original, scratch[21].bytes() / sizeof(Q8_1)}, route_tokens,
+            {route_metadata.get<MoeRouteIndex>(), route_metadata.bytes() / sizeof(MoeRouteIndex)}, route_entries,
+            route_offset(group, begin, count), count, H / 32,
+            {reinterpret_cast<Q8_1*>(f(23)), scratch[23].bytes() / sizeof(Q8_1)}, count, flag(), stream));
+    }
+    void scatter_routes(std::span<const RouteAssignment> group, int begin, int count) {
+        hip(launch_moe_scatter({f(19), scratch[19].bytes() / sizeof(float)}, route_tokens,
+            {route_metadata.get<MoeRouteIndex>(), route_metadata.bytes() / sizeof(MoeRouteIndex)}, route_entries,
+            route_offset(group, begin, count), count, H, 10,
+            {routed_contributions.get(), routed_contributions.bytes() / sizeof(float)}, count, flag(), stream));
+    }
     void clear() { hip(hipMemsetAsync(flag(), 0, sizeof(int), stream)); }
     void check(const std::string& where) {
         int e = 0; hip(hipMemcpyAsync(&e, flag(), sizeof(e), hipMemcpyDeviceToHost, stream));
@@ -323,11 +505,13 @@ struct Experts {
     TensorType down_type;
     std::array<std::vector<std::byte>, 3> ram;
     std::array<std::size_t, 3> bytes{};
+    std::vector<CpuExpert> cpu_views; // Immutable borrowed RAM, constructor only.
     Buffer slots;
     std::vector<Slot> map;
+    std::vector<int> pending; // Opt-in only; LOADING is invisible to resident().
     std::uint64_t clock = 0;
     std::uint64_t payload_reads = 0, payload_bytes_read = 0;
-    Experts(const Model& m, Device& d, const std::string& prefix, int nslots) : down_type(TensorType::Q4_0) {
+    Experts(const Model& m, Device& d, const std::string& prefix, int nslots, bool prepare_cpu) : down_type(TensorType::Q4_0) {
         const std::array<std::string, 3> names{prefix + "ffn_gate_exps.weight", prefix + "ffn_up_exps.weight", prefix + "ffn_down_exps.weight"};
         for (int i = 0; i < 3; ++i) {
             const auto& t = require(m, names[i], {static_cast<std::uint64_t>(i == 2 ? 640 : H),
@@ -346,12 +530,243 @@ struct Experts {
             ++payload_reads; payload_bytes_read += ram[i].size();
         }
         if (checked_size(total(), expert_band) > expert_stage_bytes) throw std::runtime_error("expert staging capacity");
+        if (prepare_cpu) {
+            cpu_views.reserve(512);
+            for (int id = 0; id < 512; ++id)
+                cpu_views.emplace_back(QMatrix{TensorType::Q4_0, H, 640, std::span(ram[0]).subspan(bytes[0] * id, bytes[0])},
+                    QMatrix{TensorType::Q4_0, H, 640, std::span(ram[1]).subspan(bytes[1] * id, bytes[1])},
+                    QMatrix{down_type, 640, H, std::span(ram[2]).subspan(bytes[2] * id, bytes[2])});
+        }
         hip(hipSetDevice(d.id)); slots = Buffer(checked_size(total(), nslots)); map.resize(nslots);
+        if (prepare_cpu) pending.assign(nslots, -1);
     }
     std::size_t total() const { return bytes[0] + bytes[1] + bytes[2]; }
     int resident(int id) const {
         for (std::size_t i = 0; i < map.size(); ++i) if (map[i].id == id) return static_cast<int>(i);
         return -1;
+    }
+    void finish_admissions(bool success) noexcept {
+        for (std::size_t i = 0; i < pending.size(); ++i) if (pending[i] >= 0) {
+            map[i].id = success ? pending[i] : -1;
+            pending[i] = -1;
+        }
+    }
+    void invalidate_cache() noexcept {
+        // Even the disabled acquire() can fail midway through a triplet upload
+        // before replacing the old map ID. Only a completed successful reset
+        // may retain READY maps; execution failure conservatively frees ALL IDs.
+        for (auto& slot : map) slot.id = -1;
+        std::fill(pending.begin(), pending.end(), -1);
+    }
+    void gpu_group(Device& d, const HybridDevice::Plan& plan, const std::byte* base, const Q8_1* original) {
+        const auto group = d.routes->group(plan.expert);
+        auto* gathered = reinterpret_cast<Q8_1*>(d.f(23));
+        const int columns = static_cast<int>(group.size());
+        d.gather_routes(original, group, 0, columns);
+        project(d, base, gathered, columns);
+        d.scatter_routes(group, 0, columns);
+    }
+    void run_hybrid(Device& d, CpuExpertPool& pool, SessionHybridPolicy policy, SessionStats& stats,
+                    SessionHybridStats& diagnostics, int tokens, const Q8_1* original, bool verify_input,
+                    SessionHybridProbeDiagnostics* failure_probe, std::uint64_t cpu_return_baseline, int layer) {
+        auto& frame = *d.hybrid;
+        frame.count = 0; frame.cpu_columns = 0; frame.cpu_active = false;
+        ++diagnostics.short_layers;
+        if (policy.mode == SessionHybridMode::force_cpu) ++diagnostics.forced_cpu_layers;
+        if (policy.mode == SessionHybridMode::force_gpu_misses) ++diagnostics.forced_gpu_layers;
+        // Snapshot EVERY READY physical reader before any admission/slot write.
+        bool all_hit = true;
+        for (int id = 0; id < 512; ++id) {
+            const auto group = d.routes->group(id);
+            if (group.empty()) continue;
+            if (frame.count >= static_cast<int>(frame.plans.size())) throw std::runtime_error("hybrid plan capacity");
+            auto& plan = frame.plans[frame.count++]; plan = {}; plan.expert = id;
+            const int slot = resident(id);
+            const auto columns = static_cast<std::uint64_t>(group.size());
+            diagnostics.group_reuse_assignments += columns - 1;
+            if (slot >= 0) {
+                plan.hit = slots.get<std::byte>() + total() * slot;
+                map[slot].stamp = ++clock;
+                diagnostics.ready_hit_assignments += columns; stats.expert_hits += columns;
+            } else {
+                all_hit = false; diagnostics.physical_miss_assignments += columns;
+                // Preserve historical first-acquisition + within-window reuse
+                // accounting independently of the forced/mixed dispatch below.
+                ++stats.expert_misses; stats.expert_hits += columns - 1;
+            }
+            plan.work = policy.mode == SessionHybridMode::force_cpu ? HybridDevice::Work::cpu :
+                policy.mode == SessionHybridMode::force_gpu_misses ? HybridDevice::Work::gpu_miss :
+                slot >= 0 ? HybridDevice::Work::hit : HybridDevice::Work::cpu;
+        }
+        if (all_hit) ++diagnostics.all_hit_layers;
+        if (policy.mode == SessionHybridMode::mixed) {
+            // Known current-window reuse count, ties by expert ID. No prediction.
+            for (int i = 0; i < policy.gpu_miss_groups; ++i) {
+                HybridDevice::Plan* best = nullptr;
+                for (int j = 0; j < frame.count; ++j) {
+                    auto& plan = frame.plans[j];
+                    if (plan.hit || plan.work != HybridDevice::Work::cpu) continue;
+                    if (!best || d.routes->group(plan.expert).size() > d.routes->group(best->expert).size()) best = &plan;
+                }
+                if (best) best->work = HybridDevice::Work::gpu_miss;
+            }
+        }
+        std::size_t output_columns = 0;
+        for (int j = 0; j < frame.count; ++j) {
+            auto& plan = frame.plans[j];
+            const auto group = d.routes->group(plan.expert);
+            const auto columns = group.size();
+            if (plan.work == HybridDevice::Work::cpu) {
+                plan.output_column = output_columns; output_columns += columns; frame.cpu_active = true;
+                ++diagnostics.cpu_groups; diagnostics.cpu_assignments += columns;
+            } else if (plan.work == HybridDevice::Work::hit) {
+                ++diagnostics.gpu_hit_groups; diagnostics.gpu_hit_assignments += columns;
+            } else { ++diagnostics.gpu_miss_groups; diagnostics.gpu_miss_assignments += columns; }
+        }
+        if (output_columns > 30) throw std::runtime_error("hybrid result capacity");
+        frame.cpu_columns = static_cast<int>(output_columns);
+        if (frame.cpu_active) {
+            cpu_ok(pool.reset());
+            // compute owns f21 and the sticky quant flag. A copy-stream D2H
+            // without this dependency could race quantization and/or later jobs.
+            hip(hipMemcpyAsync(frame.input, original, tokens * (H / 32) * sizeof(Q8_1), hipMemcpyDeviceToHost, d.stream));
+            if (verify_input)
+                hip(hipMemcpyAsync(frame.original_probe.data(), original, tokens * (H / 32) * sizeof(Q8_1), hipMemcpyDeviceToHost, d.stream));
+            hip(hipMemcpyAsync(frame.error, d.flag(), sizeof(int), hipMemcpyDeviceToHost, d.stream));
+            hip(hipEventRecord(frame.input_copied, d.stream));
+            ++diagnostics.input_extractions; diagnostics.input_bytes += tokens * (H / 32) * sizeof(Q8_1);
+        }
+        // Captured hit readers and scatters ALL precede permanent-slot writes.
+        for (int j = 0; j < frame.count; ++j)
+            if (frame.plans[j].work == HybridDevice::Work::hit)
+                gpu_group(d, frame.plans[j], frame.plans[j].hit, original);
+        int accepted_jobs = 0;
+        if (frame.cpu_active) {
+            hip(hipEventSynchronize(frame.input_copied));
+            if (*frame.error) throw std::runtime_error("hybrid original input numeric flag");
+            for (int j = 0; j < frame.count; ++j) {
+                auto& plan = frame.plans[j];
+                if (plan.work != HybridDevice::Work::cpu) continue;
+                const auto group = d.routes->group(plan.expert);
+                plan.job.expert = &cpu_views[plan.expert]; plan.job.columns = static_cast<int>(group.size());
+                plan.job.stage = CpuExpertStage::gate_up;
+                for (std::size_t c = 0; c < group.size(); ++c)
+                    plan.job.input[c] = {frame.input + group[c].token * (H / 32), H / 32};
+                // TEMP paired projections use only the packed prefix of the
+                // existing 307200B pinned down frame. Not H-strided yet.
+                plan.job.output = {frame.output + plan.output_column * (2 * 640), group.size() * (2 * 640)};
+                if (verify_input) for (std::size_t c = 0; c < group.size(); ++c) {
+                    const auto& dto = d.route_dto[d.route_offset(group, 0, static_cast<int>(group.size())) + c];
+                    if (dto.token != group[c].token || dto.rank != group[c].rank)
+                        throw std::runtime_error("hybrid CPU descriptor differs from GPU route metadata");
+                    if (std::memcmp(plan.job.input[c].data(), frame.original_probe.data() + dto.token * (H / 32),
+                            (H / 32) * sizeof(Q8_1))) throw std::runtime_error("hybrid CPU input differs from original GPU Q8 bytes");
+                    diagnostics.cpu_input_bytes_checked += (H / 32) * sizeof(Q8_1);
+                }
+                cpu_ok(pool.submit(plan.job, plan.ticket));
+                ++accepted_jobs; ++diagnostics.cpu_gate_up_jobs;
+            }
+        }
+        int band = 0, admitted = 0;
+        for (int j = 0; j < frame.count; ++j) {
+            const auto& plan = frame.plans[j];
+            if (plan.work != HybridDevice::Work::gpu_miss) continue;
+            auto& stage = *d.stages[band++ % 2];
+            if (stage.used) {
+                hip(hipEventSynchronize(stage.copy_ready));
+                hip(hipStreamWaitEvent(d.copy_stream, stage.consumer_done, 0));
+            }
+            std::size_t offset = 0;
+            for (int part = 0; part < 3; ++part) {
+                std::memcpy(stage.host + offset, ram[part].data() + bytes[part] * plan.expert, bytes[part]);
+                hip(hipMemcpyAsync(stage.data.get<std::byte>() + offset, stage.host + offset, bytes[part], hipMemcpyHostToDevice, d.copy_stream));
+                offset += bytes[part];
+            }
+            stats.expert_upload_bytes += total();
+            hip(hipEventRecord(stage.copy_ready, d.copy_stream));
+            hip(hipStreamWaitEvent(d.stream, stage.copy_ready, 0));
+            gpu_group(d, plan, stage.data.get<std::byte>(), original);
+            if (admitted < policy.gpu_miss_groups && !plan.hit) {
+                auto chosen = std::min_element(map.begin(), map.end(), [](const auto& a, const auto& b) { return a.stamp < b.stamp; });
+                if (chosen->id >= 0) ++diagnostics.evicted_ready_slots;
+                const auto slot = static_cast<std::size_t>(chosen - map.begin());
+                chosen->id = -1; pending[slot] = plan.expert; chosen->stamp = ++clock;
+                // After ALL captured readers; compute owns D2D admission too.
+                hip(hipMemcpyAsync(slots.get<std::byte>() + slot * total(), stage.data.get<std::byte>(), total(), hipMemcpyDeviceToDevice, d.stream));
+                ++admitted; ++diagnostics.admitted_groups;
+            }
+            hip(hipEventRecord(stage.consumer_done, d.stream)); // Includes admission's read.
+            stage.used = true;
+        }
+        if (policy.diagnostic_fail_after_admission && failure_probe && !failure_probe->synthetic_failure &&
+                accepted_jobs > 0 && admitted > 0) {
+            const auto pending_slots = static_cast<std::uint64_t>(std::count_if(pending.begin(), pending.end(),
+                [](int id) { return id >= 0; }));
+            if (!pending_slots) throw std::runtime_error("hybrid diagnostic admission invariant");
+            failure_probe->accepted_cpu_jobs = static_cast<std::uint64_t>(accepted_jobs);
+            failure_probe->queued_admission_copies = static_cast<std::uint64_t>(admitted);
+            failure_probe->pending_slots_at_failure = pending_slots;
+            // No join_hybrid(), GPU middle or CPU-result H2D has run here. Gate/up jobs
+            // may already have completed: this is NOT an in-flight timing proof.
+            failure_probe->cpu_return_bytes_before_failure = diagnostics.cpu_return_bytes - cpu_return_baseline;
+            failure_probe->failure_layer = layer;
+            failure_probe->synthetic_failure = true;
+            throw std::runtime_error("synthetic hybrid failure after CPU acceptance and GPU admission enqueue");
+        }
+    }
+    void join_hybrid(Device& d, CpuExpertPool& pool, SessionHybridStats& diagnostics) {
+        auto& frame = *d.hybrid;
+        if (!frame.cpu_active) return; // All-hit has no extraction/pool/events.
+        cpu_ok(pool.drain()); // Gate ALL gate/up jobs before the single middle H2D.
+        const int columns = frame.cpu_columns;
+        if (columns < 1 || columns > silu_pairs_max_columns) throw std::runtime_error("hybrid GPU middle capacity");
+        const auto paired_bytes = static_cast<std::size_t>(columns) * (2 * 640) * sizeof(float);
+        const auto middle_bytes = static_cast<std::size_t>(columns) * 20 * sizeof(Q8_1);
+        // Dedicated buffers/flag on copy_stream: GPU hit/miss/shared compute can
+        // overlap safely. NEVER borrow d.q8/f16/f19/d.flag, all live on compute.
+        hip(hipMemsetAsync(frame.middle_error.get<int>(), 0, sizeof(int), d.copy_stream));
+        hip(hipMemcpyAsync(frame.gate_up.get(), frame.output, paired_bytes, hipMemcpyHostToDevice, d.copy_stream));
+        diagnostics.paired_gate_up_bytes += paired_bytes;
+        hip(launch_silu_up_pairs(frame.gate_up.get(), columns, frame.middle_float.get(), frame.middle_error.get<int>(), d.copy_stream));
+        hip(launch_quantize_q8_1(frame.middle_float.get(), frame.middle_q8.get<Q8_1>(), 640, columns,
+            frame.middle_error.get<int>(), d.copy_stream));
+        hip(hipMemcpyAsync(frame.middle, frame.middle_q8.get<Q8_1>(), middle_bytes, hipMemcpyDeviceToHost, d.copy_stream));
+        // Original input flag was consumed after input_copied; reuse these 4B
+        // pinned bytes only in this ordered chain. No extra pinned error frame.
+        hip(hipMemcpyAsync(frame.error, frame.middle_error.get<int>(), sizeof(int), hipMemcpyDeviceToHost, d.copy_stream));
+        hip(hipEventRecord(frame.middle_ready, d.copy_stream));
+        hip(hipEventSynchronize(frame.middle_ready));
+        if (*frame.error) throw std::runtime_error("hybrid GPU middle numeric flag");
+        ++diagnostics.gpu_middle_batches; diagnostics.gpu_middle_columns += columns;
+        diagnostics.middle_q8_bytes += middle_bytes;
+        // This completion also protects the TEMP gate/up pinned H2D source.
+        // Reset retires the first phase's ranges/tickets before reusing output.
+        cpu_ok(pool.reset());
+        for (int j = 0; j < frame.count; ++j) {
+            auto& plan = frame.plans[j];
+            if (plan.work != HybridDevice::Work::cpu) continue;
+            const auto group = d.routes->group(plan.expert);
+            plan.job = {}; plan.job.expert = &cpu_views[plan.expert];
+            plan.job.stage = CpuExpertStage::down; plan.job.columns = static_cast<int>(group.size());
+            for (std::size_t c = 0; c < group.size(); ++c)
+                plan.job.input[c] = {frame.middle + (plan.output_column + c) * 20, 20};
+            plan.job.output = {frame.output + plan.output_column * H, group.size() * H};
+            cpu_ok(pool.submit(plan.job, plan.ticket)); ++diagnostics.cpu_down_jobs;
+        }
+        cpu_ok(pool.drain()); // Gate ALL down jobs before publishing even one CPU row.
+        for (int j = 0; j < frame.count; ++j) {
+            const auto& plan = frame.plans[j];
+            if (plan.work != HybridDevice::Work::cpu) continue;
+            const auto group = d.routes->group(plan.expert);
+            for (std::size_t c = 0; c < group.size(); ++c) {
+                hip(hipMemcpyAsync(d.routed_contributions.get() + (group[c].token * 10 + group[c].rank) * H,
+                    frame.output + (plan.output_column + c) * H, H * sizeof(float), hipMemcpyHostToDevice, d.copy_stream));
+                diagnostics.cpu_return_bytes += H * sizeof(float);
+            }
+        }
+        hip(hipEventRecord(frame.cpu_returned, d.copy_stream));
+        hip(hipStreamWaitEvent(d.stream, frame.cpu_returned, 0));
+        // Host output is retained until layer completion, not reused at enqueue.
     }
     std::byte* acquire(Device& d, int id, int columns, SessionStats& stats) {
         if (id < 0 || id >= 512) throw std::runtime_error("expert ID");
@@ -444,7 +859,6 @@ struct Experts {
         int count = 0;
         for (int expert = 0; expert < 512; ++expert) if (!d.routes->group(expert).empty()) active[count++] = expert;
         auto* gathered = reinterpret_cast<Q8_1*>(d.f(23));
-        auto* contributions = d.routed_contributions.get();
         for (int first = 0, band = 0; first < count; first += expert_band, ++band) {
             auto& stage = *d.stages[band % 2];
             const int length = std::min(expert_band, count - first);
@@ -453,15 +867,9 @@ struct Experts {
                 const auto group = d.routes->group(active[first + i]);
                 for (int begin = 0; begin < static_cast<int>(group.size()); begin += linear_device_short_max_columns) {
                     const int columns = std::min(linear_device_short_max_columns, static_cast<int>(group.size()) - begin);
-                    for (int c = 0; c < columns; ++c)
-                        hip(hipMemcpyAsync(gathered + c * (H / 32), original + group[begin + c].token * (H / 32),
-                            (H / 32) * sizeof(Q8_1), hipMemcpyDeviceToDevice, d.stream));
+                    d.gather_routes(original, group, begin, columns);
                     project(d, stage.data.get<std::byte>() + i * total(), gathered, columns);
-                    for (int c = 0; c < columns; ++c) {
-                        const auto& assignment = group[begin + c];
-                        hip(hipMemcpyAsync(contributions + (assignment.token * 10 + assignment.rank) * H,
-                            d.f(19) + c * H, H * sizeof(float), hipMemcpyDeviceToDevice, d.stream));
-                    }
+                    d.scatter_routes(group, begin, columns);
                 }
             }
             hip(hipEventRecord(stage.consumer_done, d.stream));
@@ -492,7 +900,7 @@ struct Layer {
           shared_up(matrix(m, d, "blk." + std::to_string(l) + ".ffn_up_shexp.weight", H, 640)),
           shared_down(matrix(m, d, "blk." + std::to_string(l) + ".ffn_down_shexp.weight", 640, H)),
           shared_weight(parameter(m, d, "blk." + std::to_string(l) + ".ffn_gate_inp_shexp.weight", {H})),
-          experts(m, d, "blk." + std::to_string(l) + ".", cfg.expert_slots) {
+          experts(m, d, "blk." + std::to_string(l) + ".", cfg.expert_slots, cfg.cpu_workers > 0) {
         const std::string p = "blk." + std::to_string(l) + ".";
         failure_probe = !cfg.trace_directory.empty() && cfg.trace_first_token > 0 && l == 8;
         state_probe = (!cfg.trace_directory.empty() && l == 22) || failure_probe;
@@ -693,7 +1101,38 @@ struct Layer {
         if (failure_probe && trace_stages) d.check("attention output layer 8");
         observe("block_attention_out", d.f(9), H);
     }
-    template<class Observe> void ffn(SessionStats& stats, SessionRouteStats& call_routes, int tokens, bool trace_observations, Observe&& observe) {
+    template<class Observe> void shared_project(int tokens, bool probe, Observe&& observe) {
+        auto& d = device;
+        shared_gate.apply(d, d.f(6), d.f(16), tokens); shared_up.apply(d, d.f(6), d.f(17), tokens);
+        if (probe) {
+            observe("ffn_shared_gate_raw", d.f(16), 640);
+            observe("ffn_shared_up_raw", d.f(17), 640);
+        }
+        tiles(tokens, [&](int first, int count) {
+            hip(launch_silu_up(d.f(16) + first * 640, d.f(17) + first * 640, count * 640, d.f(18) + first * 640, d.flag(), d.stream));
+        });
+        shared_down.apply(d, d.f(18), d.f(19), tokens);
+        if (probe) {
+            observe("ffn_shared_silu_middle", d.f(18), 640);
+            observe("ffn_shared_down", d.f(19), H);
+        }
+        for (int first = 0; first < tokens; first += 8) {
+            const int count = std::min(8, tokens - first);
+            blas(launch_dense_linear(d.handle, {shared_weight.get(), H, 1}, d.f(6) + first * H, count, d.f(16) + first, d.stream));
+        }
+        if (probe) observe("ffn_shared_scalar_gate_raw", d.f(16), 1);
+    }
+    void shared_add(int tokens) {
+        auto& d = device;
+        if (tokens == 1) hip(launch_shared_sigmoid_add(d.f(19), d.f(16), H, d.f(20), d.flag(), d.stream));
+        else tiles(tokens, [&](int first, int count) {
+            hip(launch_shared_sigmoid_add_rows(d.f(19) + first * H, d.f(16) + first, count, H, d.f(20) + first * H, d.flag(), d.stream));
+        });
+    }
+    template<class Observe> void ffn(SessionStats& stats, SessionRouteStats& call_routes, int tokens, bool trace_observations,
+                                   CpuExpertPool* pool, SessionHybridPolicy policy, SessionHybridStats& diagnostics,
+                                   SessionHybridProbeDiagnostics* failure_probe, std::uint64_t cpu_return_baseline,
+                                   float* probe_down, Observe&& observe) {
         auto& d = device;
         // Besides skipping captures, skip diagnostic H2D/host temporaries before
         // the range. selected_ids relies on a captured row draining its upload.
@@ -754,6 +1193,36 @@ struct Layer {
         hip(hipMemcpyAsync(d.f(21), d.q8.get<Q8_1>(), tokens * (H / 32) * sizeof(Q8_1), hipMemcpyDeviceToDevice, d.stream));
         hip(hipMemsetAsync(d.f(20), 0, tokens * H * sizeof(float), d.stream));
         const auto* original = reinterpret_cast<const Q8_1*>(d.f(21));
+        if (policy.mode != SessionHybridMode::disabled && tokens <= 3) {
+            d.routes->prepare(std::span(ids).first(tokens * 10), std::span(weights).first(tokens * 10), tokens);
+            d.upload_routes(tokens);
+            for (const int count : d.routes->counts())
+                call_routes.last_max_expert_group_assignments = std::max(
+                    call_routes.last_max_expert_group_assignments, static_cast<std::uint64_t>(count));
+            experts.run_hybrid(d, *pool, policy, stats, diagnostics, tokens, original, probe_down != nullptr,
+                failure_probe, cpu_return_baseline, index);
+            // Shared GPU work overlaps CPU jobs. f19/f16 must stay live through
+            // the CPU-only row returns and routed fold; neither uses these buffers.
+            shared_project(tokens, probe, observe);
+            experts.join_hybrid(d, *pool, diagnostics);
+            if (probe_down)
+                for (int t = 0; t < tokens; ++t)
+                    hip(hipMemcpyAsync(probe_down + t * 48 * 10 * H, d.routed_contributions.get() + t * 10 * H,
+                        10 * H * sizeof(float), hipMemcpyDeviceToHost, d.stream));
+            for (int t = 0; t < tokens; ++t)
+                for (int rank = 0; rank < 10; ++rank)
+                    hip(launch_scaled_add(d.routed_contributions.get() + (t * 10 + rank) * H,
+                        weights[t * 10 + rank], H, d.f(20) + t * H, d.flag(), d.stream));
+            if (probe) {
+                for (int rank = 0; rank < 10; ++rank)
+                    observe("ffn_expert_down_unweighted_rank_" + std::to_string(rank),
+                        d.routed_contributions.get() + rank * H, H, -1, 10 * H);
+                observe("ffn_routed_weighted_aggregate", d.f(20), H);
+            }
+            shared_add(tokens);
+            return;
+        }
+        if (policy.mode != SessionHybridMode::disabled) ++diagnostics.gpu_only_wide_layers;
         if (tokens == 1) {
             // partial_sort above preserves the iota permutation: ten distinct
             // routes, hence exactly one assignment per selected expert for N1.
@@ -761,12 +1230,14 @@ struct Layer {
             // Retain N1 physical cache/LRU order and immediate rank-order adds.
             for (int rank = 0; rank < 10; ++rank) {
                 experts.run(d, ids[rank], original, weights[rank], stats);
+                if (probe_down) hip(hipMemcpyAsync(probe_down + rank * H, d.f(19), H * sizeof(float), hipMemcpyDeviceToHost, d.stream));
                 // Read after scaled-add's consumer, before the next rank reuses
                 // f(19). No change to physical cache or numerical add order.
                 if (probe) observe("ffn_expert_down_unweighted_rank_" + std::to_string(rank), d.f(19), H);
             }
         } else {
             d.routes->prepare(std::span(ids).first(tokens * 10), std::span(weights).first(tokens * 10), tokens);
+            d.upload_routes(tokens);
             // prepare validated uniqueness per token. Scan the existing logical
             // histogram once, before any expert microtile/staging execution.
             for (const int count : d.routes->counts()) {
@@ -777,26 +1248,25 @@ struct Layer {
             if (tokens > 3) experts.run_chunk(d, original, stats);
             else {
                 auto* gathered = reinterpret_cast<Q8_1*>(d.f(23));
-                auto* contributions = d.routed_contributions.get();
                 for (int expert = 0; expert < 512; ++expert) {
                     const auto group = d.routes->group(expert);
                     if (group.empty()) continue;
                     const int columns = static_cast<int>(group.size()); // unique per token, <=3
-                    for (int c = 0; c < columns; ++c)
-                        hip(hipMemcpyAsync(gathered + c * (H / 32), original + group[c].token * (H / 32),
-                            (H / 32) * sizeof(Q8_1), hipMemcpyDeviceToDevice, d.stream));
+                    d.gather_routes(original, group, 0, columns);
                     // One canonical triplet acquisition/upload per group. Every
                     // additional group column is a logical hit, even on a cold miss.
                     experts.run_group(d, expert, gathered, columns, stats);
-                    for (int c = 0; c < columns; ++c)
-                        hip(hipMemcpyAsync(contributions + (group[c].token * 10 + group[c].rank) * H,
-                            d.f(19) + c * H, H * sizeof(float), hipMemcpyDeviceToDevice, d.stream));
+                    d.scatter_routes(group, 0, columns);
                     // Scatters precede f(16..19)/f(23)/slot reuse on this stream.
                 }
             }
             // Execution order may group experts, but numerical reduction cannot:
             // scatter UNWEIGHTED down results, then left-fold original ranks0..9
             // with separately rounded normalized-weight MUL and accumulator ADD.
+            if (probe_down)
+                for (int t = 0; t < tokens; ++t)
+                    hip(hipMemcpyAsync(probe_down + t * 48 * 10 * H, d.routed_contributions.get() + t * 10 * H,
+                        10 * H * sizeof(float), hipMemcpyDeviceToHost, d.stream));
             if (tokens <= 3) {
                 for (int t = 0; t < tokens; ++t)
                     for (int rank = 0; rank < 10; ++rank)
@@ -822,32 +1292,33 @@ struct Layer {
             }
             observe("ffn_routed_weighted_aggregate", d.f(20), H);
         }
-        shared_gate.apply(d, d.f(6), d.f(16), tokens); shared_up.apply(d, d.f(6), d.f(17), tokens);
-        if (probe) {
-            observe("ffn_shared_gate_raw", d.f(16), 640);
-            observe("ffn_shared_up_raw", d.f(17), 640);
-        }
-        tiles(tokens, [&](int first, int count) {
-            hip(launch_silu_up(d.f(16) + first * 640, d.f(17) + first * 640, count * 640, d.f(18) + first * 640, d.flag(), d.stream));
-        });
-        shared_down.apply(d, d.f(18), d.f(19), tokens);
-        if (probe) {
-            observe("ffn_shared_silu_middle", d.f(18), 640);
-            observe("ffn_shared_down", d.f(19), H);
-        }
-        // KEEP the qualified dense MMVF arithmetic for this direct scalar projection.
-        // Chronological <=8 slices preserve the same X/weights and H/1 token strides.
-        for (int first = 0; first < tokens; first += 8) {
-            const int count = std::min(8, tokens - first);
-            blas(launch_dense_linear(d.handle, {shared_weight.get(), H, 1}, d.f(6) + first * H, count, d.f(16) + first, d.stream));
-        }
-        if (probe) observe("ffn_shared_scalar_gate_raw", d.f(16), 1);
-        if (tokens == 1) hip(launch_shared_sigmoid_add(d.f(19), d.f(16), H, d.f(20), d.flag(), d.stream));
-        else tiles(tokens, [&](int first, int count) {
-            hip(launch_shared_sigmoid_add_rows(d.f(19) + first * H, d.f(16) + first, count, H, d.f(20) + first * H, d.flag(), d.stream));
-        });
+        shared_project(tokens, probe, observe);
+        shared_add(tokens);
     }
 };
+}
+
+namespace {
+void HybridInputProbeFrame::capture(const Device& d, int layer, int tokens, bool hybrid) {
+    // run_hybrid has synchronized input_copied BEFORE accepting CPU jobs.
+    // No new D2H/quantization; all-hit leaves availability zero.
+    for (int t = 0; t < tokens; ++t) {
+        const auto row = static_cast<std::size_t>(t * 48 + layer);
+        std::copy_n(d.route_ids.data() + t * 10, 10, ids.data() + row * 10);
+        std::copy_n(d.route_weights.data() + t * 10, 10, weights.data() + row * 10);
+        if (hybrid && d.hybrid->cpu_active) {
+            std::memcpy(original.data() + row * (H / 32), d.hybrid->input + t * (H / 32), (H / 32) * sizeof(Q8_1));
+            available[row] = 1;
+        }
+    }
+    if (!hybrid) return;
+    for (int j = 0; j < d.hybrid->count; ++j) {
+        const auto& plan = d.hybrid->plans[j];
+        if (plan.work != HybridDevice::Work::cpu) continue;
+        for (const auto& a : d.routes->group(plan.expert))
+            cpu[(a.token * 48 + layer) * 10 + a.rank] = 1;
+    }
+}
 }
 
 struct Session::Impl {
@@ -855,6 +1326,11 @@ struct Session::Impl {
     SessionConfig config;
     SessionStats statistics;
     SessionRouteStats route_statistics;
+    SessionHybridPolicy hybrid_policy;
+    // Preserve the original 20-counter footprint/alignment in cpu_workers=0
+    // Impl. The new six-counter tail is stored in opt-in HybridDevice only.
+    std::array<std::uint64_t, 20> hybrid_statistics{};
+    SessionHybridProbeDiagnostics probe_diagnostics;
     std::array<std::unique_ptr<Device>, 2> devices;
     std::vector<std::unique_ptr<Layer>> layers;
     std::unique_ptr<Hc> head_hc;
@@ -869,6 +1345,9 @@ struct Session::Impl {
     std::array<std::uint64_t, 16> ple_rows{};
     std::array<float, H> ple_embedding{};
     std::vector<float> host_logits;
+    std::vector<float> working_logits; // Opt-in transactional full-head staging.
+    std::array<std::vector<float>, 2> probe_down, probe_ffn;
+    int probe_tokens = 0;
     struct Pinned {
         float* pointer = nullptr;
         std::size_t bytes;
@@ -883,6 +1362,29 @@ struct Session::Impl {
     bool usable = true;
     std::ofstream trace_metadata;
     std::uint64_t trace_occurrence = 0;
+    int coordinator_cpu = -1;
+    // Declared last: constructor unwind joins before borrowed RAM/frames release.
+    std::unique_ptr<CpuExpertPool> cpu_pool;
+
+    static_assert(offsetof(SessionHybridStats, cpu_gate_up_jobs) == 20 * sizeof(std::uint64_t) &&
+        sizeof(SessionHybridStats) == 26 * sizeof(std::uint64_t) &&
+        sizeof(std::array<std::uint64_t, 20>) == 20 * sizeof(std::uint64_t) &&
+        alignof(std::array<std::uint64_t, 20>) == alignof(SessionHybridStats) &&
+        std::is_trivially_copyable_v<SessionHybridStats>);
+    SessionHybridStats hybrid_stats() const {
+        std::array<std::uint64_t, 26> words{};
+        std::copy(hybrid_statistics.begin(), hybrid_statistics.end(), words.begin());
+        if (devices[0] && devices[0]->hybrid)
+            std::copy(devices[0]->hybrid->projection_statistics.begin(),
+                devices[0]->hybrid->projection_statistics.end(), words.begin() + 20);
+        return std::bit_cast<SessionHybridStats>(words);
+    }
+    void publish_hybrid(SessionHybridStats stats) {
+        const auto words = std::bit_cast<std::array<std::uint64_t, 26>>(stats);
+        std::copy_n(words.begin(), 20, hybrid_statistics.begin());
+        if (devices[0] && devices[0]->hybrid)
+            std::copy_n(words.begin() + 20, 6, devices[0]->hybrid->projection_statistics.begin());
+    }
 
     Impl(const std::string& path, SessionConfig cfg)
         : model(path), config(checked_config(std::move(cfg))), ple_hash(ple_hash_config(model, 1)),
@@ -904,12 +1406,12 @@ struct Session::Impl {
         const auto base = std::get<float>(model.metadata_value("qwen4exp.rope.freq_base").value);
         if (rope != 64 || !std::isfinite(base) || base <= 0 || !std::isfinite(epsilon) || epsilon <= 0)
             throw std::runtime_error("Session RoPE/epsilon");
-        const auto& embedding = require(model, "token_embd.weight", {H, V});
-        embedding_type = embedding.type; embedding_stride = static_cast<std::size_t>(embedding.strides[1]);
-        embeddings.resize(static_cast<std::size_t>(embedding.byte_size)); model.read_tensor(embedding.name, embeddings);
+        const auto* embedding = &require(model, "token_embd.weight", {H, V});
+        embedding_type = embedding->type; embedding_stride = static_cast<std::size_t>(embedding->strides[1]);
+        embeddings.resize(static_cast<std::size_t>(embedding->byte_size)); model.read_tensor(embedding->name, embeddings);
         int n = 0; hip(hipGetDeviceCount(&n)); if (n != 2) throw std::runtime_error("Session requires two gfx906");
-        devices[0] = std::make_unique<Device>(0, config.max_batch_tokens);
-        devices[1] = std::make_unique<Device>(1, config.max_batch_tokens);
+        devices[0] = std::make_unique<Device>(0, config.max_batch_tokens, config.cpu_workers > 0);
+        devices[1] = std::make_unique<Device>(1, config.max_batch_tokens, config.cpu_workers > 0);
         layers.reserve(48);
         for (int l = 0; l < 48; ++l) {
             std::fprintf(stderr, "load layer %d/48\n", l + 1);
@@ -926,21 +1428,70 @@ struct Session::Impl {
         head_hc = std::make_unique<Hc>(model, *devices[1], "output_hc_", true);
         head = matrix(model, *devices[1], "output.weight", H, V);
         pinned = std::make_unique<Pinned>(config.max_batch_tokens); handoff = pinned->pointer;
+        if (config.cpu_workers) {
+            working_logits.resize(host_logits.size());
+            if (config.hybrid_probe) {
+                for (auto& frame : probe_down) frame.resize(3 * 48 * 10 * H);
+                for (auto& frame : probe_ffn) frame.resize(3 * 48 * H);
+                for (auto& frame : devices[0]->hybrid->probe_inputs) frame.allocate();
+            }
+#if defined(__linux__)
+            std::array<int, CPU_SETSIZE> cpus{};
+            std::size_t count = 0;
+            cpu_ok(cpu_expert_allowed_physical_cpus(cpus, count));
+            if (count <= static_cast<std::size_t>(config.cpu_workers))
+                throw std::runtime_error("Session CPU pool requires workers plus reserved coordinator physical core");
+            coordinator_cpu = cpus[0];
+            cpu_pool = std::make_unique<CpuExpertPool>(CpuExpertPoolConfig{
+                static_cast<std::size_t>(config.cpu_workers), true,
+                std::span(cpus).subspan(1, static_cast<std::size_t>(config.cpu_workers))});
+#else
+            throw std::runtime_error("Session CPU worker pinning requires Linux");
+#endif
+        }
         reset();
     }
     ~Impl() {
+        cpu_pool.reset(); // Drain/join BEFORE immutable RAM and pinned frames.
         for (auto& d : devices) if (d) d->drain_cleanup();
     }
+    void set_hybrid_policy(SessionHybridPolicy policy) {
+        switch (policy.mode) {
+        case SessionHybridMode::disabled: case SessionHybridMode::mixed:
+        case SessionHybridMode::force_cpu: case SessionHybridMode::force_gpu_misses: break;
+        default: throw std::invalid_argument("Session hybrid mode");
+        }
+        if (policy.gpu_miss_groups < 0 || policy.gpu_miss_groups > 2 ||
+             (policy.mode == SessionHybridMode::mixed && policy.gpu_miss_groups == 0) ||
+            (policy.mode != SessionHybridMode::disabled && !cpu_pool) ||
+            (policy.diagnostic_fail_after_admission && (!config.hybrid_probe || policy.mode != SessionHybridMode::mixed)))
+            throw std::invalid_argument("Session hybrid policy/resources");
+        if (!usable) throw std::runtime_error("Session invalidated; reset required");
+        if (cpu_pool) cpu_ok(cpu_pool->drain());
+        for (auto& d : devices) d->drain();
+        if (policy.diagnostic_fail_after_admission && !hybrid_policy.diagnostic_fail_after_admission)
+            probe_diagnostics = {};
+        hybrid_policy = policy;
+    }
     void reset() {
+        // A HIP failure during incremental reset leaves state partially cleared.
+        // Retain published diagnostics until the successful endpoint, but never
+        // let such a session run without another completed reset.
+        usable = false;
+        if (cpu_pool) {
+            (void)cpu_pool->drain(); // Previous numeric status must not poison recovery.
+            cpu_ok(cpu_pool->reset()); // Drained reset clears old jobs/status/tickets.
+        }
         // Also orders exceptional partial bands before any flag/state/host reuse.
         for (auto& d : devices) {
             d->drain();
             for (auto& stage : d->stages) if (stage) stage->used = false;
         }
-        for (auto& l : layers) l->reset();
+        for (auto& l : layers) { l->experts.finish_admissions(false); l->reset(); }
         hip(hipSetDevice(0)); hip(hipMemsetAsync(ple_history.get<void>(), 0, ple_history.bytes(), devices[0]->stream));
         for (auto& d : devices) { hip(hipSetDevice(d->id)); d->clear(); hip(hipStreamSynchronize(d->stream)); }
-        ple_hash.reset(); statistics = {}; route_statistics = {}; usable = true;
+        ple_hash.reset(); statistics = {}; route_statistics = {}; publish_hybrid({});
+        probe_tokens = 0; usable = true;
     }
     SessionMemory memory() const {
         int previous = 0; hip(hipGetDevice(&previous));
@@ -951,12 +1502,28 @@ struct Session::Impl {
         SessionMemory result;
         result.capacity = config.capacity; result.expert_slots = config.expert_slots;
         result.host_embedding_capacity = embeddings.capacity();
-        result.host_logit_capacity = host_logits.capacity() * sizeof(float);
+        result.host_logit_capacity = (host_logits.capacity() + working_logits.capacity()) * sizeof(float);
         result.pinned_handoff = pinned->bytes;
+        for (const auto& frame : probe_down) result.host_hybrid_probe += frame.capacity() * sizeof(float);
+        for (const auto& frame : probe_ffn) result.host_hybrid_probe += frame.capacity() * sizeof(float);
+        if (config.hybrid_probe)
+            for (const auto& frame : devices[0]->hybrid->probe_inputs) result.host_hybrid_input_probe += frame.capacity_bytes();
+        result.host_hybrid_probe += result.host_hybrid_input_probe;
+        if (cpu_pool) {
+            (void)cpu_pool->drain(); // Inspection still works after failed jobs.
+            result.cpu_workers = static_cast<int>(cpu_pool->workers());
+            result.cpu_pool_metadata = cpu_pool->metadata_bytes(); result.cpu_pool_scratch = cpu_pool->scratch_bytes();
+        }
         for (int id = 0; id < 2; ++id) {
             auto& out = result.devices[id];
             auto& d = *devices[id];
             d.drain();
+            result.host_routing_capacity += d.route_probabilities.capacity() * sizeof(float) +
+                d.route_weights.capacity() * sizeof(float) + d.route_ids.capacity() * sizeof(std::int32_t);
+            if (d.routes) result.host_route_group_payload += sizeof(RouteGroups) +
+                static_cast<std::size_t>(config.max_batch_tokens) * 10 * sizeof(RouteAssignment);
+            if (d.route_dto) result.pinned_route_metadata += d.route_metadata.bytes();
+            result.route_metadata_bytes[id] = d.route_metadata.bytes();
             out.device = id; out.first_layer = id * 24; out.last_layer = id * 24 + 23;
             auto add = [&](std::uint64_t& category, const Buffer& b) {
                 if (!b.bytes()) {
@@ -973,11 +1540,26 @@ struct Session::Impl {
             for (const auto& b : d.scratch) add(out.workspace, b);
             for (const auto* b : {&d.q8, &d.error, &d.logits, &d.gathered_k, &d.gathered_v,
                     &d.partial_o, &d.partial_ms, &d.histogram, &d.select_state, &d.candidates,
-                    &d.ids, &d.block_ids, &d.counts, &d.routed_contributions, &d.ds4,
+                    &d.ids, &d.block_ids, &d.counts, &d.routed_contributions, &d.route_metadata, &d.ds4,
                     &d.append_packed, &d.append_work}) add(out.workspace, *b);
             for (const auto& stage : d.stages) if (stage) {
                 add(out.workspace, stage->data);
-                result.pinned_expert_staging += expert_stage_bytes;
+                result.pinned_expert_staging += stage->data.bytes();
+                result.expert_stage_capacity_bytes[id] = stage->data.bytes();
+            }
+            if (d.hybrid) {
+                result.pinned_hybrid_input += HybridDevice::input_bytes;
+                result.pinned_hybrid_output += HybridDevice::output_bytes;
+                result.pinned_hybrid_error += sizeof(int);
+                result.pinned_hybrid_middle += HybridDevice::middle_bytes;
+                result.hybrid_gate_up_bytes[id] = d.hybrid->gate_up.bytes();
+                result.hybrid_middle_float_bytes[id] = d.hybrid->middle_float.bytes();
+                result.hybrid_middle_q8_bytes[id] = d.hybrid->middle_q8.bytes();
+                result.hybrid_middle_error_bytes[id] = d.hybrid->middle_error.bytes();
+                for (const auto* b : {&d.hybrid->gate_up, &d.hybrid->middle_float,
+                        &d.hybrid->middle_q8, &d.hybrid->middle_error}) add(out.workspace, *b);
+                result.host_hybrid_plans += sizeof(HybridDevice);
+                result.hybrid_contribution_bytes[id] = d.routed_contributions.bytes();
             }
             for (const auto& pointer : layers) {
                 const auto& l = *pointer;
@@ -995,6 +1577,8 @@ struct Session::Impl {
                 }
                 result.expert_payload_reads += l.experts.payload_reads;
                 result.expert_payload_bytes_read += l.experts.payload_bytes_read;
+                result.host_cpu_expert_views += l.experts.cpu_views.capacity() * sizeof(CpuExpert) +
+                    l.experts.pending.capacity() * sizeof(int);
                 add(out.qsa_kv, l.kv_k); add(out.qsa_kv, l.kv_v);
                 add(out.qsa_index, l.pooled); add(out.qsa_index, l.tail);
                 add(out.gdn_state, l.recurrent); add(out.gdn_state, l.history);
@@ -1098,9 +1682,19 @@ struct Session::Impl {
         // Diagnostic checks never clear the sticky flag. Their labels identify
         // the first observed failing interval, not necessarily its last kernel.
         const bool trace_stages = trace_observations && position >= config.trace_first_token;
+        const bool transactional = hybrid_policy.mode != SessionHybridMode::disabled;
+        // Reserve an actual allowed physical representative while coordinating
+        // short CPU jobs. Restore caller affinity; never infer cores from threads.
+        CoordinatorAffinity coordinator(transactional && tokens <= 3 ? coordinator_cpu : -1);
+        SessionStats working_stats = statistics;
+        auto& execution_stats = transactional ? working_stats : statistics;
+        SessionHybridStats working_hybrid = hybrid_stats();
+        const auto cpu_return_baseline = working_hybrid.cpu_return_bytes;
         const auto begin = std::chrono::steady_clock::now();
         try {
             SessionRouteStats call_routes{};
+            const bool capture_inputs = config.hybrid_probe && tokens <= 3;
+            if (capture_inputs) devices[0]->hybrid->probe_inputs[1].begin(tokens);
             auto* d = devices[0].get(); hip(hipSetDevice(0)); d->clear();
             for (int t = 0; t < tokens; ++t) {
                 const auto row = std::span(embeddings).subspan(embedding_stride * window[t], embedding_stride);
@@ -1149,38 +1743,57 @@ struct Session::Impl {
                     capture_batch(*d, "hc_ffn_gate_raw", d->f(5), W, tokens, l);
                     capture_batch(*d, "hc_ffn_inject_raw", d->f(7), 4, tokens, l);
                 }
-                layer.ffn(statistics, call_routes, tokens, trace_observations,
+                const bool capture_probe = config.hybrid_probe && tokens <= 3;
+                layer.ffn(execution_stats, call_routes, tokens, trace_observations, cpu_pool.get(), hybrid_policy, working_hybrid,
+                    config.hybrid_probe ? &probe_diagnostics : nullptr, cpu_return_baseline,
+                    capture_probe ? probe_down[1].data() + l * 10 * H : nullptr,
                     [&](const std::string& name, const float* x, int width, int token_offset = -1, int stride = 0) {
                         if (l != 0 || !trace_metadata.is_open()) return;
                         if (token_offset >= 0) capture(*d, name, x, width, l, token_offset);
                         else for (int t = 0; t < tokens; ++t)
                             capture(*d, name, x + t * (stride ? stride : width), width, l, t);
                     });
+                if (capture_inputs) devices[0]->hybrid->probe_inputs[1].capture(*d, l, tokens, transactional);
+                if (capture_probe)
+                    for (int t = 0; t < tokens; ++t)
+                        hip(hipMemcpyAsync(probe_ffn[1].data() + (t * 48 + l) * H, d->f(20) + t * H,
+                            H * sizeof(float), hipMemcpyDeviceToHost, d->stream));
                 if (l == 0 || l == 1 || l == 2 || l == 3 || l == 6 || l == 8 || l == 19 || l == 22 || l == 47) capture_batch(*d, "ffn_out", d->f(20), H, tokens, l);
                 combine(*d, residual, d->f(20), tokens, alternate);
                 std::swap(residual, alternate);
                 d->check("layer " + std::to_string(l));
+                layer.experts.finish_admissions(true); // Actual completion + successful entire layer.
                 capture_batch(*d, "l_last-" + std::to_string(l), residual, W, tokens, l);
             }
             head_hc->mix(*d, residual, epsilon, tokens, true); capture_batch(*d, "result_norm", d->f(6), H, tokens);
             head.apply(*d, d->f(6), d->logits.get(), tokens);
-            hip(hipMemcpyAsync(host_logits.data(), d->logits.get(), tokens * V * sizeof(float), hipMemcpyDeviceToHost, d->stream));
+            auto& destination = transactional ? working_logits : host_logits;
+            hip(hipMemcpyAsync(destination.data(), d->logits.get(), tokens * V * sizeof(float), hipMemcpyDeviceToHost, d->stream));
             d->check("head");
-            const std::span<const float> result(host_logits.data(), tokens * V);
-            for (float v : result) if (!std::isfinite(v)) throw std::runtime_error("logits nonfinite");
+            for (float v : std::span(destination).first(tokens * V)) if (!std::isfinite(v)) throw std::runtime_error("logits nonfinite");
             // Each counted group consumes >=129 of the 48*10 assignments per
             // token. Capacity <=131072 bounds the cumulative count well within
             // uint64_t across reset; no fallible or partial publication is needed.
             call_routes.expert_groups_gt128 += route_statistics.expert_groups_gt128;
-            statistics.consumed_tokens += static_cast<std::uint64_t>(tokens);
-            statistics.last_completed_ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - begin).count();
+            execution_stats.consumed_tokens += static_cast<std::uint64_t>(tokens);
+            execution_stats.last_completed_ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - begin).count();
+            if (transactional) { statistics = working_stats; host_logits.swap(working_logits); }
             route_statistics = call_routes;
-            return result;
+            publish_hybrid(working_hybrid);
+            if (config.hybrid_probe && tokens <= 3) {
+                probe_down[0].swap(probe_down[1]); probe_ffn[0].swap(probe_ffn[1]); probe_tokens = tokens;
+            } else probe_tokens = 0;
+            if (capture_inputs) std::swap(devices[0]->hybrid->probe_inputs[0], devices[0]->hybrid->probe_inputs[1]);
+            return {host_logits.data(), static_cast<std::size_t>(tokens) * V};
         } catch (...) {
             usable = false;
+            if (cpu_pool) (void)cpu_pool->drain(); // Stop owner submissions; gate failed batch globally.
+            if (probe_diagnostics.synthetic_failure) probe_diagnostics.cpu_pool_drained = true;
             // In-flight DMA may still read pinned bands, RAM or resident slots.
             // Finish both streams before reset/destruction can release any owner.
             for (auto& d : devices) d->drain_cleanup();
+            if (probe_diagnostics.synthetic_failure) probe_diagnostics.gpu_streams_drained = true;
+            for (auto& l : layers) l->experts.invalidate_cache();
             throw;
         }
     }
@@ -1193,6 +1806,29 @@ std::span<const float> Session::step_batch(std::span<const std::int32_t> tokens)
 void Session::reset() { impl_->reset(); }
 SessionStats Session::stats() const { return impl_->statistics; }
 SessionRouteStats Session::route_stats() const { return impl_->route_statistics; }
+void Session::set_hybrid_policy(SessionHybridPolicy policy) { impl_->set_hybrid_policy(policy); }
+SessionHybridPolicy Session::hybrid_policy() const { return impl_->hybrid_policy; }
+SessionHybridStats Session::hybrid_stats() const { return impl_->hybrid_stats(); }
+SessionHybridIntermediates Session::hybrid_intermediates() const {
+    return {std::span(impl_->probe_down[0]).first(static_cast<std::size_t>(impl_->probe_tokens) * 48 * 10 * H),
+        std::span(impl_->probe_ffn[0]).first(static_cast<std::size_t>(impl_->probe_tokens) * 48 * H)};
+}
+SessionHybridInputs Session::hybrid_inputs() const {
+    if (!impl_->config.hybrid_probe || !impl_->probe_tokens) return {};
+    const auto count = static_cast<std::size_t>(impl_->probe_tokens) * 48;
+    const auto& p = impl_->devices[0]->hybrid->probe_inputs[0];
+    return {std::span(p.original).first(count * (H / 32)), std::span(p.ids).first(count * 10),
+        std::span(p.weights).first(count * 10), std::span(p.available).first(count), std::span(p.cpu).first(count * 10)};
+}
+SessionHybridProbeDiagnostics Session::hybrid_probe_diagnostics() const {
+    if (!impl_->config.hybrid_probe) return {};
+    auto result = impl_->probe_diagnostics;
+    for (const auto& layer : impl_->layers) {
+        for (const auto& slot : layer->experts.map) result.ready_cache_ids += slot.id >= 0;
+        for (int id : layer->experts.pending) result.pending_cache_ids += id >= 0;
+    }
+    return result;
+}
 SessionMemory Session::memory() const { return impl_->memory(); }
 
 }

@@ -136,7 +136,7 @@
   observations. It imports no shell/runtime machinery, attests no binary/mount
   identity or HIP-index mapping, and does not turn samples into exact peaks or
   HIP-owned allocations. All8 actual raws were downloaded and passed local
-  collection, including both observer joins; canonical30-row/2,150,750-byte
+  collection, including both observer joins; historical canonical30-row/2,150,750-byte
   history preservation and +9/-0 diff were verified. The accepted, closed
   measurement-only slice contains docs/CMake/observer/request tools/tests/results;
   experimental Session/GPU/R5/speculative changes are outside it. No new dependency,
@@ -144,12 +144,46 @@
   Completed frozen-b522/dirtytrue rocprofv3 diagnostics are measurement evidence,
   not an imported runtime or candidate qualification; PP+TG overlapping duration
   sums do not identify total latency or prove a RAM/expert-DMA bottleneck.
-  Parent-local experimental/default-off Session/new route kernels/fixture and
-  CPU-expert/shadow/hybrid work are prepared/unmirrored/unqualified. The route
-  candidate uses one 80*N-byte DTO upload per layer and indexed Q8 gather/down
-  scatter per microtile<=8, preserving copied bits/expert fold order; no actual
-  HIP/model/speed result is claimed. Prepared R6 speculative pure-math helpers
-  are not trained-MTP integration.
+  The current Session/new route kernels/fixture and CPU-linear/GPU-middle
+  correctness slice passed remote job765: strict CXX20/HIP20 gfx906 Release,
+  warning gates/CTest35/35 (735.71s), both-GPU route-copy/paired-middle fixtures,
+  full hybrid and default regressions/actual collectors. Artifacts retain snapshot
+  `a4b55d84724ba15bbae7013d5a107b7671b7a409`/dirtytrue, not a future commit.
+  The route candidate uses one 80*N-byte DTO upload per layer and indexed Q8 gather/down
+  scatter per microtile<=8, preserving copied bits/expert fold order.
+  `src/cpu_expert.hpp` / `src/cpu_expert.cpp`, persistent bounded worker pool,
+  paired pinned-frame orchestration and two-stage gate/up then down scheduling,
+  route-copy fixtures, hybrid fixture/collector and bounded input/witness/failure
+  diagnostics are original code. The staged method reuses the already attributed
+  canonical CPU quant arithmetic and GPU unary/Q8 primitives; paired addressing
+  introduces no new donor algorithm. CPU gate/up/down surround canonical GPU
+  SiLU/Q8 aggregated once per CPU-bearing layer; `force_cpu` means
+  CPU_LINEAR_GPU_middle. The host-libm whole-expert path remains an oracle and
+  is not full-model qualified (diagnostic755/759); no quantizer ABI/GPU-math,
+  weight/precision/epsilon/gate change or tolerance waiver is introduced.
+  Dedicated copy-stream middle buffers/flag, event-protected pinned-frame reuse,
+  CPU-only rank contribution H2D and original-rank/shared fold are original
+  orchestration; captured-reader/pending-ID/admission/error-reset fixtures include
+  a synthetic failure, not an actual-inflight timing claim. Default cpu_workers=0
+  retains the historical GPU-only path/allocations. Threads/standard-library
+  facilities add no third-party dependency, donor runtime or new license.
+  The hybrid protocol reports added-buffer capacities, not full RSS/worker stacks
+  or measured all-owner old-buffer release; source-derived175 rejection checks
+  are not serialized per-rejection observations. Missing stats/routes/input
+  payloads/steady owned ledgers are not invented by the collector.
+  Parent local collection of the downloaded272019-byte actual hybrid passed,
+  with all compared metrics zero. Canonical ROOT journal has exactly one
+  r5_hybrid append30→31 / 2167805 bytes; exact old Git HEAD30 byte prefix,
+  parsed history and +1/-0 are verified. This bounded correctness slice is
+  accepted, covering Session/CPU/ops, relevant fixtures/CMake/collector/docs/
+  journal; accepted raw must not be appended again. Source remains a4b55d8/
+  dirtytrue, not a future closure hash. Exclusive trace-off paired job
+  1791073403122-769 is RUNNING with already-built765 versus savedb522/dirtytrue;
+  it has no completed performance result and imports no donor code/dependency.
+  No GPU-copy/hybrid performance win, measured dispatch threshold, fullR5 or
+  MTP result is claimed. The three post765 attention files and three future
+  Spec/R6 pure-math helper files are outside this accepted closure; they are
+  not trained-MTP integration or actual HIP/model/performance qualification.
   Existing mx/furnace MIT and reinstinct Apache-2.0 attribution is retained.
 
 - `src/hip/mmq.hip` adapts mx `mmq-load-tiles.cuh`, `mmq-vec-dot.cuh`,
