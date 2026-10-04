@@ -172,18 +172,37 @@
   are not serialized per-rejection observations. Missing stats/routes/input
   payloads/steady owned ledgers are not invented by the collector.
   Parent local collection of the downloaded272019-byte actual hybrid passed,
-  with all compared metrics zero. Canonical ROOT journal has exactly one
-  r5_hybrid append30→31 / 2167805 bytes; exact old Git HEAD30 byte prefix,
+  with all compared metrics zero. At that correctness closure, canonical ROOT
+  journal received one r5_hybrid append30→31 / 2167805 bytes; exact old Git HEAD30 byte prefix,
   parsed history and +1/-0 are verified. This bounded correctness slice is
   accepted, covering Session/CPU/ops, relevant fixtures/CMake/collector/docs/
   journal; accepted raw must not be appended again. Source remains a4b55d8/
-  dirtytrue, not a future closure hash. Exclusive trace-off paired job
-  1791073403122-769 is RUNNING with already-built765 versus savedb522/dirtytrue;
-  it has no completed performance result and imports no donor code/dependency.
-  No GPU-copy/hybrid performance win, measured dispatch threshold, fullR5 or
-  MTP result is claimed. The three post765 attention files and three future
-  Spec/R6 pure-math helper files are outside this accepted closure; they are
-  not trained-MTP integration or actual HIP/model/performance qualification.
+  dirtytrue, not closure HEAD6faf14ed. Exclusive trace-off paired job
+  1791073403122-769 completed exit0/57m33s with already-built765 versus
+  savedb522/dirtytrue: both use chunk1024/slots112, six fresh512-output requests.
+  The modest2–2.7% PP/about1.9% request gain is original measurement evidence,
+  not a new donor component/dependency or proof of memcpy dominance from
+  overlapping rocprof sums. Canonical journal31→38 contains exactly six request
+  records and one corrected paired record. Parent downloaded the canonical journal,
+  all six raws and fixture metadata; current local collection passed for all six,
+  matching source/footer/counts/timings/throughput to the remote journal entries.
+  Git HEAD31 byte prefix and parsed31 history are exactly preserved in38;
+  actual +7/-0 and diff whitespace checks passed. This measurement slice is
+  accepted and closed; accepted requests/paired record must not be appended again.
+  Hybrid performance, measured dispatch thresholds, fullR4/R5 and MTP remain
+  open. Prepared component-state cleanup has source checks only. Post765 CPU/
+  attention CLI controls, protocol2 and request/attention collectors passed
+  local tests, not HIP/GPU attention/Model B8 qualification. Next advance
+  the qualified a4 binary to one current baseline, then full strict36 candidate
+  build/CTest and both-GPU attention-batch/Model B8 full-logit/visibility/private-
+  buffer/default-regression gates. Completed765 full35 is the previous scope,
+  not a result for these36 gates; query-batch statistics are not kernel counts.
+  Default attention tile1/OFF and the original API
+  remain unchanged, CPUlinear_GPUmiddle retains its job765 qualification.
+  These candidate changes and future Spec/R6 pure-math helpers are outside
+  the accepted765 closure; they are not trained-MTP integration or actual
+  HIP/model/performance qualification. The future attention adaptation reuses
+  the existing furnace/mx primitive attribution above, with no new donor runtime.
   Existing mx/furnace MIT and reinstinct Apache-2.0 attribution is retained.
 
 - `src/hip/mmq.hip` adapts mx `mmq-load-tiles.cuh`, `mmq-vec-dot.cuh`,

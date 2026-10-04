@@ -19,8 +19,11 @@ journal's exact history and +9/-0 diff are verified. A completed diagnostic
 rocprofv3 run identified the per-assignment GPU route-copy seam. Current route-copy
 and CPU-linear/canonical-GPU-middle correctness slice is accepted: local actual
 hybrid collection and exact journal history/+1/-0 verification passed. Exclusive
-trace-off paired GPU-copy full-request job `1791073403122-769` is RUNNING;
-it has no accepted performance result yet. See the current-work and R5 sections.
+trace-off paired GPU-copy job `1791073403122-769` completed exit0 in 57m33s:
+PP improved 2.0–2.7% and full-request time about 1.9% against mean A1/A2.
+This measurement slice is accepted: all six local collectors and exact
+31→38 journal history/+7/-0 checks passed. Next advance the qualified a4 binary
+to the one current baseline, then qualify the GPU attention/B8 candidate.
 Full R4–R8, exact peak-VRAM qualification, MTP, serving and the
 400–600PP/30–40TG speed targets remain open; those targets are not met.
 Scope and acceptance are in [PLAN.md](PLAN.md); current evidence in [STATE.md](STATE.md).
@@ -1340,13 +1343,14 @@ not dominant in this diagnostic; head skipping is not the next major-win target.
 
 The source-accounted narrow seam is **per-assignment GPU Q8 gather/down scatter**:
 for1024 PP rows, `2 * (1024 * 10 * 48) = 983040` small D2D `hipMemcpyAsync`
-calls. This is an identified mechanism to remove, not an accepted speedup.
-The current candidate replaces it with **one 80*N-byte route DTO upload per
-layer** and indexed gather/scatter kernels per canonical microtile **≤8**,
+calls. The qualified route-copy implementation replaces it with **one 80*N-byte
+route DTO upload per layer** and indexed gather/scatter kernels per canonical microtile **≤8**,
 preserving all copied bits and the existing expert-contribution fold order.
 Job765 has now passed both-GPU route-copy and full-model hybrid correctness
-gates. The CPU-linear scheduler remains opt-in (`cpu_workers=0` by default);
-route-copy/hybrid performance and a measured admission threshold remain open.
+gates. The completed trace-free comparison below shows a modest route-copy
+PP/request gain, not dominance inferred from the roughly 83% memcpy share of
+summed HIP/API durations. The CPU-linear scheduler remains opt-in
+(`cpu_workers=0` by default); hybrid performance and admission thresholds remain open.
 
 Raw profile stdout/stderr are `ROOT/runs/r4-profile-b522-1024.jsonl` / `.err`;
 trace/stats CSVs remain under `ROOT/runs/r4-profile-b522-1024/`, with the nested
@@ -1354,41 +1358,86 @@ summary at `prefill_/core/runs/r4-profile-b522-1024-summary.txt.txt` relative to
 that directory. The full **554 MB trace remains remote and was not downloaded**;
 no model was copied for this profiling/documentation update.
 
-### Running trace-off GPU-copy full-request comparison
+### Accepted trace-off GPU-copy full-request measurement slice
 
-Exclusive job **`1791073403122-769` is RUNNING**, not a completed result or a
-candidate speed winner. It uses the **already-built job765** candidate
+Exclusive job **`1791073403122-769` completed exit0 in 57m33s**; GPUs were idle
+at completion. It used the **already-built job765** candidate
 `/core/build/core-session`, source
 `a4b55d84724ba15bbae7013d5a107b7671b7a409`/dirtytrue, against saved
 `/core/build/core-session-baseline`, source
-`b522429c5933f493a5838317dc0bfc26ee4158aa`/dirtytrue. The series performs no
-rebuild or mirror of future attention edits; retain the saved baseline unchanged.
+`b522429c5933f493a5838317dc0bfc26ee4158aa`/dirtytrue. No rebuild or mirror of
+future attention edits entered this series; these compiled macro strings remain
+authoritative, independently of parent HEAD `6faf14ed96dc1b0d4353dc838323616a6f6c5313`.
 
-For each **4K and16K** length, the sequence is **A1 baseline → B candidate →
+For each **4K and 16K** length, the sequence is **A1 baseline → B candidate →
 A2 baseline**, with **chunk1024 / slots112 on both binaries**, a fresh Session
 per request and no prefix reuse. Primary sampling is temperature1.0/top-p0.95/
-top-k20/seed12345 with ignoreEOS; each request requires **512 actual emitted
-outputs** for acceptance. Inputs remain the exact archived R0 4K IDs and their
-four concatenations for16K, not newly tokenized prompts. This compares route-copy
-binaries, separately from the historical chunk128/1024/128 comparison above.
+top-k20/seed12345 with ignoreEOS, MTP off and expert-cache warmness unknown.
+All six requests emitted **512 actual outputs each / 3072 total**;
+each performed 511 TG forwards / 512 RNG draws, with consumed4607/capacity4608
+at4K and consumed16895/capacity16896 at16K. The three 512-ID arrays within each
+length were identical, diagnostic-only. Inputs remain the exact archived R0
+generated archive/code 4K IDs at the path above and four concatenated copies
+for16K, not retokenized or original-user prompts. This is a same-own non-MTP
+binary comparison, distinct from both the historical chunk comparison and an
+external MTP2 baseline comparison.
+
+| Length / B765, chunk1024 | PP tokens/s | TG tokens/s | Full request (ms) | Mean-A / B PP elapsed | Mean-A / B request elapsed |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| 4K | 25.68871522181 | 10.07616889732 | 210162.620717 | 1.02718318141× | 1.01937816968× |
+| 16K | 22.60272136899 | 9.85092544783 | 776743.230123 | 1.01999903571× | 1.01916904667× |
+
+B is faster than **both A1 and A2 for PP and full request at each length**.
+This is a modest 2–2.7% PP/about 1.9% request gain, not a large win or a qualified
+TG/CPU-dispatch threshold. B full-request upload counters remain
+305,853,440,000 bytes at4K / 890,465,689,600 bytes at16K, equal to the older B
+configuration; they do not isolate PP traffic or establish bottleneck dominance.
 Raw stdout/stderr are `ROOT/runs/r4-indexed-a4-{4k,16k}-{a1,b,a2}.jsonl` / `.err`;
 series status and provenance are `ROOT/runs/r4-indexed-a4-series.log` and
 `ROOT/runs/r4-indexed-a4-fixture-source.json`.
 
-Next check the existing job769/process and logs; do not restart it blindly.
-After its accuracy/performance review, qualify the GPU attention-batch component
-on both GPUs and integrate the new B8 tile, then measure CPU workers/admission
-policy. Local attention edits made after765 and the three future Spec/R6 helper
-files are outside this accepted correctness closure; neither has actual
-HIP/model/performance qualification here, and the helpers are not trained-MTP
-integration.
+Remote canonical journal advanced **31→38**, exactly six `r4_request` records
+and one `r4_indexed_route_copy_ab` (**2,497,537 bytes**), preserving the old byte
+and parsed prefix. The first paired append failed on a missing model field
+before writing, after six valid request appends. Parent re-collected the existing
+37 records (timestamps excluded) and appended only the corrected paired record;
+no duplicate or history rewrite occurred. Parent downloaded the canonical journal,
+all six raw requests and fixture metadata. Current `record_request.collect`
+**passed on all six locally**; exact source/footer/output counts/timings/throughput
+match their remote journal entries, and the three 512-ID arrays per length match.
+The local 38-record journal preserves both the **Git HEAD31 byte prefix and
+parsed31-record history exactly**; actual git numstat **+7/-0** and diff whitespace
+checks passed. **The measurement-only slice is accepted and closed**; do not
+append these six requests or their paired record again. Full R4/R5 remains open.
+
+New local request tests **79/79 in 5.055s** and attention-collector tests
+**28/28 in 43.004s** passed. These cover local CLI/protocol2/collector contracts,
+not HIP execution, GPU attention or Model B8 qualification.
+
+Fresh paired reproduction reuses the Docker/request command above, with
+chunk1024 on all three runs: saved-baseline entrypoint for A1/A2, candidate
+entrypoint for B, fresh `NEW-indexed-{4k,16k}-{a1,b,a2}` stdout/stderr names and
+the saved exact IDs/capacities. Preserve each actual binary's revision/dirty flags.
+The parent can now promote the already-qualified a4 binary to the **one current
+baseline** before the next candidate build; the769 series is complete.
+
+Next run the candidate's full strict **36-gate build/CTest**, both-GPU
+attention-batch and Model B8 Session full logits, causal visibility2047–2056,
+private-buffer ownership and default regressions. The36-gate candidate is
+pending remote qualification; job765's completed35/35 is the previous full-build
+scope. Explicit CPU/attention CLI controls, request protocol2 and collectors are
+locally tested, while attention/B8 and component/state cleanup have no new HIP/
+model qualification. Runtime query-batch statistics count queries, not kernel launches.
+Attention tile1/OFF and the original API default remain unchanged.
+The CPUlinear_GPUmiddle pipeline retains its job765 qualification. Three future
+Spec/R6 helpers remain outside that closure and are not trained-MTP integration.
 Exact peak VRAM, full R4/R5–R8, occupied128K, MTP2 and project speed targets
 remain open.
 
 ## R5: qualified CPU-linear/canonical-GPU-middle correctness slice
 
-Remote **job765 completed exit0 / 34m46s**; GPUs were idle at that completion,
-before the current exclusive job769 series.
+Remote **job765 completed exit0 / 34m46s**; the later exclusive job769 comparison
+also completed, with its separate measurement scope above.
 The full strict **CXX20/HIP20 Release gfx906** build passed all warning gates and
 **CTest35/35 in 735.71s**. Both-GPU indexed route-copy and paired SiLU/Q8 fixtures,
 the full hybrid fixture, default reset/batch/logical-wide1024/default-capacity
@@ -1489,13 +1538,14 @@ With `ROOT=/home/radneon/gfx906-core`, actual logs are:
 - `ROOT/runs/r5-session-hybrid-middle-c.jsonl` (**348 records / 272,019 bytes**)
 - `ROOT/runs/r5-middle-default-{reset,batch,wide,memory}-c.jsonl`
 
-The canonical **ROOT/results.jsonl has exactly one new append, 30→31**, kind
+At this historical closure, canonical **ROOT/results.jsonl received one append,
+30→31**, kind
 `r5_hybrid`, passed=true, retaining snapshot a4b55d8/dirtytrue and the previous
 30-record byte prefix/parsed history. **Never append this accepted raw again.**
 Parent local `collect(downloaded_actual_r5-session-hybrid-middle-c)` **passed**
 on the **272,019-byte** raw, with all compared metrics zero. The downloaded
-canonical journal is **31 records / 2,167,805 bytes**; its exact old Git HEAD
-30-record byte prefix and parsed history are preserved, and **+1/-0 is verified**.
+canonical journal at that closure was **31 records / 2,167,805 bytes**; its exact
+old Git HEAD 30-record byte prefix and parsed history are preserved, and **+1/-0 is verified**.
 The bounded correctness slice is **accepted**. Its closure scope is Session/CPU/
 ops, relevant fixtures, CMake, collector, these docs and journal; the three
 post765 attention files and three future Spec files are excluded. Correctness
@@ -1524,12 +1574,14 @@ python3 -B "$ROOT/src/tools/record_hybrid.py" \
   --results "$ROOT/results.jsonl"
 ```
 
-This accepted correctness slice does not close fullR5, a GPU-copy/hybrid
-performance win, a measured dispatch threshold or MTP. The exclusive trace-off
-comparison **job769 is RUNNING**, using saved baselineb522 versus already-built
-job765; its protocol and raw paths are above. Check that existing job first.
-After accuracy/performance review, qualify attention-batch on both GPUs and
-integrate the new B8 tile, then measure CPU workers/admission policy.
+This accepted correctness slice does not close fullR5, hybrid performance,
+a measured dispatch threshold or MTP. The completed exclusive trace-off
+comparison **job769** measured a modest GPU-copy PP/request gain using saved
+baselineb522 versus already-built job765; its measurement slice is accepted
+with local actual-log and exact history/+7/-0 proofs above. Next advance the
+qualified a4 binary to one current baseline, then run the full strict36 candidate
+gates, both-GPU attention-batch and Model B8 Session logits/visibility/private
+buffers/default regressions before CPU workers/admission-policy measurements.
 Post765 local `src/hip/attention.cuh`, `src/hip/attention.hip` and
 `tests/attention_batch_test.hip` changes and three future Spec/R6 helper files are
 excluded from this closure, with no actual HIP/model/performance claim here.
