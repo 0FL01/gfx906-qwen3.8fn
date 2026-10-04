@@ -19,20 +19,17 @@ A=f59c8de dirty; B=7df1c74 dirty; do not retag/duplicate accepted raw records.
 /core/build/core-mtp-run-baseline NOW promotes rolled7df1c74, byte-verified.
 Original non-MTP core-session-baseline stays untouched. No model copies.
 
-NEXT primitive APIs implemented, Session STILL UNCHANGED: logicalN<=128 tiled
-linear grids preserve physicalN<=8 arithmetic and legacy tails. Native338 exit0
-in1m09s: strict build, bothGPU278cases each,173928902 exact values/device,
-74328 CPU samples/device,21host rejects,276graph checks; old short/dense PASS.
-Large F32 output2560 regresses; DO NOT enable tiled dense universally. Small
-HC4x10240 atN128 ~15.6–15.8x in resident component, Q4 gate/up ~2x; not model speed.
-
-ACTIVE job1791146805979-344: expanded primitive measurements addN16 and actual
-Q5/Q8 projection / small dense shapes; same compiled296ea56/dirtytrue. Raw
-ROOT/runs/r4-linear-tiled-296-expanded.jsonl/.err and expanded-build.log.
-No other GPU load/compile until it finishes. Primitive files remain UNCOMMITTED.
-Next: evaluate expanded timings, qualify primitive slice, then minimal Session
-integration (quantized and small-output dense only), real-model gates and paired
-full requests against the newly promoted rolled MTP baseline.
+Canonical tiled-grid primitive jobs338/344 COMPLETE exit0. Journal60 copied,
+old59 bytes and actual expanded records verified. BothGPU300cases each,
+204939974 exact compares/device,81352 CPU samples,21host rejects,298graph checks.
+Legacy short/dense regressions pass; source296ea56/dirtytrue. Component APIs
+support logicalN<=128 with physicalN8 grid tiles and original tails, no new math.
+Measured candidate policy: only remainingN>=16; quantized or dense output<=512.
+Large F32 output2560 is slower (~0.76x atN128) and must keep original N8 dispatch.
+Primitive slice is being committed; Session STILL UNCHANGED. No GPU job active.
+Next: minimal selective Matrix/project/group integration, short+wide full-model
+correctness, then complete regression and matched requests. Keep rolled7df MTP
+baseline unchanged during integration. Overall speed goals remain open.
 
 R0–R3 closed. R4 speed, R5 measured dispatch, full R6, R7 occupied128K/tokenizer/API
 and R8 safetensors/runtime-pack remain OPEN. Frozen correctness gates unchanged.

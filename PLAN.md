@@ -333,3 +333,12 @@ trajectories. Candidate requests126.693/396.449s beat both old bookends; mean
 speedups1.3060x/1.4157x. Journal59; old58 bytes retained. Rolled MTP executable
 is the new MTP baseline, source7df1c74/dirtytrue. Pinned llama.cpp still wins
 full requests(~57/~144s). Continue measured PP work; whole-plan goals remain open.
+
+### 2026-10-04 canonical tiled-grid component checkpoint
+
+LogicalN<=128 via parallel physicalN8 tiles passes both GPUs,409,879,948 exact
+compares,162,704 CPU samples,42 host rejects and596 graph checks. Legacy APIs
+pass. Journal60/source296ea56dirty. Resident shape tests support quantized and
+small-output dense atN>=16; large F32 output2560 regresses and is excluded.
+Next: selective Session integration, frozen full-model gates and matched full
+requests. No component number is a model speed claim.

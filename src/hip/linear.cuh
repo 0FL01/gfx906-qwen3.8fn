@@ -8,6 +8,7 @@ namespace qwen {
 inline constexpr int linear_device_max_dimension = 16384;
 inline constexpr int linear_device_max_columns = 3;
 inline constexpr int linear_device_short_max_columns = 8;
+inline constexpr int linear_device_tiled_max_columns = 128;
 
 // Borrowed canonical GGML weights: contiguous [output][input/block_elements]
 // blocks, without padding or repack. input/output are element dimensions.
@@ -64,6 +65,14 @@ struct QuantizedDeviceMatrix {
 // no per-column launches, DS4 conversion or additional workspace. The existing
 // launch_quantized_linear contract remains N=1..3 and still rejects N=4.
 [[nodiscard]] hipError_t launch_quantized_linear_short(QuantizedDeviceMatrix matrix,
+        const Q8_1* input, int columns, float* output, hipStream_t stream) noexcept;
+
+// Logical N1..128, exact canonical <=8-column microtiles. Full N8 tiles share
+// one grid with an independent y dimension; a final N1..7 tail uses the original
+// short kernel. No wider dot, DS4 conversion, workspace or arithmetic change.
+// Full logical ranges/aliases are validated before ANY enqueue. Existing N<=3
+// and N<=8 entrypoints keep their limits. Same stream/lifetime contract above.
+[[nodiscard]] hipError_t launch_quantized_linear_tiled(QuantizedDeviceMatrix matrix,
         const Q8_1* input, int columns, float* output, hipStream_t stream) noexcept;
 
 // Reusable float -> canonical Q8_1 workspace producer, also usable for prefill:

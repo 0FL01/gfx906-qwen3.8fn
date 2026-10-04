@@ -26,10 +26,15 @@ bool dimension(int d) noexcept { return d > 0 && d <= 16384; }
 // The actual production binary uses low-then-high FMAC and two-stage padded
 // wave reduction. Express contraction explicitly, not with global fast-math.
 // KEEP rocBLAS for N9..128, odd K and valid float-aligned/non-pair-aligned inputs.
-template<int Columns, int Threads>
+template<int Columns, int Threads, bool Tiled = false>
 __global__ __launch_bounds__(Threads)
 void mmvf(const float2* weights, const float2* input, int pairs, int rows,
           float* output) {
+    if constexpr (Tiled) {
+        const auto first = std::size_t(blockIdx.y) * Columns;
+        input += first * pairs;
+        output += first * rows;
+    }
     const int tid = threadIdx.x, lane = tid % 64;
     const auto* row = weights + std::size_t(blockIdx.x) * pairs;
     float acc[Columns]{};
@@ -58,15 +63,15 @@ void mmvf(const float2* weights, const float2* input, int pairs, int rows,
     if (tid < Columns)
         output[std::size_t(tid) * rows + blockIdx.x] = acc[tid];
 }
-template<int Columns>
+template<int Columns, bool Tiled = false>
 void enqueue_mmvf(DenseDeviceMatrix matrix, const float* input, float* output,
-                  hipStream_t stream) noexcept {
+                  hipStream_t stream, int tiles = 1) noexcept {
     const auto* w = reinterpret_cast<const float2*>(matrix.weights);
     const auto* x = reinterpret_cast<const float2*>(input);
     if (matrix.input <= 128)
-        mmvf<Columns, 64><<<matrix.output, 64, 0, stream>>>(w, x, matrix.input / 2, matrix.output, output);
+        mmvf<Columns, 64, Tiled><<<dim3(matrix.output, tiles), 64, 0, stream>>>(w, x, matrix.input / 2, matrix.output, output);
     else
-        mmvf<Columns, 128><<<matrix.output, 128, 0, stream>>>(w, x, matrix.input / 2, matrix.output, output);
+        mmvf<Columns, 128, Tiled><<<dim3(matrix.output, tiles), 128, 0, stream>>>(w, x, matrix.input / 2, matrix.output, output);
 }
 } // namespace
 
@@ -104,5 +109,34 @@ rocblas_status launch_dense_linear(rocblas_handle handle, DenseDeviceMatrix matr
     return rocblas_sgemm(handle, rocblas_operation_transpose, rocblas_operation_none,
         matrix.output, columns, matrix.input, &alpha, matrix.weights, matrix.input,
         input, matrix.input, &beta, output, matrix.output);
+}
+rocblas_status launch_dense_linear_tiled(rocblas_handle handle, DenseDeviceMatrix matrix,
+    const float* input, int columns, float* output, hipStream_t stream) noexcept {
+    if (!handle) return rocblas_status_invalid_handle;
+    if (!dimension(matrix.input) || !dimension(matrix.output) || matrix.input % 2 != 0 ||
+        columns < 1 || columns > 128) return rocblas_status_invalid_size;
+    const auto k = static_cast<std::size_t>(matrix.input);
+    const auto m = static_cast<std::size_t>(matrix.output);
+    const auto n = static_cast<std::size_t>(columns);
+    Range weights{}, x{}, y{};
+    if (!range(matrix.weights, k * m, weights) || !range(input, k * n, x) ||
+        !range(output, m * n, y) || overlaps(y, weights) || overlaps(y, x) ||
+        reinterpret_cast<std::uintptr_t>(matrix.weights) % alignof(float2) != 0 ||
+        reinterpret_cast<std::uintptr_t>(input) % alignof(float2) != 0)
+        return rocblas_status_invalid_pointer;
+    if (columns <= 8) return launch_dense_linear(handle, matrix, input, columns, output, stream);
+    auto status = rocblas_set_stream(handle, stream);
+    if (status != rocblas_status_success) return status;
+    status = rocblas_set_pointer_mode(handle, rocblas_pointer_mode_host);
+    if (status != rocblas_status_success) return status;
+    // KEEP production MMVF sums, FMAs and barriers; independent N8 tiles supply
+    // more workgroups for small HC/router matrices without a wider reduction.
+    const int tiles = columns / 8;
+    enqueue_mmvf<8, true>(matrix, input, output, stream, tiles);
+    if (hipGetLastError() != hipSuccess) return rocblas_status_internal_error;
+    const int first = tiles * 8, tail = columns - first;
+    if (tail == 0) return rocblas_status_success;
+    return launch_dense_linear(handle, matrix, input + std::size_t(first) * k,
+        tail, output + std::size_t(first) * m, stream);
 }
 } // namespace qwen

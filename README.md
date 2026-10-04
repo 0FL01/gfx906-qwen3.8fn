@@ -2398,3 +2398,44 @@ non-MTP core-session-baseline is untouched. Historical command paths alone do
 not pin an executable forever; use each raw source revision/variant for replay.
 Next is component-qualified canonical tiled-grid linear dispatch; no new Session
 integration or end-to-end claim is included here.
+
+## Canonical tiled-grid linear primitives (2026-10-04)
+
+New checked launch_quantized_linear_tiled and launch_dense_linear_tiled accept
+logicalN1..128 while retaining the exact original physicalN<=8 arithmetic.
+Full N8 tiles occupy independent grid.y positions; a final N1..7 tail uses the
+original short kernel. No wide-MMQ arithmetic, DS4 conversion, new precision,
+workspace or changed reduction is introduced. Full logical readable/writable
+ranges are checked before any enqueue; legacy N<=3/N<=8 APIs keep their limits.
+Dense tiled mode requires even K and float2-aligned weights/input and has no
+SGEMM fallback. The original dense API's fallback remains unchanged.
+
+Manual core-linear-tiled is model-free. Native338 exited0 in1m09s after strict
+build, the first fixture and unchanged linear-short-test/dense-mmvf-test; expanded
+native344 exited0 in35s. Compiled source296ea56/dirtytrue is preserved. Expanded
+coverage per GPU:300 cases,204,939,974 exact compared values including timed
+reuse,81,352 CPU samples,21 host rejections and298 graph checks. Both GPUs pass;
+max common-Q8 error6.4373016357421875e-6, max bound ratio0.0256371 at unchanged
+2e-4+2e-5*abs(ref). CPU checks sample up to five spread rows across all columns;
+full arrays are compared against chronological canonical N8 GPU execution.
+Dense CPU checks use an exactly representable dyadic pattern, plus non-dyadic
+GPU bit comparisons. Padding, immutable inputs, readonly aliasing, quantizer
+raw-sum/subnormal headers, repeat/reuse, invalid ranges/handle preservation and
+legacy limits pass. Captured logical calls contain exactly one or two kernel
+nodes; this is a graph observation, not a full-model physical-dispatch count.
+
+Resident event A/B/A timings cover86 device/shape/column coordinates, excluding
+quantization, transfer and model costs. On both GPUs atN>=16, measured quantized
+shapes and dense outputs<=512 beat both serial-N8 bookends. Examples atN128:
+Q4 gate/up ~2x; Q4 down ~1.6x; HC4x10240 ~15.6–15.8x. Large F32 output2560 is
+NEGATIVE: about0.76x atN128. N9 dense is not a stable win. Therefore the candidate
+Session policy must be selective: logical tiles only when remainingN>=16;
+quantized projections and dense output<=512, with legacy N8 otherwise. This is
+component-derived policy, not an accepted model speedup or universal dispatch.
+
+Raw prefix ROOT/runs/r4-linear-tiled-296, expanded.jsonl/.err and legacy
+short/dense regression files. Journal60 preserves59 old records exactly and
+includes all expanded timings, both device results and old-path regressions.
+Controller copied the actual expanded stream and matched it to the journal.
+The APIs are not yet wired into Session at this closure. Full-model state/
+continuation and trace-off request measurements are mandatory after integration.

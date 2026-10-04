@@ -25,4 +25,13 @@ struct DenseDeviceMatrix {
 [[nodiscard]] rocblas_status launch_dense_linear(rocblas_handle handle,
     DenseDeviceMatrix matrix, const float* input, int columns, float* output,
     hipStream_t stream) noexcept;
+
+// Canonical MMVF arithmetic at logical N1..128 without the SGEMM fallback.
+// Requires even input width and float2-aligned weights/activations; output is
+// float-aligned. Full N8 microtiles share grid.y; the final N1..7 tile uses the
+// existing kernel. Full logical ranges are validated before handle mutation or
+// enqueue. Other ownership/lifetime contracts above apply. Old API unchanged.
+[[nodiscard]] rocblas_status launch_dense_linear_tiled(rocblas_handle handle,
+    DenseDeviceMatrix matrix, const float* input, int columns, float* output,
+    hipStream_t stream) noexcept;
 } // namespace qwen

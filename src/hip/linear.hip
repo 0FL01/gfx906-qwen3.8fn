@@ -208,10 +208,15 @@ __device__ __forceinline__ float accumulate32(const Tile32& tile, const int* q8,
 // kbx=tid/(qi/vdr), kqs=vdr*(tid%(qi/vdr)), stride=vdr*128/qi.
 // Merge wave1 into wave0 lane-wise BEFORE ascending-XOR DPP sum64; a sum of
 // separately reduced waves would have a different floating-point order.
-template<TensorType Type, int Columns, int Rows>
+template<TensorType Type, int Columns, int Rows, bool Tiled = false>
 __global__ __launch_bounds__(128, 1)
 void matrix32(const std::uint8_t* weights, const Q8_1* input,
               float* output, int blocks, int rows) {
+    if constexpr (Tiled) {
+        const auto first = std::size_t(blockIdx.y) * Columns;
+        input += first * blocks;
+        output += first * rows;
+    }
     constexpr int bytes = Type == TensorType::Q4_0 ? 18 :
                           Type == TensorType::Q4_1 ? 20 :
                           Type == TensorType::Q5_0 ? 22 : 34;
@@ -287,10 +292,15 @@ __device__ __forceinline__ Tile6 load6(const std::uint8_t* block, int iqs) {
     return tile;
 }
 
-template<int Columns, int Rows>
+template<int Columns, int Rows, bool Tiled = false>
 __global__ __launch_bounds__(128, 1)
 void matrix6(const std::uint8_t* weights, const Q8_1* input,
              float* output, int blocks, int rows) {
+    if constexpr (Tiled) {
+        const auto first = std::size_t(blockIdx.y) * Columns;
+        input += first * blocks * 8;
+        output += first * rows;
+    }
     const int lane = threadIdx.x, tid = 64 * threadIdx.y + lane;
     const int row0 = blockIdx.x * Rows, iqs = tid % 32;
     float acc[Columns][Rows]{};
@@ -335,20 +345,20 @@ void matrix6(const std::uint8_t* weights, const Q8_1* input,
     }
 }
 
-template<TensorType Type, int Columns, int Rows>
+template<TensorType Type, int Columns, int Rows, bool Tiled = false>
 void enqueue_rows(QuantizedDeviceMatrix matrix, const Q8_1* input, float* output,
-                  hipStream_t stream) noexcept {
-    const dim3 grid((matrix.output + Rows - 1) / Rows), threads(64, 2);
+                  hipStream_t stream, int tiles = 1) noexcept {
+    const dim3 grid((matrix.output + Rows - 1) / Rows, tiles), threads(64, 2);
     const auto* weights = static_cast<const std::uint8_t*>(matrix.weights);
     if constexpr (Type == TensorType::Q6_K)
-        matrix6<Columns, Rows><<<grid, threads, 0, stream>>>(weights, input, output, matrix.input / 256, matrix.output);
+        matrix6<Columns, Rows, Tiled><<<grid, threads, 0, stream>>>(weights, input, output, matrix.input / 256, matrix.output);
     else
-        matrix32<Type, Columns, Rows><<<grid, threads, 0, stream>>>(weights, input, output, matrix.input / 32, matrix.output);
+        matrix32<Type, Columns, Rows, Tiled><<<grid, threads, 0, stream>>>(weights, input, output, matrix.input / 32, matrix.output);
 }
 
-template<TensorType Type, int Columns>
+template<TensorType Type, int Columns, bool Tiled = false>
 void enqueue_type(QuantizedDeviceMatrix matrix, const Q8_1* input, float* output,
-                  hipStream_t stream) noexcept {
+                  hipStream_t stream, int tiles = 1) noexcept {
     if constexpr (Columns == 1) {
         // mmvq.cu::should_use_small_k, strict '<', for these five GCN types:
         // Q4/Q5 K<2048, Q8 K<1024, Q6 K<1024 use two rows/block; else one.
@@ -356,32 +366,32 @@ void enqueue_type(QuantizedDeviceMatrix matrix, const Q8_1* input, float* output
         constexpr int blocks_per_iter = Type == TensorType::Q6_K ? 4 :
                                         Type == TensorType::Q8_0 ? 32 : 64;
         if (matrix.input / elements < blocks_per_iter)
-            enqueue_rows<Type, Columns, 2>(matrix, input, output, stream);
+            enqueue_rows<Type, Columns, 2, Tiled>(matrix, input, output, stream, tiles);
         else
-            enqueue_rows<Type, Columns, 1>(matrix, input, output, stream);
+            enqueue_rows<Type, Columns, 1, Tiled>(matrix, input, output, stream, tiles);
     } else {
-        enqueue_rows<Type, Columns, 2>(matrix, input, output, stream);
+        enqueue_rows<Type, Columns, 2, Tiled>(matrix, input, output, stream, tiles);
     }
 }
 
-template<int Columns>
+template<int Columns, bool Tiled = false>
 void enqueue(QuantizedDeviceMatrix matrix, const Q8_1* input, float* output,
-             hipStream_t stream) noexcept {
+             hipStream_t stream, int tiles = 1) noexcept {
     switch (matrix.type) {
     case TensorType::Q4_0:
-        enqueue_type<TensorType::Q4_0, Columns>(matrix, input, output, stream);
+        enqueue_type<TensorType::Q4_0, Columns, Tiled>(matrix, input, output, stream, tiles);
         break;
     case TensorType::Q4_1:
-        enqueue_type<TensorType::Q4_1, Columns>(matrix, input, output, stream);
+        enqueue_type<TensorType::Q4_1, Columns, Tiled>(matrix, input, output, stream, tiles);
         break;
     case TensorType::Q5_0:
-        enqueue_type<TensorType::Q5_0, Columns>(matrix, input, output, stream);
+        enqueue_type<TensorType::Q5_0, Columns, Tiled>(matrix, input, output, stream, tiles);
         break;
     case TensorType::Q8_0:
-        enqueue_type<TensorType::Q8_0, Columns>(matrix, input, output, stream);
+        enqueue_type<TensorType::Q8_0, Columns, Tiled>(matrix, input, output, stream, tiles);
         break;
     case TensorType::Q6_K:
-        enqueue_type<TensorType::Q6_K, Columns>(matrix, input, output, stream);
+        enqueue_type<TensorType::Q6_K, Columns, Tiled>(matrix, input, output, stream, tiles);
         break;
     default: break; // Unsupported types were rejected before enqueue.
     }
@@ -440,6 +450,26 @@ hipError_t launch_quantized_linear_short(QuantizedDeviceMatrix matrix, const Q8_
     case 8: enqueue<8>(matrix, input, output, stream); break;
     }
     return hipGetLastError();
+}
+
+hipError_t launch_quantized_linear_tiled(QuantizedDeviceMatrix matrix, const Q8_1* input,
+                                        int columns, float* output, hipStream_t stream) noexcept {
+    if (columns <= linear_device_short_max_columns)
+        return launch_quantized_linear_short(matrix, input, columns, output, stream);
+    const auto status = validate_linear(matrix, input, columns, linear_device_tiled_max_columns, output);
+    if (status != hipSuccess) return status;
+    // KEEP qualified MMVQ arithmetic and its N8 register reuse. ADAPT launch
+    // geometry only: each y tile owns disjoint contiguous activation/output rows.
+    const int tiles = columns / linear_device_short_max_columns;
+    enqueue<8, true>(matrix, input, output, stream, tiles);
+    const auto launched = hipGetLastError();
+    if (launched != hipSuccess) return launched;
+    const int first = tiles * linear_device_short_max_columns;
+    const int tail = columns - first;
+    if (tail == 0) return hipSuccess;
+    return launch_quantized_linear_short(matrix,
+        input + std::size_t(first) * (matrix.input / 32), tail,
+        output + std::size_t(first) * matrix.output, stream);
 }
 
 hipError_t launch_quantize_q8_1(const float* input, Q8_1* output, int width,
