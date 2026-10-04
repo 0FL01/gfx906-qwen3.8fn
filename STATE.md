@@ -69,9 +69,18 @@ eligible shapes slower (roughly0.71–0.97x first-A/B). Journal64 retains paired
 timings. Current runtime binaries untouched. Row1 experiment jobs413/419/426 also
 passed all component gates but hurts dominantQ4_0 (~0.66–0.89x); Q4_1-only
 1.05–1.09x is not integrated. Source restored; journal65.
-Next: isolate expert-only wideMMQ from dense/PLE/GDN/projection changes in the
-historical failed-wide candidate; current canonical graph and correctedQ8 stay.
-Build/run only model fixture targets until qualified; current runtime preserved.
+Expert-only wideMMQ isolated from dense/PLE/GDN/projections FAILS shortN32:
+job438 exit1,7,559,835 logit violations/maxabs4.395458/maxratio195.672.
+Diagnostic trace442 and analyzer444 exit0,7392 matched nodes each phase.
+First observed difference layer0 unweighted expert5.96e-8; layer0 aggregate
+position2 differs2.74e-6, residual1.58e-6; first tensor-bound failure layer1
+HCmix position2 maxabs.04899 (ratio7.60). This is observed amplification,
+not a proven cause in HC. Frozen bounds unchanged. Source reverted both hosts.
+Journal66 preserves negative and raw prefix ROOT/runs/r4-expert-mmq-aa1.
+Current core-mtp-run60d and baseline7df unchanged; model fixture binaries still
+contain the REJECTED MMQ candidate until rebuilt. Never use those for acceptance.
+Next bounded measured bottleneck: fuse canonical routed-expert SiLU/up and
+Q8 quantization, preserving middle FP32 values, all Q8 bytes and sticky flags.
 Further candidates require fresh measured priority: PP launch density/selection,
 per-column dense reductions, two-GPU chunk overlap, grouped short MoE. Do not
 mix another optimization into this still-unqualified integration slice.
