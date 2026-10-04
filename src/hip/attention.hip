@@ -274,7 +274,10 @@ void fattn_dec_chunk(const float* query, const int* counts, int visible,
 #pragma unroll
         for (int h = 0; h < H; ++h) s[h] = 0.0f;
         const auto* kr = w.gathered_keys + static_cast<std::size_t>(cell >= 0 ? cell : 0) * row_values + g * D;
-#pragma unroll
+// Keep the canonical ascending FP32 dot, but bound the live register set.
+        // The fully unrolled B8 profile used256 VGPR and4380 private scratch.
+        // No reassociation, precision, finite-check or reduction change.
+#pragma unroll 1
         for (int c = 0; c < D / 8; ++c) {
             const float k0 = cell >= 0 ? half_value(kr[8 * c + 0]) : 0.0f;
             const float k1 = cell >= 0 ? half_value(kr[8 * c + 1]) : 0.0f;
@@ -596,7 +599,10 @@ void fattn_dec_chunk_batch(AttentionQ4BatchView<const float> queries,
 #pragma unroll
         for (int h = 0; h < H; ++h) s[h] = 0.0f;
         const auto* kr = w.gathered_keys + static_cast<std::size_t>(cell >= 0 ? cell : 0) * row_values + g * D;
-#pragma unroll
+// Keep the canonical ascending FP32 dot, but bound the live register set.
+        // The fully unrolled B8 profile used256 VGPR and4380 private scratch.
+        // No reassociation, precision, finite-check or reduction change.
+#pragma unroll 1
         for (int c = 0; c < D / 8; ++c) {
             const float k0 = cell >= 0 ? half_value(kr[8 * c + 0]) : 0.0f;
             const float k1 = cell >= 0 ? half_value(kr[8 * c + 1]) : 0.0f;

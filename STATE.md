@@ -24,15 +24,24 @@ Component traced batched sum77.458 ->17.019ms (diagnostic only, no full-model wi
 Raw ROOT/runs/r4-attention-roll-{reference,candidate}.jsonl/.err/-trace,
 reference.bin and component-summary.json. Compiled7df1c74/dirtytrue.
 
-ACTIVE native job1791141889741-275: preserve current f59 MTP executable as
-/core/build/core-mtp-run-baseline, strict full build+CTest, then actual all-layer
-core-prefill-attention-test MODEL. Original core-session-baseline is untouched.
-One baseline runtime now has separate off/on entrypoints, not model copies.
-Raw r4-attention-roll-full-regression.log, r4-attention-roll-model.jsonl/.err.
-Do not run another GPU workload/heavy compile until this gate job finishes.
-Kernel/test changes are UNCOMMITTED until full gates and measured slice close.
-Next: verify job275, then trace-off MTP baseline/candidate at4K/16K+512 with
-capacity5120/17408 and unchanged sampling, measure full requests before promotion.
+Full gate job1791141889741-275 COMPLETE exit0/30m13s. Strict build+CTest39/39
+PASS1148.60s. Actual48-layer fixture:2163calls/6264rows/1555476480finite,
+1036984320compared logits,zero violations/bit mismatches/maxabs0. Full-model
+reference is candidate-build N1, not pre-change/HF; component supplies old bits.
+Remote+controller strict actual collector PASS. Journal58 copied; old57 bytes
+and actual component/model records verified. Correctness slice is being committed.
+/core/build/core-mtp-run-baseline preserves f59 MTP; original core-session-baseline
+is untouched. No model copies. Candidate binaries source7df1c74/dirtytrue.
+
+ACTIVE performance job1791143846406-290: MTP baseline/candidate/baseline for4K
+then16K,512 outputs,capacity5120/17408,slots112/chunk1024/tile8/primaryseed12345.
+Driver ROOT/runs/r4-attention-roll-ab.py; fresh artifacts
+ROOT/runs/r4-attention-roll-ab-20261004. Cross-build full512 output IDs,
+acceptance and RNG must match A1. No tracing/rebuild/heavy compile/other GPU load.
+Do not declare speed promotion before completed paired measurements.
+Next measured PP costs after attention: canonical Q4 N8 and dense MMVF N8;
+old metadata respectivelyVGPR60/Scratch0 andVGPR24/Scratch0. Consider wider
+canonical column reuse only after this slice is measured; no new hot change yet.
 
 R0–R3 closed. R4 speed, R5 measured dispatch, full R6, R7 occupied128K/tokenizer/API
 and R8 safetensors/runtime-pack remain OPEN. Frozen correctness gates unchanged.

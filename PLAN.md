@@ -316,3 +316,12 @@ Fresh pinned llama.cpp MTP2 completed4K/16K x2 with512 actual outputs (journal57
 rejected and preserved separately. Use capacity prompt+1024 for all future own
 baseline/candidate comparisons; previous own series used prompt+512. Preserve
 TG numerator/timing-boundary differences and donor QSA semantic limitations.
+
+### 2026-10-04 rolled canonical attention correctness checkpoint
+
+Only QK-dot loop unrolling changed. Old/candidate component snapshot3,745,280
+values is bit-identical; scratch is0 and VGPR52 (was256/4380). Full strict build,
+39/39 CTest and actual48-layer N1/B8/continuation fixture pass with1,036,984,320
+zero-error compared logits. Journal58; compiled7df1c74/dirtytrue. Component timing
+improvement is diagnostic. Paired trace-off MTP baseline/candidate4K/16K+512,
+capacity prompt+1024, is the next promotion gate. Full project remains open.

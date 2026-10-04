@@ -7,9 +7,12 @@
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
+#include <filesystem>
+#include <fstream>
 #include <iomanip>
 #include <iostream>
 #include <limits>
+#include <memory>
 #include <numeric>
 #include <span>
 #include <stdexcept>
@@ -41,6 +44,51 @@ constexpr double absolute_gate = 2e-4, relative_gate = 2e-4;
 void require(bool ok, const char* message) {
     if (!ok) throw std::runtime_error(message);
 }
+
+// Optional cross-build witness, separate from the frozen CPU/numeric gates.
+// Native little-endian uint64 headers and FP32 values on this same gfx906 host.
+// A footer is written only after both GPUs and all failure/cleanup tests pass.
+class Snapshot {
+    std::ofstream output;
+    std::ifstream input;
+public:
+    bool compare;
+    std::uint64_t cases = 0, values = 0;
+    Snapshot(bool read, const char* path) : compare(read) {
+        if (compare) { input.open(path, std::ios::binary); require(bool(input), "snapshot open failed"); }
+        else {
+            require(!std::filesystem::exists(path), "snapshot capture requires fresh path");
+            output.open(path, std::ios::binary); require(bool(output), "snapshot create failed");
+        }
+        const std::array<std::uint64_t, 2> header{0x5153414254303031ULL, sizeof(float)};
+        transfer(header.data(), sizeof(header));
+    }
+    void transfer(const void* data, std::size_t bytes) {
+        if (compare) {
+            std::vector<char> reference(bytes);
+            input.read(reference.data(), static_cast<std::streamsize>(bytes));
+            require(bool(input), "snapshot truncated");
+            require(std::memcmp(reference.data(), data, bytes) == 0, "cross-build attention bits differ");
+        } else {
+            output.write(static_cast<const char*>(data), static_cast<std::streamsize>(bytes));
+            require(bool(output), "snapshot write failed");
+        }
+    }
+    void observe(int device, int batch, int first, int capacity, const std::vector<float>& data) {
+        const std::array<std::uint64_t, 5> header{static_cast<std::uint64_t>(device),
+            static_cast<std::uint64_t>(batch), static_cast<std::uint64_t>(first),
+            static_cast<std::uint64_t>(capacity), data.size()};
+        transfer(header.data(), sizeof(header)); transfer(data.data(), data.size() * sizeof(float));
+        ++cases; values += data.size();
+    }
+    void finish() {
+        const std::array<std::uint64_t, 3> footer{0x515341454e443031ULL, cases, values};
+        transfer(footer.data(), sizeof(footer));
+        if (compare) require(input.peek() == std::char_traits<char>::eof(), "snapshot trailing data");
+        else { output.close(); require(bool(output), "snapshot close failed"); }
+    }
+};
+Snapshot* cross_build = nullptr;
 void check(hipError_t e) {
     if (e != hipSuccess) throw std::runtime_error(hipGetErrorString(e));
 }
@@ -307,7 +355,9 @@ void parity(Fixture& f, Summary& s) {
         s.gate(std::span<const float>(batch_output).subspan(row * f.qs, attention_query_elements), ref);
         s.bit_elements += attention_query_elements; ++s.queries;
     }
-    f.sources(); f.neighbors(); ++s.cases;
+    f.sources(); f.neighbors();
+    if (cross_build) cross_build->observe(s.device, f.batch, f.first, f.capacity, batch_output);
+    ++s.cases;
 }
 
 // Rejected device inputs: bad LAST query must not publish even valid neighbors.
@@ -510,10 +560,18 @@ void json_string(std::string_view text) {
 }
 } // namespace
 
-int main() {
+int main(int argc, char** argv) {
     try {
+        std::unique_ptr<Snapshot> snapshot;
+        if (argc != 1) {
+            require(argc == 3 && (std::string_view(argv[1]) == "--capture" ||
+                std::string_view(argv[1]) == "--compare"), "use --capture FRESH or --compare SNAPSHOT");
+            snapshot = std::make_unique<Snapshot>(std::string_view(argv[1]) == "--compare", argv[2]);
+            cross_build = snapshot.get();
+        }
         int count = 0; check(hipGetDeviceCount(&count)); require(count == 2, "fixture requires both target GPUs");
         const std::array<Summary, 2> results{device(0), device(1)};
+        if (snapshot) snapshot->finish();
         // Bounded JSONL only after BOTH GPUs and all RAII cleanup succeed.
         std::cout << std::setprecision(17) << "{\"kind\":\"attention_batch_source\",\"protocol\":1,\"revision\":";
         json_string(CORE_REVISION);
@@ -526,6 +584,10 @@ int main() {
                       << ",\"cpu_elements\":" << s.cpu_elements << ",\"max_abs\":" << s.max_abs << ",\"max_bound_ratio\":" << s.max_ratio
                       << ",\"device_rejects\":" << s.device_rejects << ",\"host_rejects\":" << s.host_rejects
                       << ",\"sticky_checks\":" << s.sticky_checks << ",\"passed\":true,\"cleanup_complete\":true}\n";
+        if (snapshot)
+            std::cout << "{\"kind\":\"attention_batch_cross_build\",\"mode\":\""
+                      << (snapshot->compare ? "compare" : "capture") << "\",\"cases\":" << snapshot->cases
+                      << ",\"values_including_padding\":" << snapshot->values << ",\"passed\":true}\n";
         return 0;
     } catch (const std::exception& e) {
         // Stack unwinding finishes RAII cleanup before the bounded failure row.

@@ -2301,3 +2301,55 @@ and summaries. Reproduction driver/client are ROOT/runs/r6-llama-matched-{host,c
 Canonical journal57 preserves all56 previous records byte-for-byte; controller
 copied the actual response set and reran all four strict validations. No final
 speed win is claimed. The next own optimization remains under correctness gates.
+
+## Canonical attention dot loop: bounded correctness closure (2026-10-04)
+
+The candidate changes ONLY the two QK-dot loop unroll pragmas in attention.hip
+from full unroll to unroll1. It keeps ascending FP32 products/additions, every
+finite check, Q4-to-half values, double-exp-to-FP32 evaluation, selected-ID order,
+chunk/reduction geometry and all acceptance gates. This targets register pressure,
+not reduced precision or a new attention algorithm.
+
+The model-free fixture now optionally supports `--capture FRESH.bin` and
+`--compare SNAPSHOT.bin`. Default invocation/three-record output stays unchanged.
+The witness contains native same-host typed case headers, all output/padding
+values and a completion footer, which is written only after both GPUs pass.
+Controller CPU sanity passed roundtrip plus6 fresh-path/corruption/truncation/
+trailing-data/metadata/value rejection cases. This is a fixture, not model storage.
+
+Old-kernel capture job1791141492191-268 and candidate comparison272 both exited0
+in33s. Unchanged-source checksum was checked before capture. All52 cases and
+3,745,280 values including padding are bit-identical across builds. Each GPU
+also passes26 cases/304 queries,1,867,776 independent CPU comparisons at the
+frozen2e-4+2e-4*abs(ref) gate,23 device rejections,180 host rejections and6 sticky
+checks. CPU maximum absolute error remains1.1920928955078125e-7.
+
+Actual traced kernel metadata and component duration sums:
+- Batched:VGPR256/Scratch4380 -> VGPR52/Scratch0; LDS15872 unchanged
+- Single-query:VGPR256/Scratch4372 -> VGPR52/Scratch0; LDS15872 unchanged
+- Same110 batched launches:77.457911 ->17.018558ms (~4.55x)
+- Same608 single-query launches:308.264752 ->85.367026ms (~3.61x)
+These are traced component sums, not full-request speedups.
+
+Full native job1791141889741-275 exited0 in30m13s: strict build and CTest39/39
+passed1148.60s, then the unchanged actual48-layer prefill-attention fixture passed.
+It completed2163 calls/6264 rows, inspected1,555,476,480 finite logits and compared
+1,036,984,320 values with zero violations, zero diagnostic bit mismatches and
+maxabs0. The full-model reference is N1 IN THIS CANDIDATE BUILD; it is not an
+independent pre-change model-logit or HF reference. The separate component
+snapshot supplies pre-change bit evidence. Logical2047–2056, reset/rejection,
+state, memory and continuation checks retain their original scope and gates.
+Remote and controller strict model collectors passed on the actual artifact.
+
+Compiled provenance remains7df1c746d7decceea1ad04536fb83968c7975c43/dirtytrue.
+Raw prefix ROOT/runs/r4-attention-roll:reference/candidate JSONL, binary witness,
+component traces/summary, full-regression.log and model.jsonl/.err. Canonical
+journal58 adds exactly one bounded-correctness record after57 unchanged records;
+controller copied and matched actual component/model data. Do not append again.
+
+The saved non-MTP core-session-baseline remains intact. The already-tested
+f59 MTP executable was also preserved as core-mtp-run-baseline before rebuilding,
+so one baseline runtime has separate off/on entrypoints; no models were copied.
+A trace-off4K/16K A/B/A comparison against that MTP baseline is now running with
+capacity prompt+1024,512 actual outputs and identical sampling. Full-request
+speed promotion and all remaining R4–R8 goals are still open.
