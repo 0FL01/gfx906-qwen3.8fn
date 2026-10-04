@@ -32,6 +32,9 @@ struct SessionConfig {
     // Constructor-only bounded query-private QSA capacity, 1..128. Does not
     // enable batching; tile=1 preserves the historical GPU allocations.
     int attention_query_tile = 1;
+    // Constructor-only target prefix snapshots/tap. Requires max_batch_tokens>=3.
+    // Off adds no GPU buffers, transfers or arithmetic; host sizeof does change.
+    bool speculative_checkpoints = false;
 };
 
 // force_cpu is a source-compatible diagnostic name for CPU LINEAR projections
@@ -135,6 +138,45 @@ struct SessionAttentionStats {
     std::uint64_t singleton_tail_calls = 0, max_query_rows = 0;
 };
 
+// Logical pending-window ownership. Slot k is after k consumed inputs, including
+// slot 0 PRE-window. Only a completed verify publishes N+1 valid slots (max 4).
+// A restore consumes the window even when k==N. No persistent KV snapshot.
+struct SessionCheckpointState {
+    bool enabled = false, pending = false;
+    std::uint64_t start_position = 0;
+    int inputs = 0, valid_slots = 0;
+    bool operator==(const SessionCheckpointState&) const = default;
+};
+
+// Typed BORROWED GPU view, never a CPU-dereferenceable span. Device1 FP32
+// [rows][10240], the layer47 final widened combine BEFORE root HC mixing.
+// Latest successful ordinary/verify forward; restore never changes these rows.
+// Copy/read on device before the next SUCCESSFUL forward/reset/destruction.
+// Rejection and failed execution preserve this view AND its physical bytes;
+// execution failure still requires reset before further forward/restore.
+// k>0 selects row k-1 as next carry; restoring k==0 provides no carry (the
+// caller must retain its earlier carry). No concurrent access during a call.
+struct SessionTargetTap {
+    int device = 1;
+    const float* pointer = nullptr;
+    int rows = 0, width = 10240;
+    std::uint64_t first_position = 0;
+    bool operator==(const SessionTargetTap&) const = default;
+};
+
+// Separate opt-in diagnostics, cumulative until successful reset. Restore ONLY
+// changes the logical consumed cursor, never these completed-work counters or
+// historical expert/upload/route/hybrid/attention diagnostics. Prefix calls are
+// invocations of the existing prefix-enabled launch APIs, NOT profiler kernel
+// counts: GDN has two prefix-writing kernels, PLE and QSA tail have one each.
+struct SessionSpeculativeStats {
+    std::uint64_t target_forward_rows = 0, verify_windows = 0, verify_rows = 0;
+    std::uint64_t restore_calls = 0, retained_inputs = 0;
+    std::uint64_t gdn_prefix_calls = 0, ple_prefix_calls = 0, qsa_tail_prefix_calls = 0;
+    std::array<std::uint64_t, 4> restored_prefixes{};
+    bool operator==(const SessionSpeculativeStats&) const = default;
+};
+
 // Actual backing Buffer bytes, already included in workspace/owned_bytes.
 // staged/output reuse the existing f(15)/f(17) scratch buffers; private_workspace
 // describes only the fixed tile prefix of staged, plus the four private buffers.
@@ -200,13 +242,28 @@ struct SessionMemory {
         hybrid_middle_q8_bytes{}, hybrid_middle_error_bytes{};
     int attention_query_tile = 1;
     std::array<SessionAttentionMemory, 2> attention{};
+    // Snapshot/tap GPU capacities also included in workspace and independent
+    // live-Buffer traversal. Exactly FOUR prefix slots per mutable state.
+    bool speculative_checkpoints = false;
+    // Each tap capacity is max_batch_tokens*10240*sizeof(float), on device1.
+    // The second buffer protects published physical bytes on execution failure.
+    std::array<std::uint64_t, 2> checkpoint_recurrent_bytes{}, checkpoint_history_bytes{},
+        checkpoint_qsa_tail_bytes{}, checkpoint_ple_history_bytes{}, target_tap_bytes{}, target_tap_staging_bytes{};
+    // Actual object sizeof; config is INCLUDED in Impl (do not add twice).
+    // Owner only when enabled; hash config vector capacities plus requested
+    // fixed history payload are counted. Private history-vector allocator slack,
+    // allocator overhead, RSS and thread stacks are excluded.
+    std::uint64_t host_session_impl_bytes = 0, host_session_config_bytes = 0;
+    std::uint64_t host_speculative_owner_bytes = 0, host_speculative_hash_payload_bytes = 0;
 };
 
 // One exclusive interactive session, static 24/24 layer split. Canonical expert
 // weights stay in RAM; each layer owns an immutable-weight LRU on its device.
 // A failed numeric window invalidates the session until reset(), rather than
 // exposing partially advanced cross-layer state. Argument rejection is atomic.
-// Returned logits live until the next accepted call.
+// Returned logits live until the next accepted call; with constructor snapshots
+// enabled, last-success views instead survive failures until the next successful
+// forward/reset/destruction. No concurrent calls or view access during execution.
 // No tokenizer/sampler and no linkage to llama/ggml execution.
 class Session {
 public:
@@ -218,6 +275,28 @@ public:
     // N=1..max_batch_tokens, token-major [N][248320] completed logits. Validate
     // the entire window's IDs/length/capacity before any state/cache mutation.
     std::span<const float> step_batch(std::span<const std::int32_t> tokens);
+    // Exclusive N=1..3 target forward. Requires constructor snapshots and no
+    // pending verify. Full argument preflight precedes any mutation. Publishes
+    // PRE-window + all chronological prefix states only after network/head
+    // success. Returns token-major full logits. With snapshots enabled, borrowed
+    // logits/tap survive rejection, restore and execution failure, until the
+    // next successful forward/reset/destruction. No concurrent view access.
+    // Ordinary successful forward invalidates a previous pending verification;
+    // invalid ordinary arguments do not. Failed execution requires reset; its
+    // slots are unusable and checkpoint_state() rejects inspection until reset.
+    std::span<const float> verify_window(std::span<const std::int32_t> tokens);
+    // Exclusive one-shot restore of the latest pending verify, k=0..N. Drains
+    // pool and both device streams before copying. Restores GDN/history, PLE
+    // hash/conv and QSA raw tail; cursor=start+k hides main-Q4/pooled suffixes,
+    // which are overwritten on reuse. No logits/tap writes or counter rewind.
+    // Successful restore consumes pending ownership. Rejection preserves ALL
+    // published spans/diagnostics. A restore execution failure requires reset.
+    void restore_prefix(int retained_inputs);
+    // Exclusive allocation-free getters. Only checkpoint_state requires usable
+    // execution; last-success tap/stats remain inspectable after failure.
+    SessionCheckpointState checkpoint_state() const;
+    SessionTargetTap target_tap() const;
+    SessionSpeculativeStats speculative_stats() const;
     // Marks unusable at entry. Only complete success clears published counters/
     // probe extents and re-enables execution; successful reset retains warm cache.
     void reset();
@@ -239,8 +318,9 @@ public:
     void set_hybrid_policy(SessionHybridPolicy);
     SessionHybridPolicy hybrid_policy() const;
     SessionHybridStats hybrid_stats() const;
-    // Borrowed last-success views until the next accepted call/destruction.
-    // Successful reset publishes empty extents; inspection/rejection preserves.
+    // Borrowed last-success views until the next accepted call/destruction;
+    // with snapshots enabled, until next successful forward/reset/destruction.
+    // Successful reset publishes empty extents; rejection/failure preserves bytes.
     SessionHybridIntermediates hybrid_intermediates() const;
     // Same full-call atomic publication/lifetime as intermediates. A fixture's
     // subsequent numerical comparison failure does not invalidate these views.

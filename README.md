@@ -6,7 +6,7 @@ are qualified; short, logical-wide and real4K/16K teacher fixtures pass
 same-Session N1 full-logit parity and continuation with observed expert groups
 over 128. The **B8 attention / explicit CLI protocol2 correctness slice is
 qualified**, with the component, full-model self-parity, actual request collectors
-and default regressions passing. The compiled snapshot remains
+and default regressions passing. That B8 compiled snapshot remains
 `77f89c3412fff65634df8b45b08fab1b3da028a0`/dirtytrue. Job
 `1791083481832-775` ended exit1 after a successful strict build/CTest36/36 and
 GPU/model execution: a collector incorrectly required two host-logit owners with
@@ -19,17 +19,25 @@ The subsequent **trace-off B8 A/B/A job `1791090828619-823` completed exit0 in
 52m44s** against the saved a4 baseline. B measured **35.5848 PP / 10.0650 TG at4K**
 and **32.1364 PP / 9.7726 TG at16K**; mean-A/B PP gains are **1.3931× / 1.4200×**,
 full-request gains **1.2711× / 1.3818×**. Detailed timings and fresh commands are below.
-Remote canonical history is **48 records / 2,897,341 bytes**, exactly seven
-appends41→48 with the old byte prefix/parsed history verified remotely. All six
-strict remote request collections passed. Parent confirmed all six local
-collections, exact Source/completion/rates against the journal, Git HEAD41
-byte-prefix/parsed-history preservation and **+7/-0 / diff --check PASS**.
-The bounded performance-measurement slice is **accepted and closed**.
-Next parent commits/pushes only these four docs and the journal, then promotes
-the qualified attention binary to the one baseline. Qualify the locally prepared
-target checkpoint/tap/restore, dense-Q4 attention component and actual MTP
-descriptor with new strict gates/default regressions; CPU-worker/admission-policy
-and remaining PP weight-traffic measurements follow.
+That bounded performance-measurement slice is **accepted, closed and pushed as
+`ba446f9266ab2dc4c0aa4e73d8930a5534c4b2a2`**. The qualified775 attention binary
+was promoted to the **one saved baseline before831**, retaining source77f/dirtytrue.
+The subsequent **R6 prerequisite run831 completed with native exit0 / 46m12s**:
+strict CXX20/HIP20 Release gfx906/all-warning/`-ffp-contract=off` build,
+**CTest39/39**, actual sidecar descriptors, both-GPU dense-Q4 attention, target
+checkpoint/tap/restore including wide1024, and default regressions passed.
+Its artifacts retain **source `ba446f9266ab2dc4c0aa4e73d8930a5534c4b2a2`/dirtytrue**;
+the current831 binary is not yet a performance baseline. MCP lost the background
+status; a read-only Docker daemon die event recovered the original native exit0,
+without repeating the run. Evidence and fresh commands are in the R6 section below.
+Canonical remote **ROOT/results.jsonl is now50 records / 2,967,969 bytes**, exactly
+two appends48→50 with the old48 byte prefix/parsed history verified remotely.
+The parent's actual local restore collection and exact descriptor/dense-record
+matches passed, with the old48 byte/parsed history preserved and actual **+2/-0 /
+diff --check PASS**. The bounded **R6 prerequisite slice is accepted and closed,
+correctness only**. The immediate parent action is its normal code/docs/journal
+commit/push, then trained-forward teacher-reference qualification against an
+independent donor oracle, full logits/state and stochastic windows.
 Full R4–R8, exact peak-VRAM qualification, MTP, serving and the
 400–600PP/30–40TG speed targets remain open; those targets are not met.
 Scope and acceptance are in [PLAN.md](PLAN.md); current evidence in [STATE.md](STATE.md).
@@ -1630,17 +1638,19 @@ collections passed**, with Source/completion/rates exactly matching the recorded
 ROOT rows and three512-ID arrays per length identical, diagnostic-only. The
 downloaded journal preserves the old **Git HEAD41 exact byte prefix and parsed
 history**; actual **git diff numstat +7/-0 and diff --check passed**.
-The bounded **performance-measurement slice is accepted and closed**.
-**Never append these seven records again.** Parent's next normal commit/push
-contains only `README.md`, `PLAN.md`, `STATE.md`, `third_party/NOTICE.md` and
-`results.jsonl`; all future Session checkpoint/MtpModel/speculative/dense/inspector
-code is excluded. After that closure commit/push, promote the qualified775
-attention binary, source77f/dirtytrue with explicit query tile8, to the **one
-baseline** before qualifying new R6 prerequisites. This is the next action,
-not a claim of a new HEAD or completed binary replacement; compiled Source
-remains unchanged.
+The bounded **performance-measurement slice is accepted, closed and pushed as
+`ba446f9266ab2dc4c0aa4e73d8930a5534c4b2a2`**; its scope was the four docs and
+journal, excluding the then-future prerequisite code. **Never append these seven
+records again.** Before831, qualified775 was promoted to the **one saved baseline**:
+`/core/build/core-session-baseline`, **1,750,328 bytes**, source77f/dirtytrue;
+future A runs explicitly use query tile8 / workers0 / hybrid disabled.
+The saved path no longer contains historical823 A/sourcea4. The current
+`/core/build/core-session` is the831 sourceba446f9/dirtytrue build, correctness
+qualified below but not performance-qualified or promoted. These changes do not
+retag either the historical823 artifacts or the saved775 baseline.
 
-Fresh B reproduction on the GPU host (choose new filenames before every run):
+Fresh tile8 request reproduction on the GPU host (choose new filenames before
+every run). With current831 this is a new candidate run, not a replay of775 timings:
 
 ```sh
 set -eu
@@ -1666,11 +1676,13 @@ python3 -B "$ROOT/src/tools/record_request.py" \
   --raw "$ROOT/runs/NEW-attention-ab-4k-b.jsonl" --results "$ROOT/results.jsonl"
 ```
 
-For historical **A1 and A2**, while the saved baseline still reports sourcea4,
-use entrypoint `/core/build/core-session-baseline`, omit the
-three new flags `--cpu-workers`, `--hybrid-mode`, `--attention-query-tile` and their
-values, and choose distinct container/stdout/stderr names
-`NEW-attention-ab-4k-a1` / `NEW-attention-ab-4k-a2`; keep chunk1024/slots112.
+Historical823 **A1 and A2** used the then-saved sourcea4 binary with the three
+new flags `--cpu-workers`, `--hybrid-mode`, `--attention-query-tile` omitted.
+That binary has been replaced at the saved path; use the archived823 raws for
+that historical comparison. For new **A1 and A2**, use entrypoint
+`/core/build/core-session-baseline` with explicit workers0 / hybrid disabled /
+query tile8 and distinct `NEW-attention-ab-4k-a1` / `NEW-attention-ab-4k-a2`
+container/stdout/stderr names; keep chunk1024/slots112.
 For16K use prompt `ROOT/runs/r4-fullrequest-b522-16k.prompt-ids.json`, capacity16896
 and fresh `NEW-attention-ab-16k-{a1,b,a2}` filenames. Run A1→B→A2 sequentially at
 each length and collect each fresh raw only after executable exit0. Fixed raw
@@ -1680,25 +1692,12 @@ Git HEAD. Preserve the literal raw labels. A rebuilt future binary must report
 its actual source, not borrow823 provenance. Keep tracing off and one GPU workload
 without heavy compilation.
 
-After promoting77f to the one baseline, that saved path no longer represents
-the823 A binary. Use the archived823 raws for its historical comparison; new
-paired measurements use the qualified77f baseline with explicit tile8 and a
-new candidate, checking each actual Source.
-
-**Next qualification:** locally prepared `src/session.hpp` / `src/session.hip`
-checkpoint/tap/restore and `src/session_restore_test.cpp`, `MtpModel` guards,
-speculative math and `src/hip/mtp_attention.{cuh,hip}` dense-Q4 component have
-**not been mirrored, compiled or promoted on the GPU host**. They are outside
-this measurement-only slice. Qualify actual HIP target restore and tap against
-sequential consumed-input state, the dense component on both GPUs and descriptor
-gates against the actual sidecar, then run default regressions. Descriptor guards
-cover32 exact roles (BF16 only indexer Q/K), the full top-10 expert budget,
-blk.48 compression0/dense attention and every typed tokenizer field's equality; confirm
-the convention against the actual donor reader. These are prerequisites, not
-trained MTP runtime/rollback or performance evidence. CPU-worker/admission-policy
-and remaining PP weight-traffic measurements follow. Attention tile1/OFF and
-the original API remain defaults; full R4/R5 policy, trained MTP, occupied long/API,
-converter and final speed goals remain open.
+New paired measurements use the qualified77f baseline with explicit tile8 and a
+new candidate, checking each actual Source. Attention tile1/OFF and the original
+API remain defaults. The R6 prerequisites below are **accepted and closed,
+correctness only**, with actual remote/local and history checks passing; the
+parent's normal prerequisite commit/push is next. Trained MTP, measured R5 policy,
+remaining PP traffic, occupied long/API, converter and final speed goals stay open.
 
 ## R5: qualified CPU-linear/canonical-GPU-middle correctness slice
 
@@ -1849,11 +1848,148 @@ binary was the saved baseline for823. B8/CLI2 correctness was accepted/pushed as
 3cc594d after jobs775/820; separate trace-off B8 job823 is complete with the PP
 and request gains above. Parent local six-raw collection/exact journal matches,
 Git HEAD41 byte/parsed-prefix proof and +7/-0/diff --check passed; the bounded
-performance-measurement slice is accepted and closed. Parent's next normal
-five-file docs/journal commit/push precedes promoting77f to the one baseline,
-then new strict checkpoint/tap/restore, dense-Q4 component and actual MTP descriptor
-gates with default regressions. CPU-worker/admission-policy and PP weight traffic
-measurements follow. All unqualified R6/future code is excluded from this
-measurement-only commit; it provides no trained MTP runtime proof.
+performance-measurement slice is accepted, closed and pushed as ba446f9.
+Qualified775/source77fdirtytrue is now the one saved baseline, promoted before831;
+the current831/sourceba446f9dirtytrue build passed the bounded R6 prerequisite
+gates below, now **accepted and closed, correctness only**, after parent actual
+local validation/history/+2/-0 checks. Parent normal commit/push is immediate,
+then trained-forward teacher-reference qualification proceeds. CPU-worker/admission-policy and PP weight
+traffic measurements remain open; the earlier measurement-only commit provides
+no trained MTP runtime proof.
 Full R4/R5 performance, occupied128K, MTP2 and the **400–600PP / 30–40TG** targets
 remain open and unmet.
+
+## R6 prerequisites: actual descriptors, dense Q4 attention and target restore
+
+### Native completion and strict gates
+
+Run **`1791103589280-831`** used synchronized source
+**`ba446f9266ab2dc4c0aa4e73d8930a5534c4b2a2`/dirtytrue**, not a future closure
+commit. MCP reported **`state_lost` / `background_channel_closed_without_exit_status`
+after14m15s**. The parent recovered the **original native exit0 without rerunning**
+from a read-only Docker daemon **container die event** for
+`core-r6-prerequisites-check`, ID
+`35ed6fbda1d6c386cb1d84819addcaf4650460044619ba658867de52e73a0644`:
+`exitCode=0`, `execDuration=2772s` (**46m12s**), `time=1791106362`,
+`timeNano=1791106362809343377`. The downloaded ignored proof is
+`ROOT/runs/r6-prerequisites-ba-a-exit-proof.json` (**719 bytes**).
+
+The full **CXX20/HIP20 Release gfx906/all-warning/`-ffp-contract=off` build** passed
+**CTest39/39 in1145.49s**. New `MtpModel` tests passed **666 checks / 451 rejects**;
+speculative pure math passed **35,963,782 checks / 715 rejects / 5,522,274
+allocation-checked hot calls with zero heap allocations**. Pure math does not
+execute trained MTP. Subsequent actual descriptor, both-GPU dense component,
+wide1024 target restore and default reset/batch/B8 attention/memory processes
+all exited0; strict actual collection passed. Default capacity131072/slots112 is
+an allocation/regression gate, not occupied128K history.
+
+### Actual descriptor and model-free dense attention
+
+`core-mtp-model TARGET SIDECAR` produced **36 records / 14,462 bytes** in
+`ROOT/runs/r6-mtp-model-ba-a.jsonl`: all **32 role-typed descriptors**, checked
+offsets/strides and actual inventory **Q8_0×19 / F32×11 / BF16×2**. BF16 is allowed
+only for indexer Q/K. The checks preserve full top10 expert budget and confirm
+blk.48 compression0/dense attention, full typed equality of all10 tokenizer
+assets, and distinct target-owned **Q4_0 embedding / Q6_K output** views.
+Descriptor-derived sidecar payload is **2,775,621,632 bytes**; gate/up/down expert
+stride is **1,740,800 bytes each**. This CLI reads metadata/descriptors, not tensor
+payload or a trained forward.
+
+`core-mtp-attention` produced **4 records / 1,298 bytes** in
+`ROOT/runs/r6-mtp-attention-ba-a.jsonl`, including both GPUs and a passing cleanup
+footer with **live_resources=0**. Dense full-causal-prefix Q4 K/V covers B1..3 and
+synthetic128K, old-N1 short bit parity, finite/source/bounds checks, future poison,
+rejections, sticky publication and canaries. Each GPU passed **63 cases / 128
+queries**, maxabs **2.9522925615310669e-6**, max-bound-ratio
+**0.014517076073887787**, at frozen **`2e-4 + 2e-4*abs(ref)`**. Donor decision:
+**KEEP** mx sum64, **ADAPT** the current furnace-derived64-key split/merge,
+**WRITE OURS** bounded direct canonical Q4→FP16 RNE reads. This synthetic component
+is not occupied full-model128K, trained MTP, independent HF or performance proof.
+
+### Actual target checkpoint/tap/restore, including wide1024
+
+`core-session-restore-test MODEL --wide-1024` produced protocol1 **56 records /
+473,730 bytes** in `ROOT/runs/r6-target-restore-ba-a.jsonl`. Three owners execute
+sequentially, one live at a time: primary cap40/max-batch3/CPU0, wide cap2048/
+max-batch1024/CPU0, and CPU1 synthetic failure/reset recovery. Across all owners,
+**644,390,400 full-vocabulary comparisons / 2595 rows** and **26,419,200 exact tap
+values** passed: **maxerror/max-bound-ratio/diagnostic bit differences all zero**,
+with the unchanged logit gate **`.02 + .002*abs(ref)`**. Aggregate phase totals are
+**51 successful restores / 84 argument rejections / 137 steady-memory observations /
+6 sticky rejections**; the footer's primary-only counts are50/83/133.
+
+The45 primary windows cover N1..3 with **every retained prefix0..N**, all mod4
+phases, EOS plus PLE hash/convolution, QSA tail, divergent suffixes and old-published
+span/tap preservation. Wide PP checks **all1024 taps**. The target tap is the
+**widened10240 residual before ROOT_HC**, published transactionally: invalid calls
+and execution failure preserve the old publication; execution failure makes
+checkpoint/restore unavailable until reset. Restore rewinds logical consumed-input
+state and recurrent/conv/PLE/QSA-tail prefixes; it does **not rewind expert cache
+slots, uploads or physical execution counters**, and does not copy full KV history.
+
+Checkpoint/tap storage is opt-in, **default OFF**, with **87 independent GPU
+Buffers**. Batch3 adds **236,851,200 bytes on GPU0 / 235,622,400 on GPU1**;
+batch1024 keeps GPU0 at236,851,200 and adds **319,262,720 on GPU1**. Wide GPU1 has
+two transactional tap buffers of **41,943,040 bytes each**. This is target
+consumed-input self-parity/state qualification, not trained-sidecar rollback,
+independent HF, occupied128K or throughput evidence.
+
+### Raw evidence, journal boundary and fresh reproduction
+
+With `ROOT=/home/radneon/gfx906-core`, the build/status log is
+`ROOT/runs/r6-prerequisites-ba-a-build.log`; default raws are
+`ROOT/runs/r6-default-{reset,batch,attention,memory}-ba-a.jsonl`.
+Canonical **ROOT/results.jsonl alone** received exactly two appends **48→50 /
+2,967,969 bytes**: `r6_target_restore` and `r6_mtp_prerequisites`. The old48-record
+byte prefix and parsed history are exact remotely. The parent downloaded all
+three new actual raws, exit proof and canonical journal. Parent read-only local
+`record_restore.collect` passed again on the downloaded **473,730-byte** actual raw:
+**644,390,400 comparisons / 26,419,200 exact tap values**, all errors zero.
+The actual C++ descriptor36-record and dense4-record raws' Source/footer/inventory/
+device fields **exactly match the new ROOT record**. Both the **Git HEAD old48
+parsed history and byte prefix are exact against local50**; actual **git numstat
++2/-0 / diff --check PASS**. The bounded **R6 prerequisite slice is ACCEPTED/CLOSED,
+correctness only; R6_complete_claim=false**. Parent normal code/docs/journal
+commit/push is the immediate remaining action. Never duplicate-append the recorded
+raws or retag their native Source.
+
+Fresh reproductions run sequentially on the GPU host after the existing explicit
+`sh /core/src/tools/build.sh` contract with the actual synchronized revision/dirty:
+
+```sh
+set -eu
+set -C
+ROOT=/home/radneon/gfx906-core
+docker run --rm --name core-mtp-model-repro \
+  --entrypoint /core/build/core-mtp-model \
+  -v /home/radneon/gfx906-core:/core -v /home/radneon/models-nvme:/models:ro \
+  llama.cpp-gfx906:cmake-4.4.3 /models/qwen38-keep1-Q4_0.gguf \
+  /models/mtp-Qwen3.8-Flash-Next-shared-Q8_0.gguf \
+  > "$ROOT/runs/NEW-mtp-model.jsonl" 2> "$ROOT/runs/NEW-mtp-model.err"
+docker run --rm --name core-mtp-attention-repro \
+  --device /dev/kfd --device /dev/dri --group-add video --ipc host \
+  --security-opt seccomp=unconfined --entrypoint /core/build/core-mtp-attention \
+  -v /home/radneon/gfx906-core:/core llama.cpp-gfx906:cmake-4.4.3 \
+  > "$ROOT/runs/NEW-mtp-attention.jsonl" 2> "$ROOT/runs/NEW-mtp-attention.err"
+docker run --rm --name core-session-restore-repro \
+  --device /dev/kfd --device /dev/dri --group-add video --ipc host \
+  --security-opt seccomp=unconfined --entrypoint /core/build/core-session-restore-test \
+  -v /home/radneon/gfx906-core:/core -v /home/radneon/models-nvme:/models:ro \
+  llama.cpp-gfx906:cmake-4.4.3 /models/qwen38-keep1-Q4_0.gguf --wide-1024 \
+  > "$ROOT/runs/NEW-target-restore.jsonl" 2> "$ROOT/runs/NEW-target-restore.err"
+# Only after executable exit0; ONE strict fresh restore append to ROOT only.
+python3 -B "$ROOT/src/tools/record_restore.py" \
+  --raw "$ROOT/runs/NEW-target-restore.jsonl" --results "$ROOT/results.jsonl"
+```
+
+**Next:** parent normal prerequisite code/docs/journal commit/push, then apply/review
+the trained-forward candidate and qualify teacher history against an actual
+independent donor oracle, full logits/state and stochastic windows. Source-pinned
+`qwen4exp.cpp:438..450` requires the **first Hnorm per2560 branch with distinct
+4×2560 gamma**; treating it as one10240 reduction is rejected. HC mixer normalization
+over the whole10240 remains unchanged. Ignored
+`runs/r6-trained-mtp-forward.patch` (**73,983 bytes**) and
+`runs/r4-layerwise-prefill.patch` (**61,985 bytes**) are both **unapplied/unqualified**
+and carry no speed promise. Full R4 speed, R5 measured policy, R6 trained MTP,
+R7 occupied long/tokenizer/API and R8 pack/final gates remain mandatory and open;
+latest performance stays the accepted823 measurements above.

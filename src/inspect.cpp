@@ -44,7 +44,21 @@ int main(int argc,char **argv) {
             std::vector<std::byte> bytes(tensor.strides[2]);
             model.read_expert(tensor.name,0,bytes);
         }
-        if(!sidecar) {
+        if(sidecar) {
+            // Bounded complete inventory for the known 32-tensor shared sidecar.
+            constexpr std::size_t max_tensors=64;
+            constexpr std::size_t max_name=160;
+            std::size_t printed=0;
+            for(const auto &tensor:model.tensors()) {
+                if(printed==max_tensors) break;
+                ++printed;
+                std::cout<<tensor.name.substr(0,max_name)<<": "<<qwen::type_name(tensor.type)<<" [";
+                for(std::uint32_t axis=0;axis<tensor.rank;++axis) std::cout<<(axis?",":"")<<tensor.dimensions[axis];
+                std::cout<<"] bytes "<<tensor.byte_size<<" file offset "<<tensor.file_offset<<'\n';
+            }
+            if(printed<model.tensors().size())
+                std::cout<<"sidecar inventory omitted "<<model.tensors().size()-printed<<" tensors\n";
+        } else {
             for(const auto &tensor:model.tensors()) {
                 // Root embedding/PLE table/LM head and selected GDN, PLE and QSA
                 // blocks: actual inventory, not a guessed universal schema.

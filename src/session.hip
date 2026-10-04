@@ -71,6 +71,8 @@ SessionConfig checked_config(SessionConfig config) {
     if (config.hybrid_probe && !config.cpu_workers) throw std::invalid_argument("Session hybrid probe resources");
     if (config.attention_query_tile < 1 || config.attention_query_tile > attention_max_batch)
         throw std::invalid_argument("Session attention_query_tile");
+    if (config.speculative_checkpoints && config.max_batch_tokens < 3)
+        throw std::invalid_argument("Session speculative checkpoints require max_batch_tokens>=3");
     return config;
 }
 void hip(hipError_t e) {
@@ -218,8 +220,9 @@ struct HybridDevice {
     // No transfer/read in production or on an all-hit layer, even with probe on.
     std::array<Q8_1, 3 * (H / 32)> original_probe{};
     // Only device0 allocates these payloads, only with constructor hybrid_probe.
-    // Keeping metadata in the already-opt-in owner preserves cpu_workers=0
-    // Session::Impl size and ALL historical allocations (including its heap size).
+    // Keeping this hybrid metadata in the already-opt-in owner adds no default
+    // hybrid payload. The separate checkpoint handle changes base host Impl
+    // sizeof even with snapshots off, and memory() reports the actual sizeof.
     std::array<HybridInputProbeFrame, 2> probe_inputs;
     std::array<std::uint64_t, 6> projection_statistics{}; // Published tail on device0 only.
     int count = 0, cpu_columns = 0;
@@ -896,6 +899,12 @@ struct Experts {
     }
 };
 
+// No instance on the default path; all arrays live inside the optional owner.
+struct TargetLayerPrefixes {
+    Buffer recurrent, history, tail;
+    std::uint64_t* calls = nullptr; // Optional owner's provisional prefix-API enqueue count.
+};
+
 struct Layer {
     int index;
     Device& device;
@@ -1098,7 +1107,7 @@ struct Layer {
         observe("block_attention_out", d.f(9), H);
     }
     template<class Observe> void attention(int position, int capacity, float epsilon, int tokens, bool trace_stages,
-        bool batch_attention, SessionAttentionStats& calls, Observe&& observe) {
+        bool batch_attention, SessionAttentionStats& calls, TargetLayerPrefixes* prefixes, Observe&& observe) {
         if (tokens > 3) { attention_chunk(position, capacity, epsilon, tokens, trace_stages, batch_attention, calls, observe); return; }
         auto& d = device;
         qkv.apply(d, d.f(6), d.f(9), tokens);
@@ -1121,7 +1130,10 @@ struct Layer {
             }
             launch_gdn({conv.get(), dt.get(), a.get(), gdn_norm.get(), epsilon},
                        {d.f(9), d.f(10), d.f(11), d.f(12)}, tokens, recurrent.get(), history.get(), d.f(13),
-                       {d.f(14), stage_recurrent.get(), stage_history.get(), d.f(15), nullptr, nullptr, d.flag()}, d.stream);
+                       {d.f(14), stage_recurrent.get(), stage_history.get(), d.f(15),
+                        prefixes ? prefixes->recurrent.get() : nullptr,
+                        prefixes ? prefixes->history.get() : nullptr, d.flag()}, d.stream);
+            if (prefixes) ++*prefixes->calls;
             if (failure_probe && trace_stages) d.check("GDN layer 8");
             if (state_probe && tokens == 1 && trace_stages) observe("gdn_state_post", recurrent.get(), 786432);
             observe("gdn_convolved_normalized", d.f(14), 10240);
@@ -1148,7 +1160,9 @@ struct Layer {
             QsaIndexConfig cfg; cfg.capacity = static_cast<std::size_t>(capacity); cfg.rms_epsilon = epsilon; cfg.rotary_dim = 64;
             QsaIndexDeviceParameters p{cfg, iq_norm.get(), ik_norm.get(), frequencies.get()};
             hip(launch_qsa_index_append(p, d.f(15), position, tokens, pooled.get(), tail.get(),
-                {d.q8.get<Q4_0>(), d.f(16), d.f(17), d.f(18), nullptr, d.flag()}, d.stream));
+                {d.q8.get<Q4_0>(), d.f(16), d.f(17), d.f(18),
+                 prefixes ? prefixes->tail.get() : nullptr, d.flag()}, d.stream));
+            if (prefixes) ++*prefixes->calls;
             // All prepared keys may exist, but every score/select/gather receives
             // ONLY start+t+1 visibility (and thus the actual causal tail). f(12)
             // queries, f(13) raw gates and f(14) index queries survive the loop.
@@ -1396,6 +1410,65 @@ void HybridInputProbeFrame::capture(const Device& d, int layer, int tokens, bool
 }
 }
 
+namespace {
+// KEEP tested N+1 prefix producers (gdn/blocks/qsa_index), WRITE OURS bounded
+// ownership/restore orchestration. No new kernel, KV precision or math path.
+struct TargetCheckpoints {
+    std::array<Device*, 2> devices;
+    std::array<TargetLayerPrefixes, 48> layers;
+    Buffer ple_history, tap, staged_tap;
+    std::array<PleHashCheckpoint, 4> hash;
+    SessionCheckpointState state{true, false, 0, 0, 0};
+    SessionSpeculativeStats stats;
+    std::array<std::uint64_t, 3> prefix_calls{}; // GDN, PLE conv, QSA tail; provisional until head success.
+    int tap_rows = 0;
+    std::uint64_t tap_position = 0;
+    TargetCheckpoints(std::array<Device*, 2> owners, const PleHashConfig& config, int max_rows)
+        : devices(owners), hash{PleHashCheckpoint(config), PleHashCheckpoint(config),
+                               PleHashCheckpoint(config), PleHashCheckpoint(config)} {
+        try {
+            for (int l = 0; l < 48; ++l) {
+                hip(hipSetDevice(l / 24));
+                auto& p = layers[l];
+                if ((l + 1) % 4) {
+                    p.recurrent = Buffer(checked_size(checked_size(4, gdn_device_recurrent_elements), sizeof(float)));
+                    p.history = Buffer(checked_size(checked_size(4, gdn_device_history_elements), sizeof(float)));
+                    p.calls = &prefix_calls[0];
+                } else {
+                    p.tail = Buffer(checked_size(checked_size(4, 384), sizeof(float)));
+                    p.calls = &prefix_calls[2];
+                }
+            }
+            hip(hipSetDevice(0));
+            ple_history = Buffer(checked_size(checked_size(4, ple_device_history_elements), sizeof(float)));
+            hip(hipSetDevice(1));
+            // Ordinary PP must expose every actual row, even max_batch=1024.
+            const auto bytes = checked_size(checked_size(max_rows, W), sizeof(float));
+            tap = Buffer(bytes); staged_tap = Buffer(bytes);
+        } catch (...) { drain_cleanup(); throw; }
+    }
+    ~TargetCheckpoints() { drain_cleanup(); }
+    void drain_cleanup() noexcept {
+        for (auto* d : devices) if (d) d->drain_cleanup();
+    }
+    void clear() noexcept {
+        state = {true, false, 0, 0, 0}; stats = {}; prefix_calls = {}; tap_rows = 0; tap_position = 0;
+    }
+    std::uint64_t hash_payload_bytes() const {
+        std::uint64_t bytes = 0;
+        for (const auto& s : hash) {
+            const auto& c = s.config();
+            bytes += (c.multipliers.capacity() + c.vocab_sizes.capacity() + c.offsets.capacity()) * sizeof(std::uint64_t);
+            // Checkpoint API exposes fixed history size, not private capacity.
+            bytes += s.history().size() * sizeof(std::int64_t);
+        }
+        return bytes;
+    }
+};
+static_assert(gdn_device_recurrent_elements == 786432 && gdn_device_history_elements == 30720 &&
+              ple_device_history_elements == 92160 && W == 10240);
+}
+
 struct Session::Impl {
     Model model;
     SessionConfig config;
@@ -1404,8 +1477,9 @@ struct Session::Impl {
     SessionAttentionStats attention_statistics;
     bool batch_attention = false;
     SessionHybridPolicy hybrid_policy;
-    // Preserve the original 20-counter footprint/alignment in cpu_workers=0
-    // Impl. The new six-counter tail is stored in opt-in HybridDevice only.
+    // Preserve the original 20-counter member footprint/alignment; the new
+    // six-counter tail is stored in opt-in HybridDevice only. Base Impl sizeof
+    // includes the separate optional checkpoint handle even when disabled.
     std::array<std::uint64_t, 20> hybrid_statistics{};
     SessionHybridProbeDiagnostics probe_diagnostics;
     std::array<std::unique_ptr<Device>, 2> devices;
@@ -1440,6 +1514,10 @@ struct Session::Impl {
     std::ofstream trace_metadata;
     std::uint64_t trace_occurrence = 0;
     int coordinator_cpu = -1;
+    // One new base-host handle, honestly reported by sizeof(Impl). Declared
+    // before pool: constructor unwind joins CPU, then drains GPU before snapshots
+    // or any earlier live layer/PLE/pinned owner can release its buffers.
+    std::unique_ptr<TargetCheckpoints> checkpoints;
     // Declared last: constructor unwind joins before borrowed RAM/frames release.
     std::unique_ptr<CpuExpertPool> cpu_pool;
 
@@ -1505,8 +1583,8 @@ struct Session::Impl {
         head_hc = std::make_unique<Hc>(model, *devices[1], "output_hc_", true);
         head = matrix(model, *devices[1], "output.weight", H, V);
         pinned = std::make_unique<Pinned>(config.max_batch_tokens); handoff = pinned->pointer;
+        if (config.cpu_workers || config.speculative_checkpoints) working_logits.resize(host_logits.size());
         if (config.cpu_workers) {
-            working_logits.resize(host_logits.size());
             if (config.hybrid_probe) {
                 for (auto& frame : probe_down) frame.resize(3 * 48 * 10 * H);
                 for (auto& frame : probe_ffn) frame.resize(3 * 48 * H);
@@ -1526,6 +1604,9 @@ struct Session::Impl {
             throw std::runtime_error("Session CPU worker pinning requires Linux");
 #endif
         }
+        if (config.speculative_checkpoints)
+            checkpoints = std::make_unique<TargetCheckpoints>(
+                std::array<Device*, 2>{devices[0].get(), devices[1].get()}, ple_hash.state().config(), config.max_batch_tokens);
         reset();
     }
     ~Impl() {
@@ -1579,6 +1660,7 @@ struct Session::Impl {
         hip(hipSetDevice(0)); hip(hipMemsetAsync(ple_history.get<void>(), 0, ple_history.bytes(), devices[0]->stream));
         for (auto& d : devices) { hip(hipSetDevice(d->id)); d->clear(); hip(hipStreamSynchronize(d->stream)); }
         ple_hash.reset(); statistics = {}; route_statistics = {}; attention_statistics = {}; publish_hybrid({});
+        if (checkpoints) checkpoints->clear();
         probe_tokens = 0; usable = true;
     }
     SessionMemory memory() const {
@@ -1589,6 +1671,12 @@ struct Session::Impl {
         } restore{previous};
         SessionMemory result;
         result.capacity = config.capacity; result.expert_slots = config.expert_slots;
+        result.speculative_checkpoints = config.speculative_checkpoints;
+        result.host_session_impl_bytes = sizeof(Impl); result.host_session_config_bytes = sizeof(SessionConfig);
+        if (checkpoints) {
+            result.host_speculative_owner_bytes = sizeof(TargetCheckpoints);
+            result.host_speculative_hash_payload_bytes = checkpoints->hash_payload_bytes();
+        }
         result.attention_query_tile = config.attention_query_tile;
         result.host_embedding_capacity = embeddings.capacity();
         result.host_logit_capacity = (host_logits.capacity() + working_logits.capacity()) * sizeof(float);
@@ -1683,6 +1771,23 @@ struct Session::Impl {
                 for (const auto* b : {&ple_key_norm, &ple_query_norm, &ple_conv_norm, &ple_conv}) add(out.weights, *b);
                 add(out.ple_state, ple_history); add(out.workspace, ple_stage_history);
             } else { hc(*head_hc); weight(head); }
+            if (checkpoints) {
+                for (int l = id * 24; l < id * 24 + 24; ++l) {
+                    const auto& p = checkpoints->layers[l];
+                    result.checkpoint_recurrent_bytes[id] += p.recurrent.bytes();
+                    result.checkpoint_history_bytes[id] += p.history.bytes();
+                    result.checkpoint_qsa_tail_bytes[id] += p.tail.bytes();
+                    add(out.workspace, p.recurrent); add(out.workspace, p.history); add(out.workspace, p.tail);
+                }
+                if (id == 0) {
+                    result.checkpoint_ple_history_bytes[id] = checkpoints->ple_history.bytes();
+                    add(out.workspace, checkpoints->ple_history);
+                } else {
+                    result.target_tap_bytes[id] = checkpoints->tap.bytes();
+                    result.target_tap_staging_bytes[id] = checkpoints->staged_tap.bytes();
+                    add(out.workspace, checkpoints->tap); add(out.workspace, checkpoints->staged_tap);
+                }
+            }
             if (out.owned_bytes != Buffer::live_bytes[id] || out.owned_buffers != Buffer::live_buffers[id])
                 throw std::runtime_error("Session allocation ledger omitted a live Buffer");
             out.owned_peak_bytes = Buffer::peak_bytes[id];
@@ -1714,13 +1819,16 @@ struct Session::Impl {
         if (!trace_metadata.is_open()) return;
         for (int t = 0; t < tokens; ++t) capture(d, name, x + t * width, width, layer, t);
     }
-    void ple(Device& d, std::span<const std::int32_t> window, float*& residual, float*& alternate) {
+    void ple(Device& d, std::span<const std::int32_t> window, float*& residual, float*& alternate, bool verify) {
         const int tokens = static_cast<int>(window.size());
         // Initial embedding H2D has completed at layer0's check. Borrow the
         // preallocated pinned staging for chronological selected PLE lookups;
         // it remains immutable until layer1 finishes, before the split handoff.
+        if (verify) ple_hash.save(checkpoints->hash[0]);
         for (int t = 0; t < tokens; ++t) {
-            ple_hash.step(window[t], ple_rows); ple_lookup.lookup(ple_rows, ple_embedding);
+            ple_hash.step(window[t], ple_rows);
+            if (verify) ple_hash.save(checkpoints->hash[t + 1]);
+            ple_lookup.lookup(ple_rows, ple_embedding);
             std::copy(ple_embedding.begin(), ple_embedding.end(), handoff + t * H);
         }
         hip(hipMemcpyAsync(d.f(9), handoff, tokens * H * sizeof(float), hipMemcpyHostToDevice, d.stream));
@@ -1749,7 +1857,9 @@ struct Session::Impl {
         });
         tiles(tokens, [&](int first, int count) {
             hip(launch_ple_causal_conv(d.f(14) + first * W, d.f(15) + first * W, ple_conv.get(), ple_history.get(), count, nullptr,
-                {d.f(16) + first * W, ple_stage_history.get(), nullptr}, d.flag(), d.stream));
+                {d.f(16) + first * W, ple_stage_history.get(),
+                 verify ? checkpoints->ple_history.get() : nullptr}, d.flag(), d.stream));
+            if (verify) ++checkpoints->prefix_calls[1];
             hip(launch_publish_ple_history(ple_stage_history.get(), ple_history.get(), d.flag(), d.stream));
         });
         tiles(tokens, [&](int first, int count) {
@@ -1758,8 +1868,10 @@ struct Session::Impl {
         std::swap(residual, alternate);
         capture_batch(d, "ple_residual", residual, W, tokens, 1);
     }
-    std::span<const float> step_batch(std::span<const std::int32_t> window) {
+    std::span<const float> step_batch(std::span<const std::int32_t> window, bool verify = false) {
         if (!usable) throw std::runtime_error("Session invalidated; reset required");
+        if (verify && (!checkpoints || window.empty() || window.size() > 3))
+            throw std::invalid_argument("Session verify resources/length");
         // Entire argument preflight is outside the invalidating execution block:
         // no stream/flag/hash/cache/stat/logit/capture mutation on a bad suffix.
         if (window.empty() || window.size() > static_cast<std::size_t>(config.max_batch_tokens) || !window.data())
@@ -1768,6 +1880,29 @@ struct Session::Impl {
             window.size() > static_cast<std::uint64_t>(config.capacity) - statistics.consumed_tokens)
             throw std::invalid_argument("Session batch capacity");
         for (const auto token : window) if (token < 0 || token >= V) throw std::invalid_argument("token ID");
+        if (verify && checkpoints->state.pending) throw std::invalid_argument("Session verify already pending");
+        if (checkpoints) {
+            const auto& s = checkpoints->stats;
+            // Rollback makes logical capacity insufficient as a cumulative work
+            // bound. Reserve conservative room BEFORE accepted execution, so no
+            // historical physical diagnostic can wrap after repeated rollback.
+            const auto assignments = static_cast<std::uint64_t>(window.size()) * 48 * 10;
+            const auto work_bytes = assignments * short_stage_bytes;
+            auto room = [](std::uint64_t current, std::uint64_t increment) {
+                if (increment > UINT64_MAX - current)
+                    throw std::invalid_argument("Session completed-work diagnostic overflow");
+            };
+            room(statistics.expert_hits, assignments); room(statistics.expert_misses, assignments);
+            room(statistics.expert_upload_bytes, work_bytes);
+            room(route_statistics.expert_groups_gt128, assignments / 129);
+            for (auto word : std::bit_cast<std::array<std::uint64_t, 26>>(hybrid_stats())) room(word, work_bytes);
+            for (auto word : std::bit_cast<std::array<std::uint64_t, 6>>(attention_statistics)) room(word, assignments);
+            if (window.size() > UINT64_MAX - s.target_forward_rows ||
+                (verify && (s.verify_windows == UINT64_MAX || window.size() > UINT64_MAX - s.verify_rows ||
+                 s.gdn_prefix_calls > UINT64_MAX - 36 || s.ple_prefix_calls == UINT64_MAX ||
+                 s.qsa_tail_prefix_calls > UINT64_MAX - 12)))
+                throw std::invalid_argument("Session speculative diagnostic overflow");
+        }
         const int tokens = static_cast<int>(window.size());
         const int position = static_cast<int>(statistics.consumed_tokens);
         const bool trace_observations = trace_metadata.is_open() &&
@@ -1776,16 +1911,26 @@ struct Session::Impl {
         // the first observed failing interval, not necessarily its last kernel.
         const bool trace_stages = trace_observations && position >= config.trace_first_token;
         const bool transactional = hybrid_policy.mode != SessionHybridMode::disabled;
+        const bool publication_staging = transactional || checkpoints;
         // Reserve an actual allowed physical representative while coordinating
         // short CPU jobs. Restore caller affinity; never infer cores from threads.
         CoordinatorAffinity coordinator(transactional && tokens <= 3 ? coordinator_cpu : -1);
         SessionStats working_stats = statistics;
-        auto& execution_stats = transactional ? working_stats : statistics;
+        auto& execution_stats = publication_staging ? working_stats : statistics;
         SessionHybridStats working_hybrid = hybrid_stats();
         SessionAttentionStats working_attention = attention_statistics;
         const auto cpu_return_baseline = working_hybrid.cpu_return_bytes;
         const auto begin = std::chrono::steady_clock::now();
         try {
+            if (checkpoints) {
+                if (cpu_pool) cpu_ok(cpu_pool->drain());
+                for (auto& device : devices) device->drain();
+                // Argument rejection above has not touched slots/publication.
+                // Physical prefix storage is exclusive to this accepted attempt;
+                // previous logits/tap remain published until full-call success.
+                checkpoints->state = {true, false, 0, 0, 0};
+                checkpoints->prefix_calls = {};
+            }
             SessionRouteStats call_routes{};
             const bool capture_inputs = config.hybrid_probe && tokens <= 3;
             if (capture_inputs) devices[0]->hybrid->probe_inputs[1].begin(tokens);
@@ -1810,7 +1955,7 @@ struct Session::Impl {
                     hip(hipMemcpyAsync(residual, handoff, tokens * W * sizeof(float), hipMemcpyHostToDevice, d->stream));
                 }
                 auto& layer = *layers[l];
-                if (l == 1) ple(*d, window, residual, alternate);
+                if (l == 1) ple(*d, window, residual, alternate, verify);
                 layer.attention_hc.mix(*d, residual, epsilon, tokens);
                 if (layer.failure_probe && trace_stages) d->check("attention HC layer 8");
                 if (l == 0 || l == 1 || l == 2 || l == 3 || l == 6 || l == 8 || l == 19 || l == 22 || l == 47) {
@@ -1820,6 +1965,7 @@ struct Session::Impl {
                     capture_batch(*d, "hc_attn_inject_raw", d->f(7), 4, tokens, l);
                 }
                 layer.attention(position, config.capacity, epsilon, tokens, trace_stages, batch_attention, working_attention,
+                    verify ? &checkpoints->layers[l] : nullptr,
                     [&](const char* name, const float* x, int count, int token_offset = -1) {
                         if (l == 0 || l == 1 || l == 2 || l == 3 || l == 6 || l == 8 || l == 19 || l == 22 || l == 47) {
                             if (token_offset < 0) capture_batch(*d, name, x, count, tokens, l);
@@ -1859,19 +2005,26 @@ struct Session::Impl {
                 layer.experts.finish_admissions(true); // Actual completion + successful entire layer.
                 capture_batch(*d, "l_last-" + std::to_string(l), residual, W, tokens, l);
             }
+            if (checkpoints) {
+                // Stage the actual layer47 widened combine BEFORE root/head HC.
+                // Never overwrite the published tap on a failed network/head or
+                // copy. Head check below synchronizes this same ordered stream.
+                hip(hipMemcpyAsync(checkpoints->staged_tap.get(), residual,
+                    checked_size(checked_size(tokens, W), sizeof(float)), hipMemcpyDeviceToDevice, d->stream));
+            }
             head_hc->mix(*d, residual, epsilon, tokens, true); capture_batch(*d, "result_norm", d->f(6), H, tokens);
             head.apply(*d, d->f(6), d->logits.get(), tokens);
-            auto& destination = transactional ? working_logits : host_logits;
+            auto& destination = publication_staging ? working_logits : host_logits;
             hip(hipMemcpyAsync(destination.data(), d->logits.get(), tokens * V * sizeof(float), hipMemcpyDeviceToHost, d->stream));
             d->check("head");
             for (float v : std::span(destination).first(tokens * V)) if (!std::isfinite(v)) throw std::runtime_error("logits nonfinite");
-            // Each counted group consumes >=129 of the 48*10 assignments per
-            // token. Capacity <=131072 bounds the cumulative count well within
-            // uint64_t across reset; no fallible or partial publication is needed.
+            // Each counted group consumes >=129 of 48*10 assignments per token.
+            // Default capacity bounds the cumulative count; opt-in rollback uses
+            // the preflight completed-work bounds above. Publication cannot fail.
             call_routes.expert_groups_gt128 += route_statistics.expert_groups_gt128;
             execution_stats.consumed_tokens += static_cast<std::uint64_t>(tokens);
             execution_stats.last_completed_ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - begin).count();
-            if (transactional) { statistics = working_stats; host_logits.swap(working_logits); }
+            if (publication_staging) { statistics = working_stats; host_logits.swap(working_logits); }
             route_statistics = call_routes;
             attention_statistics = working_attention;
             publish_hybrid(working_hybrid);
@@ -1879,6 +2032,18 @@ struct Session::Impl {
                 probe_down[0].swap(probe_down[1]); probe_ffn[0].swap(probe_ffn[1]); probe_tokens = tokens;
             } else probe_tokens = 0;
             if (capture_inputs) std::swap(devices[0]->hybrid->probe_inputs[0], devices[0]->hybrid->probe_inputs[1]);
+            if (checkpoints) {
+                std::swap(checkpoints->tap, checkpoints->staged_tap); // noexcept, after ALL execution gates.
+                checkpoints->tap_rows = tokens; checkpoints->tap_position = static_cast<std::uint64_t>(position);
+                auto& s = checkpoints->stats; s.target_forward_rows += static_cast<std::uint64_t>(tokens);
+                if (verify) {
+                    ++s.verify_windows; s.verify_rows += static_cast<std::uint64_t>(tokens);
+                    s.gdn_prefix_calls += checkpoints->prefix_calls[0];
+                    s.ple_prefix_calls += checkpoints->prefix_calls[1];
+                    s.qsa_tail_prefix_calls += checkpoints->prefix_calls[2];
+                    checkpoints->state = {true, true, static_cast<std::uint64_t>(position), tokens, tokens + 1};
+                }
+            }
             return {host_logits.data(), static_cast<std::size_t>(tokens) * V};
         } catch (...) {
             usable = false;
@@ -1892,12 +2057,72 @@ struct Session::Impl {
             throw;
         }
     }
+    void restore_prefix(int retained) {
+        if (!usable) throw std::runtime_error("Session invalidated; reset required");
+        if (!checkpoints || !checkpoints->state.pending || retained < 0 || retained > checkpoints->state.inputs)
+            throw std::invalid_argument("Session restore pending window/prefix");
+        auto& c = *checkpoints;
+        if (c.stats.restore_calls == UINT64_MAX || c.stats.restored_prefixes[retained] == UINT64_MAX ||
+            static_cast<std::uint64_t>(retained) > UINT64_MAX - c.stats.retained_inputs)
+            throw std::invalid_argument("Session restore diagnostic overflow");
+        usable = false;
+        try {
+            if (cpu_pool) cpu_ok(cpu_pool->drain());
+            for (auto& d : devices) d->drain();
+            for (int l = 0; l < 48; ++l) {
+                auto& layer = *layers[l]; auto& d = layer.device;
+                hip(hipSetDevice(d.id));
+                const auto& p = c.layers[l];
+                auto copy = [&](const Buffer& prefix, const Buffer& active) {
+                    if (!active.bytes()) return;
+                    // Slot stride is exactly the mutable state's allocation,
+                    // not a reversed accepted-draft index or an entire KV copy.
+                    const auto offset = checked_size(static_cast<std::size_t>(retained), active.bytes());
+                    if (offset > prefix.bytes() || active.bytes() > prefix.bytes() - offset)
+                        throw std::runtime_error("Session checkpoint slot extent");
+                    hip(hipMemcpyAsync(active.get<void>(), prefix.get<std::byte>() + offset,
+                        active.bytes(), hipMemcpyDeviceToDevice, d.stream));
+                };
+                copy(p.recurrent, layer.recurrent); copy(p.history, layer.history); copy(p.tail, layer.tail);
+            }
+            hip(hipSetDevice(0));
+            hip(hipMemcpyAsync(ple_history.get(), c.ple_history.get() + retained * ple_device_history_elements,
+                ple_history.bytes(), hipMemcpyDeviceToDevice, devices[0]->stream));
+            for (auto& d : devices) d->drain();
+            ple_hash.restore(c.hash[retained]);
+            // Main K/V remain Q4_0. Only consumed cursor drives append addresses,
+            // pooled completed-block count, per-query select and causal gather.
+            // Hidden suffix is never read and is overwritten when consumed again.
+            statistics.consumed_tokens = c.state.start_position + static_cast<std::uint64_t>(retained);
+            ++c.stats.restore_calls; ++c.stats.restored_prefixes[retained];
+            c.stats.retained_inputs += static_cast<std::uint64_t>(retained);
+            c.state = {true, false, 0, 0, 0}; usable = true;
+        } catch (...) {
+            if (cpu_pool) (void)cpu_pool->drain();
+            for (auto& d : devices) d->drain_cleanup();
+            throw;
+        }
+    }
 };
 
 Session::Session(const std::string& path, SessionConfig config) : impl_(std::make_unique<Impl>(path, std::move(config))) {}
 Session::~Session() = default;
 std::span<const float> Session::step(std::int32_t token) { return step_batch(std::span(&token, 1)); }
 std::span<const float> Session::step_batch(std::span<const std::int32_t> tokens) { return impl_->step_batch(tokens); }
+std::span<const float> Session::verify_window(std::span<const std::int32_t> tokens) { return impl_->step_batch(tokens, true); }
+void Session::restore_prefix(int retained_inputs) { impl_->restore_prefix(retained_inputs); }
+SessionCheckpointState Session::checkpoint_state() const {
+    if (!impl_->usable) throw std::runtime_error("Session invalidated; reset required");
+    return impl_->checkpoints ? impl_->checkpoints->state : SessionCheckpointState{};
+}
+SessionTargetTap Session::target_tap() const {
+    if (!impl_->checkpoints || !impl_->checkpoints->tap_rows) return {};
+    const auto& c = *impl_->checkpoints;
+    return {1, c.tap.get(), c.tap_rows, W, c.tap_position};
+}
+SessionSpeculativeStats Session::speculative_stats() const {
+    return impl_->checkpoints ? impl_->checkpoints->stats : SessionSpeculativeStats{};
+}
 void Session::reset() { impl_->reset(); }
 SessionStats Session::stats() const { return impl_->statistics; }
 SessionRouteStats Session::route_stats() const { return impl_->route_statistics; }

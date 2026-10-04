@@ -76,6 +76,12 @@
   bounded Session owner integration, API/CLI/schema fixtures and collectors are
   original code. Existing mx/furnace MIT and reinstinct Apache-2.0 pins remain
   unchanged; this adaptation introduces no dependency or donor whole runtime.
+  `src/hip/mtp_attention.{cuh,hip}` follows the same pinned donor inspection:
+  KEEP mx sum64 reductions, ADAPT the current furnace-derived 64-key split/merge,
+  WRITE OURS bounded direct canonical Q4_0-to-FP16 RNE reads for the dense full
+  causal prefix. It retains the frozen common-gather gate and old-N1 short
+  parity; it imports no donor runtime, full-history FP16 gather or Q8 KV backend.
+  Existing mx/furnace MIT and reinstinct Apache-2.0 attribution is unchanged.
 
 - `src/hip/linear.hip` adapts mx canonical Q4_0/Q4_1/Q5_0/Q8_0/Q6_K
   `vecdotq.cuh`, Q8_1 `quantize.cu` and qualified R1 register-reuse/DPP patterns.
@@ -250,22 +256,61 @@
   collections passed, Source/completion/rates exactly match the ROOT rows and
   three512-ID arrays per length match diagnostically. Old Git HEAD41 exact byte
   prefix and parsed history, actual git numstat+7/-0 and diff--check passed.
-  The bounded performance-measurement slice is accepted and closed; never append
-  these records again. Parent's next normal commit/push contains only the four
-  docs and journal, excluding all future Session checkpoint/MtpModel/speculative/
-  dense/inspector code. After that closure commit/push, promote qualified775
-  attention/source77fdirtytrue/explicit tile8 to the one baseline before new R6
-  prerequisite gates. This next action does not retag Source or claim a new HEAD.
+  The bounded performance-measurement slice is accepted, closed and pushed as
+  ba446f9266ab2dc4c0aa4e73d8930a5534c4b2a2; never append these records again.
+  That four-docs/journal commit excluded the then-future prerequisite code.
+  Qualified775 attention/source77fdirtytrue was promoted BEFORE831 to the one
+  saved baseline, `/core/build/core-session-baseline` (1750328B); future A explicitly
+  uses tile8/CPU0disabled. Current core-session is the831 build/sourceba446f9/
+  dirtytrue, not a performance-qualified or promoted baseline. Historical823
+  binary identities and compiled Source remain unchanged.
   Detailed timings, raw paths and fresh commands are in README.md.
   Default attention tile1/OFF and the original API remain unchanged.
   Hybrid performance, measured dispatch thresholds, fullR4/R5, trained MTP,
-  occupied long/API, converter and final speed targets remain open. Locally
-  prepared target checkpoint/tap/restore/new fixture, MtpModel descriptor guards,
-  speculative math and dense-Q4 attention component are not mirrored, compiled
-  or promoted remotely and are outside this measurement-only slice. Next qualify
-  actual HIP restore/dense component/actual descriptor with default regressions;
-  those prerequisites do not prove trained MTP execution. Existing mx/furnace MIT
-  and reinstinct Apache-2.0 attribution is retained.
+  occupied long/API, converter and final speed targets remain open. The target
+  checkpoint/tap/restore, MtpModel descriptors, speculative math and dense-Q4
+  component now have separate actual prerequisite evidence below. These gates
+  do not prove trained MTP execution. Existing mx/furnace MIT and reinstinct
+  Apache-2.0 attribution is retained.
+
+- Target checkpoint/tap/restore orchestration, opt-in bounded owners, MtpModel
+  role/typed-tokenizer/descriptor guards, speculative pure math, fixtures and
+  strict collectors are original code reusing the attributed primitives above.
+  They introduce no new donor component, dependency or license. Actual run831
+  used source ba446f9266ab2dc4c0aa4e73d8930a5534c4b2a2/dirtytrue, never a future
+  closure commit. MCP state_lost/background_channel_closed_without_exit_status
+  was resolved by the original read-only Docker daemon die event: native exit0 /
+  2772s46m12s, without repeating the run. Strict CXX20/HIP20 Release gfx906/all
+  warnings/ffp-contractoff, CTest39/39 (1145.49s), actual descriptor, both-GPU
+  dense attention, wide1024 target restore and default regressions/collectors PASS.
+  Descriptor36records checks all32 roles, BF16 indexQ/K only, fulltop10,
+  blk48compression0, all10 typed tokenizer assets and distinct target-owned
+  Q4 embedding/Q6 output; it reads no tensor payload and executes no trained MTP.
+  Dense full-causal-prefix Q4 K/V/B1..3/synthetic128K passes frozen gates and
+  cleanup live_resources0, not occupied full-model128K or performance qualification.
+  Target restore compares644390400 full-vocabulary values and26419200 exact tap
+  values with zero errors at unchanged gates. The widened10240 tap precedes
+  ROOT_HC; invalid/failing calls preserve the old publication, failure requires
+  reset, and restore does not rewind expert slots/uploads/physical counters.
+  The87 checkpoint/tap Buffers are opt-in/defaultOFF. This target self-parity and
+  pure math are not independent HF or trained-sidecar forward/rollback evidence.
+  Canonical ROOT journal alone received exactly two appends48→50/2967969B,
+  r6_target_restore+r6_mtp_prerequisites; remote old48 byte/parsed history is exact.
+  The parent downloaded three actual raws, exit proof and canonical journal;
+  read-only local record_restore.collect passed again on the actual473730B raw,
+  with zero errors/644390400 comparisons/26419200 exact tap values. Actual C++
+  descriptor36/dense4 Source/footer/inventory/device fields exactly match the new
+  ROOT record. Git HEAD old48 parsed history AND byte prefix exactly match local50;
+  actual git numstat+2/-0/diffcheck PASS. The bounded R6 prerequisite slice is
+  ACCEPTED/CLOSED, correctness ONLY; R6_complete_claim=false.
+  Never duplicate-append recorded raws or retag Source. Raw paths/commands and
+  detailed limits are in README.md. Parent normal code/docs/journal commit/push
+  is immediate, then qualify trained-forward teacher history against an actual
+  independent donor oracle, full logits/state and stochastic windows.
+  The pinned first Hnorm is per2560 branch
+  with distinct4x2560 gamma, not whole10240; HC mixer whole10240 norm is unchanged.
+  Ignored trained-forward73983B and layerwise-prefill61985B patches remain
+  unapplied/unqualified and carry no speed promise.
 
 - `src/hip/mmq.hip` adapts mx `mmq-load-tiles.cuh`, `mmq-vec-dot.cuh`,
   `mmq.cuh` and `vecdotq.cuh` canonical Q4 DP4A tile/load/dot/writeback seams
