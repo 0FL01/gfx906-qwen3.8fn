@@ -1,47 +1,38 @@
 # Текущее состояние
 
-## Активная задача (2026-10-04 19:26 UTC)
+## Активная задача (2026-10-04 20:48 UTC)
 
 Цель: завершить ВЕСЬ план и превзойти llama.cpp на сопоставимых измерениях.
 Лично, без subagents; document+commit+push каждый законченный срез.
 
-PUSHED: MTP/API ec8ab03; matched own series8f93b1d; profile tooling7df1c74.
-Journal57 now copied and verified: own off/on/off showed no stable full-request
-win; fresh donor4K57.011/57.151s and16K144.334/144.125s (all512 outputs).
-Donor job257 COMPLETE exit0/16m05s. Earlier249 truncated at511 and is EXCLUDED.
-Donor capacity n+1024; previous own n+512. Future own paired performance must
-use n+1024. See README for timer numerators/QSA/precision/cache limits.
-Never append accepted journals/artifacts again. Prior byte prefixes preserved.
+PUSHED correctness296ea560825dfb1b066c1d2c5d93b61d13d40b3e: rolled attention,
+39/39 CTest,1.036984320b same-build full-model logits zero error,3.745280m
+cross-build component values exact. VGPR52/Scratch0 from256/4380.
 
-CURRENT candidate: ONLY two QK-dot loop pragmas changed from full unroll to1
-in src/hip/attention.hip; exact arithmetic/finite checks/precision unchanged.
-Optional --capture/--compare added to model-free attention fixture. CPU snapshot
-roundtrip+6 corruption/path rejects PASS. Old-kernel baseline268 exit0/33s captured
-52 cases/3745280 values including padding. Candidate272 exit0/33s: all saved
-values bit-identical; both GPUs CPU gates and23device/180host/6sticky checks PASS.
-Metadata: batched VGPR256/Scratch4380 ->VGPR52/Scratch0, LDS15872 unchanged.
-Component traced batched sum77.458 ->17.019ms (diagnostic only, no full-model win).
-Raw ROOT/runs/r4-attention-roll-{reference,candidate}.jsonl/.err/-trace,
-reference.bin and component-summary.json. Compiled7df1c74/dirtytrue.
+Matched MTP A/B/A job1791143846406-290 COMPLETE exit0/41m55s; journal59 copied,
+old58 prefix and all six actual sources/outputs/footers/manifests verified.
+4K baseline164.695/166.229s -> candidate126.693s (1.3060x),PP48.298/TG12.200.
+16K baseline559.588/562.923s -> candidate396.449s (1.4157x),PP46.173/TG12.281.
+Every512 output ID/acceptance/RNG count identical within each triplet.
+Capacity n+1024 matches pinned donor headroom. Donor still faster(~57/~144s).
+A=f59c8de dirty; B=7df1c74 dirty; do not retag/duplicate accepted raw records.
+/core/build/core-mtp-run-baseline NOW promotes rolled7df1c74, byte-verified.
+Original non-MTP core-session-baseline stays untouched. No model copies.
 
-Full gate job1791141889741-275 COMPLETE exit0/30m13s. Strict build+CTest39/39
-PASS1148.60s. Actual48-layer fixture:2163calls/6264rows/1555476480finite,
-1036984320compared logits,zero violations/bit mismatches/maxabs0. Full-model
-reference is candidate-build N1, not pre-change/HF; component supplies old bits.
-Remote+controller strict actual collector PASS. Journal58 copied; old57 bytes
-and actual component/model records verified. Correctness slice is being committed.
-/core/build/core-mtp-run-baseline preserves f59 MTP; original core-session-baseline
-is untouched. No model copies. Candidate binaries source7df1c74/dirtytrue.
+NEXT primitive APIs implemented, Session STILL UNCHANGED: logicalN<=128 tiled
+linear grids preserve physicalN<=8 arithmetic and legacy tails. Native338 exit0
+in1m09s: strict build, bothGPU278cases each,173928902 exact values/device,
+74328 CPU samples/device,21host rejects,276graph checks; old short/dense PASS.
+Large F32 output2560 regresses; DO NOT enable tiled dense universally. Small
+HC4x10240 atN128 ~15.6–15.8x in resident component, Q4 gate/up ~2x; not model speed.
 
-ACTIVE performance job1791143846406-290: MTP baseline/candidate/baseline for4K
-then16K,512 outputs,capacity5120/17408,slots112/chunk1024/tile8/primaryseed12345.
-Driver ROOT/runs/r4-attention-roll-ab.py; fresh artifacts
-ROOT/runs/r4-attention-roll-ab-20261004. Cross-build full512 output IDs,
-acceptance and RNG must match A1. No tracing/rebuild/heavy compile/other GPU load.
-Do not declare speed promotion before completed paired measurements.
-Next measured PP costs after attention: canonical Q4 N8 and dense MMVF N8;
-old metadata respectivelyVGPR60/Scratch0 andVGPR24/Scratch0. Consider wider
-canonical column reuse only after this slice is measured; no new hot change yet.
+ACTIVE job1791146805979-344: expanded primitive measurements addN16 and actual
+Q5/Q8 projection / small dense shapes; same compiled296ea56/dirtytrue. Raw
+ROOT/runs/r4-linear-tiled-296-expanded.jsonl/.err and expanded-build.log.
+No other GPU load/compile until it finishes. Primitive files remain UNCOMMITTED.
+Next: evaluate expanded timings, qualify primitive slice, then minimal Session
+integration (quantized and small-output dense only), real-model gates and paired
+full requests against the newly promoted rolled MTP baseline.
 
 R0–R3 closed. R4 speed, R5 measured dispatch, full R6, R7 occupied128K/tokenizer/API
 and R8 safetensors/runtime-pack remain OPEN. Frozen correctness gates unchanged.

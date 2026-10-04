@@ -325,3 +325,11 @@ values is bit-identical; scratch is0 and VGPR52 (was256/4380). Full strict build
 zero-error compared logits. Journal58; compiled7df1c74/dirtytrue. Component timing
 improvement is diagnostic. Paired trace-off MTP baseline/candidate4K/16K+512,
 capacity prompt+1024, is the next promotion gate. Full project remains open.
+
+### 2026-10-04 rolled attention measured promotion
+
+Trace-off MTP A/B/A4K/16K+512 completed with identical full output/acceptance/RNG
+trajectories. Candidate requests126.693/396.449s beat both old bookends; mean
+speedups1.3060x/1.4157x. Journal59; old58 bytes retained. Rolled MTP executable
+is the new MTP baseline, source7df1c74/dirtytrue. Pinned llama.cpp still wins
+full requests(~57/~144s). Continue measured PP work; whole-plan goals remain open.

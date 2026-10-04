@@ -2353,3 +2353,48 @@ so one baseline runtime has separate off/on entrypoints; no models were copied.
 A trace-off4K/16K A/B/A comparison against that MTP baseline is now running with
 capacity prompt+1024,512 actual outputs and identical sampling. Full-request
 speed promotion and all remaining R4–R8 goals are still open.
+
+## Rolled attention: matched full-request promotion (2026-10-04)
+
+Native job1791143846406-290 completed exit0 in41m55s. Each length used
+A1(old MTP runtime) -> B(rolled attention) -> A2(old), with no tracing, competing
+GPU workload or compilation. Same target/sidecar, exact saved token IDs,
+capacity prompt+1024 (5120/17408),512 outputs,slots112,chunk1024,tile8,CPU0,
+seed12345/temp1/top-p.95/top-k20 and ignore-EOS. All sessions are fresh with
+no prefix reuse; expert-cache warmth is unknown. Load is recorded separately.
+
+| Run | PP tok/s | TG tok/s | Completed request s | Load s, separate |
+| --- | ---: | ---: | ---: | ---: |
+| 4k-A1 | 35.554479 | 10.325402 | 164.694867 | 81.166275 |
+| 4k-B | 48.298361 | 12.199959 | 126.693218 | 80.637726 |
+| 4k-A2 | 35.166759 | 10.270663 | 166.228675 | 85.445873 |
+| 16k-A1 | 32.099215 | 10.392727 | 559.588212 | 79.984882 |
+| 16k-B | 46.173196 | 12.280926 | 396.448825 | 82.893748 |
+| 16k-A2 | 31.851884 | 10.527262 | 562.923186 | 95.695762 |
+
+The candidate beats BOTH baseline bookends for full request at each length:
+mean-A/B ratios1.306003x at4K and1.415708x at16K. Every one of the512 output IDs,
+acceptance histogram and proposal/decision RNG counts matches across each
+triplet. This qualifies a bounded own-runtime improvement; it is not merely a
+component timing inference. One B and two A repetitions were collected per length.
+
+The pinned donor remains faster in full requests: about57s/144s versus the
+new own126.693s/396.449s at4K/16K. Allocation headroom is now matched, but retain
+the documented HTTP/CLI and TG-numerator differences and historical donor QSA
+semantics. No llama.cpp victory,400–600PP/30–40TG,HF-reference or occupied128K
+claim follows from this slice.
+
+Raw directory ROOT/runs/r4-attention-roll-ab-20261004 retains all six full source,
+output and completion streams, manifests, fixtures and pair summaries. The
+controller copied and matched all actual raws/manifests against journal59,
+which adds exactly one record after58 byte-identical historical records.
+A source is f59c8de/dirtytrue; B source is7df1c74/dirtytrue, unchanged and never
+retagged with closure commits. Native literal performance flags are preserved.
+Do not append these accepted artifacts again.
+
+After acceptance, core-mtp-run-baseline was promoted by byte-verified copy of
+the tested rolled executable (still source7df1c74/dirtytrue). The prior saved
+non-MTP core-session-baseline is untouched. Historical command paths alone do
+not pin an executable forever; use each raw source revision/variant for replay.
+Next is component-qualified canonical tiled-grid linear dispatch; no new Session
+integration or end-to-end claim is included here.
