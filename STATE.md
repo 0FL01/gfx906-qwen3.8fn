@@ -63,10 +63,11 @@ attention9.333s(19.89%), Q6head2.795s(5.96%). Dense tiled1.700s; large dense
 0.958s. GPU unions22.471/24.450s, H2D7.460/7.233s; do not add overlaps.
 MTP verify128outputs11.677s/588140kernels; Q4 paths lead, draft0.513s,
 restore0.091s. No boundary-crossing trace events; diagnostic not speed result.
-Next bounded experiment: Q4 tiled physicalN8 row reuse2->4, unchanged per-row
-FP order, common-Q8/component bit parity plus same-coordinate A/B/A. Build only
-component target, preserve current runtime and denied baseline until permission.
-Full-model gates/trace-off requests required before integration/promotion.
+Q4 tiled physicalN8 row reuse2->4 REJECTED, source reverted. Native component
+A/B/A jobs403/407/413 all exit0; exact values/CPU gates unchanged, but most
+eligible shapes slower (roughly0.71–0.97x first-A/B). Journal64 retains paired
+timings. Current runtime binaries untouched. Next bounded row1 occupancy
+experiment on the same component fixture; no full-model promotion from timings.
 Further candidates require fresh measured priority: PP launch density/selection,
 per-column dense reductions, two-GPU chunk overlap, grouped short MoE. Do not
 mix another optimization into this still-unqualified integration slice.
