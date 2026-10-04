@@ -2203,3 +2203,55 @@ optimization and a fresh pinned llama.cpp comparison. R4–R8 and the overall
 performance goal remain open. The mutable production models.ini now names a
 different model; matched donor runs must use explicit recovered launch arguments,
 not that preset. No model or precision change is authorized by this measurement.
+
+## Phase profiling and register-pressure hypothesis (2026-10-04)
+
+Optional `-DCORE_BUILD_PROFILE_TOOLS=ON` adds two SEPARATE diagnostic targets:
+`core-profile-prefill MODEL whitespace-token-ids.txt` and `core-mtp-profile`
+(the latter uses the same arguments as core-mtp-run). They link the installed
+ROCTX library; normal core-session/core-mtp-run do not gain that dependency or
+replace their measured executables. Default builds compile ProfileRange to a
+no-op. Completed ROCTX ranges isolate loading, target PP chunks, draft, target
+verification including CPU distributions/decisions, and teacher/restore.
+
+Native job1791139209698-232 exited0 in9m19s, compiled ec8ab03/dirtytrue. Both
+strict diagnostic targets built successfully. Annotation-only8+32 preserved all
+32 checked output IDs, acceptance[10,6,3] and RNG38/46. Seven malformed fixture
+cases rejected before model loading, including an overflowing integer after a
+valid4096-token prefix. Fresh diagnostic PP4K and MTP4K+128 completed; no full
+CTest rerun is claimed for this annotation-only slice (prior39/39 is retained).
+
+Run rocprofv3 with `--kernel-trace --memory-copy-trace --marker-trace
+--output-format csv --output-directory FRESH -- EXECUTABLE ...`. The completed
+PP marker encloses synchronous Session calls; no summed load/TG substitution.
+Native analyzer job1791139851171-245 exited0 in1m02s. Zero kernel events crossed
+the selected completed-phase boundaries. These are traced diagnostics, not
+speed-qualified rates; kernel and DMA sums overlap and are not additive latency.
+
+PP4K: wall126.1396s, 3,397,677 kernels, summed kernel duration97.2709s.
+- Batched attention chunk:6,144 launches/39.7998s,40.92% of summed GPU duration
+- Q4 canonical N8:781,636 launches/23.7616s,24.43%
+- Dense MMVF N8:148,480 launches/10.0989s,10.38%
+- Full Q6 head:3,584 launches/2.8318s,2.91%
+- Kernel union per GPU:47.4781s/49.7645s; H2D summed7.3597s/7.2341s
+
+MTP target verify:48 ranges/13.1496s wall,588,140 kernels/6.4473s summed GPU;
+batched attention is2.0565s,31.90% of summed GPU. Draft wall0.5043s and
+teacher/restore0.1231s are much smaller. PP target-only markers reproduce the
+same dominant operations as non-MTP PP. This rules out treating draft cost or
+LM-head skipping as the primary measured opportunity on this fixture.
+
+Actual attention kernel metadata sample:VGPR_Count256, Scratch_Size4380,
+LDS_Block_Size15872. Large private scratch and maximal VGPR count motivate a
+register-pressure experiment: keep the exact ascending256-channel FP32 dot,
+finite checks, Q4/half representation, FP64-exp-to-FP32 and reductions, but stop
+fully unrolling its32 iterations. This is a hypothesis, not an implemented or
+accepted acceleration. Donor furnace fattn.cu uses a different quarter-dot
+reduction; do not silently adopt its arithmetic just to eliminate spills.
+
+Raw directory ROOT/runs/r4-profile-ec8-20261004; CSVs are nested in each
+*-trace directory. Summary ROOT/runs/r4-profile-ec8-summary.json; driver/analyzer
+ROOT/runs/r4-profile-ec8-{driver,analyze}.py. Journal56 includes actual source,
+completion records, preflight, phase summary and metadata sample; old55 bytes
+are preserved and the copied controller summary matches exactly. Do not append
+these artifacts again. Frozen correctness gates and full-plan scope are unchanged.

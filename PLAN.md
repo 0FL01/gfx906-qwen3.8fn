@@ -298,3 +298,13 @@ No full-request gain: mean-off/on ratios0.993395/0.999081. Draft acceptance is h
 the MTP decode timer. Do not promote smoke TG12.59 or this non-winning result.
 Next is phase-separated current profiling, targeted measured optimization, and
 matched pinned llama.cpp baseline. The entire plan remains active and unfinished.
+
+### 2026-10-04 current profile guides the next candidate
+
+Separate completed PP and MTP-verify ROCTX profiles are captured (journal56).
+Attention chunk is40.92% of summed PP GPU duration and31.90% of verify GPU;
+metadata sample has256 VGPR and4380 scratch. Test a rolled canonical dot loop
+before changing attention math. Keep all FP checks/order/precision and gates;
+check compiled metadata, component parity, full-model continuation and paired
+trace-off requests before promotion. Q4 N8 and dense N8 are next measured PP
+costs; head skipping is only2.91% of summed PP GPU duration here.

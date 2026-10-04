@@ -1,5 +1,6 @@
 #include "mtp_runner.hpp"
 #include "mtp_session.hpp"
+#include "profile_range.hpp"
 #include <algorithm>
 #include <chrono>
 #include <vector>
@@ -52,10 +53,14 @@ struct MtpRunner::Impl {
         counters={};counters.prompt_tokens=tokens.size();budget=outputs;ignore=ignore_eos;eos=end;done=false;
         const auto start=Clock::now();
         std::span<const float> last;
+        ProfileRange prefill_range("MTP_PP_COMPLETED");
         for(std::size_t first=0;first<tokens.size();) {
             const auto count=std::min<std::size_t>(chunk,tokens.size()-first);
             const auto ids=tokens.subspan(first,count);
-            last=target.step_batch(ids);
+            {
+                ProfileRange target_range("MTP_PP_TARGET_CHUNK");
+                last=target.step_batch(ids);
+            }
             const auto tap=target.target_tap();
             if(tap.rows!=int(count) || tap.width!=W || tap.first_position!=first || !tap.pointer)
                 throw std::runtime_error("MTP prompt tap contract");
@@ -94,14 +99,17 @@ struct MtpRunner::Impl {
         const int horizon=int(std::min<std::size_t>({2,remaining-1,std::size_t(capacity)-consumed-1}));
         std::array<std::int32_t,3> inputs{pending,0,0};
         const auto dstart=Clock::now();
+        ProfileRange draft_range("MTP_DRAFT_COMPLETED");
         for(int i=0;i<horizon;++i) {
             const std::array hidden{i ? draft.own_tap().row(0) : draft.saved_target_carry()};
             const auto logits=draft.step(hidden,std::span(&inputs[i],1));
             proposal.distribution(logits,q[i]);inputs[i+1]=static_cast<std::int32_t>(proposal.draw(q[i]));
         }
         draft.restore_prefix(consumed);
+        draft_range.end();
         counters.draft_ms+=ms(dstart);
         const auto vstart=Clock::now();
+        ProfileRange verify_range("MTP_TARGET_VERIFY_COMPLETED");
         const auto verified=target.verify_window(std::span(inputs).first(horizon+1));
         SpeculativeWindow window;window.horizon=horizon;
         for(int i=0;i<=horizon;++i) {
@@ -109,8 +117,10 @@ struct MtpRunner::Impl {
             if(i<horizon){window.q[i]=q[i];window.draft_ids[i]=inputs[i+1];}
         }
         const auto selected=decision.decide(window,{remaining,std::size_t(eos),ignore});
+        verify_range.end();
         counters.verify_ms+=ms(vstart);
         const auto rstart=Clock::now();
+        ProfileRange rebuild_range("MTP_TEACHER_RESTORE_COMPLETED");
         const auto keep=selected.restore_prefix;
         const auto tap=target.target_tap();
         if(tap.rows!=horizon+1 || tap.first_position!=consumed || tap.width!=W || !tap.pointer ||
@@ -120,6 +130,7 @@ struct MtpRunner::Impl {
                                MtpHiddenRow{1,tap.pointer+W,W}};
         (void)draft.teacher_append(std::span(hidden).first(keep),std::span(inputs).first(keep),MtpTeacherHead::skip);
         draft.save_target_carry(int(keep)-1);target.restore_prefix(int(keep));
+        rebuild_range.end();
         counters.rebuild_ms+=ms(rstart);
         MtpEmission out;out.count=selected.emitted_count;out.reason=selected.stop_reason;
         for(std::size_t i=0;i<out.count;++i)out.ids[i]=static_cast<std::int32_t>(selected.emitted_ids[i]);

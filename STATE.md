@@ -17,15 +17,22 @@ Compiled f59c8de/dirtytrue unchanged. Canonical journal55; old54 bytes preserved
 controller actual raw/source/footer/IDs match and strict four off collectors PASS.
 Raw ROOT/runs/r6-matched-ec8-20261004; never append these accepted logs again.
 
-ACTIVE diagnostic job1791139209698-232: strict optional core-profile-prefill and
-core-mtp-profile builds PASS, then annotation32 parity and separate ROCTX PP4K /
-MTP4K+128 traces. Source ec8ab03/dirtytrue. Diagnostic targets are SEPARATE;
-core-session, core-mtp-run and the saved core-session-baseline are not replaced.
-New local profile files/CMake/annotations remain uncommitted until validated.
-Do not launch another GPU workload or heavy compile during the diagnostic.
-Next: inspect phase timelines, choose measured optimization, run fresh pinned
-llama.cpp MTP2 with matching fixtures. Production models.ini CHANGED to another
-model: use explicit recovered historical args, not the mutable preset.
+Diagnostic job1791139209698-232 COMPLETE exit0/9m19s: strict separate
+core-profile-prefill/core-mtp-profile builds, annotation32 exact trajectory,
+7 input rejections, PP4K and MTP4K+128 completed traces. Analyzer245 exit0/1m02s.
+Journal56 copied; exact old55 prefix and actual summary match. Source ec8ab03/dirty.
+PP dominant attention40.92% summedGPU, Q4 N8 24.43%, denseN8 10.38%.
+MTP verify attention31.90% summedGPU. Attention metadata:VGPR256/Scratch4380.
+Hypothesis next: disable full32-iteration QK-dot unroll, keep exact arithmetic;
+inspect metadata/component/full-model gates before any speed promotion.
+
+ACTIVE pinned donor comparison job1791140015374-249: four fresh isolated
+MTP2 requests4K/16K x2, exact same fixtures and explicit recovered launch args.
+Driver ROOT/runs/r6-llama-matched-host.py; private container loopback/no published
+port. Do not run another GPU workload or heavy compile until it finishes.
+Production models.ini now names another model, so it is deliberately not used.
+Matched own measurement PUSHED8f93b1dd20a5aad20e32c446cc74aecdb21ba342.
+Profiling slice is being committed separately; default measured binaries intact.
 
 R0–R3 closed. R4 speed, R5 measured dispatch, full R6, R7 occupied128K/tokenizer/API
 and R8 safetensors/runtime-pack remain OPEN. Frozen correctness gates unchanged.
