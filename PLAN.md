@@ -199,6 +199,20 @@ Accepted paired baselineb522 vs ALREADY-BUILT765 job769 дал modestGPU-copy PP
 
 ## R6. MTP2 с корректным состоянием
 
+**2026-10-04: bounded trained-forward/teacher slice implemented.** Own MtpSession
+executes real sidecar and borrows target embedding/head. Fresh strict build,
+CTest39/39, chronological32 N1/N2/N3 self-check/reset/rollback/poison/KV-only
+passed; independent sequential donor with explicitly selected short-canonical
+CPU dense correction passed all327680 D/7946240 logits at unchanged gates.
+Raw donor/direct-division and batched-donor N2/N3 are NOT qualified: retain their
+numerical failures and the documented batch-sensitive FFN/head witness.
+Canonical journal51 includes successes AND failed controls. No wholeR6,
+HF equivalence, longer-history or MTP throughput claim. See README R6 trained forward.
+Next implementation: connect trained proposals to existing SpeculativeSampler,
+verify/teacher-rebuild/restore and terminal-aware pending token handling; measure
+real0/1/2 acceptance windows before performance promotion.
+
+
 **Bounded R6 prerequisite slice ACCEPTED/CLOSED, correctness ONLY; R6_complete_claim=false.** Actual run831 DONE/native exit0. Snapshot строго `ba446f9266ab2dc4c0aa4e73d8930a5534c4b2a2`/dirtytrue, не futurecommit. MCP job `1791103589280-831` получил `state_lost/background_channel_closed_without_exit_status` после14m15s; READONLY Docker daemon die event ORIGINAL контейнера `core-r6-prerequisites-check` установил nativeexit0/2772s46m12s без повторного run. ContainerID `35ed6fbda1d6c386cb1d84819addcaf4650460044619ba658867de52e73a0644`, time1791106362/timeNano1791106362809343377; downloadedignored proof `runs/r6-prerequisites-ba-a-exit-proof.json`719B. Strictfull CXX20/HIP20 Release gfx906/allwarnings/ffp-contractoff PASS, CTest39/39 actual1145.49s. MtpModel666checks/451rejects и Specpuremath35963782checks/715rejects/5522274hotcalls zeroheap PASS; это НЕ trainedMTP.
 
 Actual `core-mtp-model TARGET SIDECAR`: `runs/r6-mtp-model-ba-a.jsonl`36records/14462B,32roletyped descriptors/offsets/strides, actualQ8_0×19/F32×11/BF16×2 толькоindexQ/K; top10/fulltypedtokenizer10assets/blk48compression0dense/target-owneddistinctembeddingQ4_0/outputQ6_K checks PASS. Descriptor-derivedpayload2775621632B/eachgate-up-downstride1740800B; payloadread/trainedexecution нет. Actual `core-mtp-attention` обеGPU: `runs/r6-mtp-attention-ba-a.jsonl`4records/1298B, B1..3/densefullcausalprefixQ4KV/synthetic128K, frozen `2e-4+2e-4*abs(ref)`/oldN1shortbitparity/finite/bounds/poison/reject/sticky/canaries PASS; cleanupfooter live_resources0. KEEPmxsum64/ADAPTcurrentfurnace64splitmerge/WRITEOURSdirectcanonicalQ4→FP16RNE; неoccupiedfullmodel128K/HF/trainedforward/performance.

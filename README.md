@@ -1993,3 +1993,70 @@ over the whole10240 remains unchanged. Ignored
 and carry no speed promise. Full R4 speed, R5 measured policy, R6 trained MTP,
 R7 occupied long/tokenizer/API and R8 pack/final gates remain mandatory and open;
 latest performance stays the accepted823 measurements above.
+
+## R6 trained forward: sequential teacher and batching diagnostics (2026-10-04)
+
+The candidate `MtpSession` executes the real Q8_0 blk48 sidecar, borrowing the
+already-loaded target Q4_0 embedding and Q6_K output without duplicating them.
+It supports N1..3, recursive widened-D proposals, full/explicit KV-only teacher
+history, logical suffix restore, owned carry across target verification, and
+transactional logits/tap/probe publication. All 512 sidecar experts are loaded
+once on device1 (2,673,868,800 bytes). This is not a complete speculative sampler
+or a performance-qualified MTP2 serving path.
+
+The standalone `tools/mtp_teacher_oracle.cpp` links the existing source/image-
+attested mx dcd685463d production libraries; it never enters the core hot path.
+Its default uses the unmodified donor. `--dense-f32-control` instead evaluates
+mathematical dense attention over the donor's actual Q4 cache decoded through
+FP16 RNE, with unchanged query/mask/weights. That historical control is preserved.
+A NEW, separate `--dense-short-canonical` flag requires the dense control and
+is bounded to <=64 visible rows. It uses exp(double) rounded to F32 and the
+rounded reciprocal/product form of the existing short GPU attention. This is
+an arithmetic diagnostic, NOT a tolerance waiver, raw-donor parity or HF proof.
+The independently expressed double CPU self-test checks both variants. Strict
+standalone build and self-test passed 1,247,970 checks, 45 rejections and
+1,222,656 comparisons (max bound ratio 0.000883514). The production libraries
+and GPU attention implementation were not modified by this diagnostic.
+
+Actual source snapshot: d2f948ae44f5172dd2395fdbf1723e0b1ddd6237, dirty=true.
+The 32-row generated teacher is BOS248044,100..130. Source capture:
+`ROOT/runs/r6-mtp-position26-d2-capture`; ROOT=/home/radneon/gfx906-core.
+Do not retag these artifacts to a later closure commit.
+
+Observed controls, all at frozen D atol=.002 / logits atol=.02 / rtol=.002:
+- Original dense-FP32 control: numerical FAIL at position26; D3978 violations,
+  logits68892 violations. Preserved under `r6-mtp-dense-f32-d2-oracle-n1`.
+- Short-canonical sequential donor: native exit0, all32 rows PASS,
+  327680 D values maxabs3.8146973e-6/maxratio.000205267;
+  7946240 logits maxabs.020387292/maxratio.961748919, zero violations.
+  Native job1791129410074-50, `r6-mtp-canonical-diagnostic-n1`.
+- Short-canonical donor N2: D PASS; logits FAIL8216/maxratio2.599409.
+  N3 also returns numerical_failure. These results MUST NOT be hidden by the N1 pass.
+- DonorN1 vs donorN2 at position4: all captured inputs through FFN-HC are
+  bit-identical. FFN differs by1.7762184e-5, widenedD by3.0159950e-5,
+  head input by.026559830 and logits by.060904741. Thus the donor itself has
+  observable batch-dependent amplification; this does not establish any wider
+  accuracy claim. The diagnostic N2 capture is `r6-mtp-canonical-diagnostic-n2-sites`.
+- The own-runtime chronological fixture checks N1/N2/N3 and ordinary/reset,
+  KV-only prefix29, suffix poison/restore/replay and publication failure/reuse.
+  Fresh job1791130233817-73 completed native exit0 after20m51s. Strict build
+  and CTest39/39 passed (1149.99s); fresh teacher-width3 capture again has zero
+  self error. Tokens, previous hidden, own D and all logits are byte-identical
+  to the earlier N1 capture. Actual fresh arrays were re-compared to the frozen
+  sequential donor arrays, with the same passing metrics above.
+  Canonical ROOT/results.jsonl advanced50→51 with one bounded record; the
+  entire previous50-record byte prefix was preserved on target and controller.
+
+Sequential teacher agreement and own batching invariance are separate evidence
+from a passing donor-batched comparison. Full R6 remains open: complete sampled
+MTP2 windows, acceptance0/1/2, terminal/pending handling, broader/longer references
+and matched end-to-end speed are not proved by this bounded32-row test.
+
+Reproduce the diagnostic using the existing image/device/mount contract:
+`tools/build-mtp-oracle.sh` requires the exact pinned donor tree and production
+library revision and a NEW output named mtp-teacher-oracle. Its mandatory
+`--self-test` must pass before atomic publication. Invoke that binary with
+`MAIN SIDECAR CAPTURE_DIR NEW_OUTPUT_DIR --teacher-width 1 --dense-f32-control
+--dense-short-canonical`; add `--capture-intermediates` only for diagnosis.
+Never reuse an existing output directory. Use explicit /bin/sh for multi-step
+commands reached through ssh: amude's login shell is not a POSIX-sh guarantee.

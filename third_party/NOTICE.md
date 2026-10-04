@@ -336,3 +336,11 @@
   Copyright (c) 2023-2026 The ggml authors; MIT in `mx-LICENSE`.
 
 Upstream URLs and rejected donor options: RECON.md section 16.
+
+- `src/mtp_session.hip` and its typed API/fixtures are original ownership,
+  history and orchestration over the already-attributed qualified primitives.
+  `tools/mtp_teacher_oracle.cpp` is a separate diagnostic linked to the pinned
+  production mx libraries, not a hot-path dependency. Its independently written
+  bounded CPU dense-attention controls and double-reference self-tests import
+  no new runtime or dependency. Raw, direct-division and explicitly selected
+  short-canonical controls remain separately labelled; no gate was relaxed.

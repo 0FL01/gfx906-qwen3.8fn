@@ -5,6 +5,7 @@
 #include <memory>
 #include <span>
 #include <string>
+#include "model.hpp"
 
 namespace qwen {
 struct Q8_1;
@@ -164,6 +165,27 @@ struct SessionTargetTap {
     bool operator==(const SessionTargetTap&) const = default;
 };
 
+// Immutable payload borrowing only. Session must outlive its MtpSession borrower;
+// both owners and all views are exclusive/nonconcurrent, including destruction.
+// No model reopen, embedding duplication, Q6 repack or root-HC sharing.
+struct SessionQ6Head {
+    static constexpr TensorType type = TensorType::Q6_K;
+    int device = 1, input = 2560, output = 248320;
+    const void* pointer = nullptr;
+    std::uint64_t bytes = 0;
+};
+struct SessionEmbedding {
+    static constexpr TensorType type = TensorType::Q4_0;
+    std::span<const std::byte> cpu_bytes;
+    std::uint64_t row_bytes = 0;
+    int width = 2560, rows = 248320;
+};
+struct SessionSharedWeights {
+    const Model* descriptor = nullptr; // already-open actual target inventory
+    SessionQ6Head output;
+    SessionEmbedding embedding;
+};
+
 // Separate opt-in diagnostics, cumulative until successful reset. Restore ONLY
 // changes the logical consumed cursor, never these completed-work counters or
 // historical expert/upload/route/hybrid/attention diagnostics. Prefix calls are
@@ -296,6 +318,8 @@ public:
     // execution; last-success tap/stats remain inspectable after failure.
     SessionCheckpointState checkpoint_state() const;
     SessionTargetTap target_tap() const;
+    // Drains existing streams, restores current device; immutable constructor seam.
+    SessionSharedWeights borrow_mtp_weights() const;
     SessionSpeculativeStats speculative_stats() const;
     // Marks unusable at entry. Only complete success clears published counters/
     // probe extents and re-enables execution; successful reset retains warm cache.

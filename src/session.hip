@@ -2120,6 +2120,19 @@ SessionTargetTap Session::target_tap() const {
     const auto& c = *impl_->checkpoints;
     return {1, c.tap.get(), c.tap_rows, W, c.tap_position};
 }
+SessionSharedWeights Session::borrow_mtp_weights() const {
+    if (!impl_->usable) throw std::runtime_error("Session invalidated; reset required");
+    if (impl_->head.type != TensorType::Q6_K || impl_->head.data.owner() != 1 ||
+        impl_->head.input != H || impl_->head.output != V || impl_->embedding_type != TensorType::Q4_0)
+        throw std::runtime_error("MTP requires actual Q6_K head/Q4_0 embedding");
+    int previous = 0; hip(hipGetDevice(&previous));
+    try { for (auto& d : impl_->devices) d->drain(); }
+    catch (...) { cleanup(hipSetDevice(previous)); throw; }
+    hip(hipSetDevice(previous));
+    return {&impl_->model,
+        {1, H, V, impl_->head.data.get<void>(), impl_->head.data.bytes()},
+        {impl_->embeddings, impl_->embedding_stride, H, V}};
+}
 SessionSpeculativeStats Session::speculative_stats() const {
     return impl_->checkpoints ? impl_->checkpoints->stats : SessionSpeculativeStats{};
 }
