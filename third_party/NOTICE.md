@@ -232,14 +232,40 @@
   slice. Accepted logs must never be appended again. Full evidence/
   raw paths/reproduction are in README.md. These bounded owner/API/CLI/schema
   fixtures introduce no new third-party dependency or license.
-  Qualified765 a4 is now the one saved baseline; next is trace-off B8 A/B/A
-  against it with chunk1024/slots112/CPUdisabled/tile8 versus original tile1.
+  Correctness was accepted/pushed as3cc594d0783974aec4cf6f4657d8e0c6864139d2.
+  Separate trace-off B8 A/B/A job1791090828619-823 completed exit0/52m44s:
+  saved765 a4/dirtytrue versus already-built775 77f/dirtytrue, both chunk1024/
+  slots112/CPUdisabled, B tile8 versus A original N1 tile1; no rebuild, heavy
+  compilation or competing GPU workload. Six fresh4K/16K requests each emitted
+  512 actual outputs/TG511/RNG512; within-length512-ID equality is diagnostic.
+  Mean-A/B PP gains1.3931x/1.4200x and request gains1.2711x/1.3818x are original
+  completed-wall measurement evidence, not a new donor/dependency/license or
+  GPU-event/profile/VRAM/exact-peak/HF/CPU-dispatch qualification. Weights,
+  precision, gates and Q4 K/V are unchanged. Literal protocol2
+  candidate_unqualified/local_unqualified labels and compiled Source are retained.
+  Canonical ROOT journal41→48/2897341B has exactly six r4_request appends plus
+  one r4_attention_batched_query_ab, with the old41 byte/parsed prefix verified
+  remotely and all six strict remote collections passing. Parent downloaded
+  six raws, fixture metadata and canonical48 journal. All six actual local
+  collections passed, Source/completion/rates exactly match the ROOT rows and
+  three512-ID arrays per length match diagnostically. Old Git HEAD41 exact byte
+  prefix and parsed history, actual git numstat+7/-0 and diff--check passed.
+  The bounded performance-measurement slice is accepted and closed; never append
+  these records again. Parent's next normal commit/push contains only the four
+  docs and journal, excluding all future Session checkpoint/MtpModel/speculative/
+  dense/inspector code. After that closure commit/push, promote qualified775
+  attention/source77fdirtytrue/explicit tile8 to the one baseline before new R6
+  prerequisite gates. This next action does not retag Source or claim a new HEAD.
+  Detailed timings, raw paths and fresh commands are in README.md.
   Default attention tile1/OFF and the original API remain unchanged.
   Hybrid performance, measured dispatch thresholds, fullR4/R5, trained MTP,
-  occupied long/API, converter and final speed targets remain open. Future
-  unlinked Spec3/MtpModel3, the new inspector and ignored checkpoint patch are
-  outside this correctness slice. Existing mx/furnace MIT and reinstinct
-  Apache-2.0 attribution is retained.
+  occupied long/API, converter and final speed targets remain open. Locally
+  prepared target checkpoint/tap/restore/new fixture, MtpModel descriptor guards,
+  speculative math and dense-Q4 attention component are not mirrored, compiled
+  or promoted remotely and are outside this measurement-only slice. Next qualify
+  actual HIP restore/dense component/actual descriptor with default regressions;
+  those prerequisites do not prove trained MTP execution. Existing mx/furnace MIT
+  and reinstinct Apache-2.0 attribution is retained.
 
 - `src/hip/mmq.hip` adapts mx `mmq-load-tiles.cuh`, `mmq-vec-dot.cuh`,
   `mmq.cuh` and `vecdotq.cuh` canonical Q4 DP4A tile/load/dot/writeback seams

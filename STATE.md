@@ -2,13 +2,12 @@
 
 ## Статус и текущая задача
 
-R0–R3 закрыты; short/logical-wide1024/real4K16K correctness qualified. B8 attention/CLI2 bounded correctness qualified; полный R4–R8/400–600PP/30–40TG OPEN/unmet. NEXT trace-off B8 A/B/A против saved765a4 baseline.
-Исходный HEAD среза `77f89c3412fff65634df8b45b08fab1b3da028a0`; GPU Source SNAPSHOT77f/dirtytrue NEVER retag closure commit. Candidate `/core/build/core-session` already-built775.
-Job `1791083481832-775` terminal exit1/26m29s AFTER strictfullCXX20/HIP20gfx906Release/allwarnings build/CTest36/36 (803.76s), bothGPUattentioncomponentPASS и originalModelB8exeEXIT0/31records.
-Failurecollector требовал2hostlogitowners приcpu0; actualhost_logits1017118720B, working_logits толькоcpu_workers>0. Parentfixed source-derivedlowerfloor1owner, НЕnumericaltolerance; regressionLOCAL29/29 (43.187s), actualLOCAL/remotecollectB8PASS.
-Continuation `1791087203796-820` COMPLETEexit0/21m01s SAMEalready-built775binaries: fullCTest36/36 (808.07s)/correctedtests→B8collect→CLI2mixed/off32→defaultreset/batch/memory+strictcollect ALLPASS; cap131072/slots112 memory неoccupied128K/duplicateappend.
-Canonical remoteROOT/results.jsonl41/2563568B EXACT3appends38→41 [r4_attention_prefill,proto2mixedr4_request,proto2offr4_request], old38byteprefix+parsedhistoryEXACT/source77fdirtytrue. Downloaded local journal/Git38 history and +3/-0 verified; correctness slice accepted. Acceptedlogs NEVERappendagain.
-ParentLOCALdownloaded actualModel/component/CLI2raws/strictlocalcollect ALLPASS. Historical765/769 closures accepted; actual512/route-copy paired measurement details README.md/results/raws, B8 has NOpairedperformanceyet.
+R0–R3 закрыты; B8 attention/CLI2 correctness accepted/pushed `3cc594d0783974aec4cf6f4657d8e0c6864139d2`. Полный R4–R8/400–600PP/30–40TG OPEN/unmet.
+Trace-off B8 A/B/A job `1791090828619-823` COMPLETEexit0/52m44s/boundedPERFORMANCE-MEASUREMENT ACCEPTED/CLOSED. Next parent5filesdocs+journal commit/push→qualified77fattentionONEbaseline→newactualstrictR6prereqgates/DEFAULTregressions.
+Historical823 A saved765baseline `/core/build/core-session-baseline`1556208B/source `a4b55d84724ba15bbae7013d5a107b7671b7a409`dirtytrue; B `/core/build/core-session`already775/source `77f89c3412fff65634df8b45b08fab1b3da028a0`dirtytrue. No rebuild/heavycompile/otherGPU; NEVERretag futurecommit.
+Canonical remoteROOT/results.jsonl48/2897341B EXACT7appends41→48 [6r4_request+1r4_attention_batched_query_ab]; old41byteprefix+parsedhistory verifiedREMOTE/all6strictRemoteCollectPASS. Accepted/historical raws NEVERduplicateappend.
+Parent downloaded6raws/fixturemetadata/canonical48journal; all6actualLOCALcollectPASS/Source+complete+rates EXACTmatchROOTrows/withinlength512IDs same diagnostic-only. OldGitHEAD41 EXACTbyteprefix+parsedhistory/actualgitnumstat+7/-0/diff--checkPASS. Pairedsource77fdirtytrue preserved.
+HISTORICAL correctness775 strictbuild/CTest36/36 (803.76s)+bothGPUcomponent+modelEXIT0; collector1hostlogitfloor repair НЕtolerance. Historical820 SAME775 fullCTest36/36 (808.07s)/CLI2/defaultreset,batch,memory/collectPASS. НЕnewR6gates; correctness41/Git38prefix/+3/-0 verified before3cc594d.
 
 ## Соединение и рабочие пути
 
@@ -22,7 +21,7 @@ Hardware:16 physical/32 logical CPU cores, один NUMA, AVX2/FMA/F16C; обе 
 
 ## Рабочие команды
 
-Последний strictfullbuild775 PASS: `docker run --rm --name core-build --entrypoint /bin/sh -v /home/radneon/gfx906-core:/core -e CORE_REVISION=77f89c3412fff65634df8b45b08fab1b3da028a0 -e CORE_DIRTY=ON llama.cpp-gfx906:cmake-4.4.3 -c 'sh /core/src/tools/build.sh'`. Новая сборка требует actualsynchronizedrevision/dirty; explicitsh/source100644;820 неrebuild.
+Последний strictfullbuild775 PASS: `docker run --rm --name core-build --entrypoint /bin/sh -v /home/radneon/gfx906-core:/core -e CORE_REVISION=77f89c3412fff65634df8b45b08fab1b3da028a0 -e CORE_DIRTY=ON llama.cpp-gfx906:cmake-4.4.3 -c 'sh /core/src/tools/build.sh'`. Новыйsnapshotbuild требует actualsynchronizedrevision/dirty, не77fпоинерции; explicitsh/source100644;820/823 неrebuild.
 Fresh model gate: `docker run --rm --name core-prefill-attention-repro --device /dev/kfd --device /dev/dri --group-add video --ipc host --security-opt seccomp=unconfined --entrypoint /core/build/core-prefill-attention-test -v /home/radneon/gfx906-core:/core -v /home/radneon/models-nvme:/models:ro llama.cpp-gfx906:cmake-4.4.3 /models/qwen38-keep1-Q4_0.gguf > /home/radneon/gfx906-core/runs/NEW-attention-model.jsonl`; freshstderr/core-attention-batch/manualmodelgate fullcontract README.md.
 ONLYafterexeexit0: `python3 -B /home/radneon/gfx906-core/src/tools/record_prefill_attention.py --raw /home/radneon/gfx906-core/runs/NEW-attention-model.jsonl --results /home/radneon/gfx906-core/results.jsonl`; проверитьexitstatus/ONEfreshappend. AcceptedrawsNEVERappendagain.
 CLI2fresh sameDockercontract/entrypointcore-session: `--capacity 64 --slots 1 --prefill-chunk 32 --generate 32 --ignore-eos --sample --seed 42 --temperature 1.0 --top-p .95 --top-k 20 --cpu-workers 1 --hybrid-mode mixed --gpu-miss-groups 2 --attention-query-tile 8 MODEL 248044 $(seq 100 130)`; OFFworkers0/disabled/tile1/freshlogs — README.md.
@@ -31,16 +30,15 @@ Literalraw `candidate_unqualified`/`local_unqualified` labels preserved; parent 
 
 ## Последний подтверждённый результат
 
-Attentioncomponent EXACT3JSONrecords source+twoGPU/НЕfooter; each26cases304queries1867776bit+1867776CPUvalues/maxabs1.1920928955078125e-7/maxboundratio.0003692344547586807/23device180hostrejects6stickyPASS.
-ModelB8 ONEsameSession cap2088/slots1/max1024/tile8/cpu0: oldN1 all2088 reference; enabled1024/1024/8+32N1; occupied5N1→997/997/57+32N1. Teacher2056+continuation32, logicalboundary2047..2056 НЕGPUselectedID/visibilitytrace/independentHF/new4K16K.
-2163completedcalls/6264rows/1555476480finite/1036984320fullvocabcompared/ZEROerrorsviolationsdiagnosticbits/4176argmaxdiagnosticmatches; frozen `.02+.002*abs(ref)`, bit/argmaxnotrequired; timingcorrectnessonly. CompletedattentionAPIcounts6180calls49284rows6168multi49272multirows12singletonmax8 НЕphysicalkernels.
-2190memoryobservations/26serializedledgers/8atomicrejects/6toggles/preserved6073162240values; individualtoggles/неserializedobservations driverassertions-only, notadditionalrawledgers.
-Actualprivate40338944B/GPU=fourbuffers40142336+reusedf(15)prefix196608 НЕextraallocation; selection82080separate, f(15)/f(17)actualbacking50331648B each alreadyworkspace/ownedledger. MinfreeGPU0/1:12671549440/12115804160B; НЕexactpeak/fullRAM/individualreleaseproof.
-ActualCLI2 cap64slots1chunk32prompt[BOS248044,100..130]generate32ignoreEOSsampleSeed42primary1/.95/20: mixedcpu1/mixedquota2tile8 vsOFFcpu0/disabledtile1; BOTH32outputs63consumed31TG32RNG1PPcall/IDsidenticaldiagnostic.
-Mixedshort1488/wide48/cpuGroups11255/gateup11255/down11255/middlecols11255/batches1488/pairedH2D57625600B/Q8D2H8103600B/returns115251200B/GPUhitgroups649/GPUmissgroups2976/admitted2976/evicted1440.
-Shortdiagnostic TGmixed27789.104387ms vsOFF6521.876872ms НЕproperpairedperformance/speedgain/policythreshold; cpu0default НЕpromoted.
-Lastqualifiedperformance769: B7654K PP25.68871522181/TG10.07616889732,16K PP22.60272136899/TG9.85092544783; modest2–2.7%PP/about1.9%request. FullR4/targetsOPEN; raw r4-indexed-a4-* and historicalprofile750 — README.md.
-RawROOT/runs/r4-attention-77f-a-{build.log,component.jsonl,model.jsonl}; continuation r4-attention-77f-b-{gates.log,cli2-mixed.jsonl,cli2-off.jsonl,reset.jsonl,batch.jsonl,memory.jsonl}; source77fdirtytrue unchanged.
+823 ОБАchunk1024/slots112/fresh/noPrefixReuse/cachewarmunknown/CPU0disabled/MTPoff/primary1/.95/20seed12345ignoreEOS512; AoriginalN1tile1/Bexplicitquerytile8protocol2. ExactR0archive/code4K IDs/fourconcat16K, неoriginaluser/retokenized/externalMTPbaseline.
+Все6requests512actualoutputs/3072total, eachTG511/RNG512, consumed4607|16895/cap4608|16896; three512-IDarrays withinlength equal diagnostic-only. Rawlabels candidate_unqualified/local_unqualified unchanged.
+4K A1/B/A2 PP160152.153592/115105.478965/160544.563734ms; request210982.242626/165876.889925/210718.406950ms. B PP35.5847526706/TG10.0650106725; meanA/B PP1.39305583109347×/request1.2711253802945932×.
+16K A1/B/A2 PP724478.209838/509826.542585/723419.610449ms; request777620.365975/562117.081524/775858.095619ms. B PP32.1364201968/TG9.7725973247; meanA/B PP1.419990623620387×/request1.3818104027209437×.
+B fasterBOTHAs PP/request EACHlength; TG~10/targetsUNMET. Completedwall PPwithoutoutputsampling/TGoutputs−1/loadseparate; no newGPUevents/profile/VRAM/exactpeak/HF/marginalRNG/CPUdispatchclaims.
+RawsROOT/runs/r4-attention-77f-ab-{4k,16k}-{a1,b,a2}.jsonl/.err, r4-attention-77f-ab-series.log/-fixture-source.json. Sixexacttimings/rates/freshrepro/argv-vs-Source — README.md; canonicalROOTonly.
+CorrectnessB8 cap2088/slots1/max1024/tile8/cpu0: teacher2056+32continuation oldN1/enabled1024/occupied5→997; 1036984320fullvocabcomparisons ZEROerrors/frozen `.02+.002*abs(ref)`/bitdiagnostic. Logical2047..2056 НЕGPUvisibilitytrace/HForacle.
+Private40338944B/GPU includes4buffers40142336+reusedf(15)196608; selection82080separate/f15,f17backing50331648each alreadyledgered. Component26cases/304queries perGPU PASS; APIcounts НЕphysicalkernels.
+CLI2mixed/off32 actualLOCAL+remotePASS; TG27789.104387vs6521.876872ms diagnostic-only/НЕpolicywin/defaultpromotion. Historical769 modest2–2.7%PP/~1.9%request; correctness/model/CLI2 rawdetails README.md.
 
 ## Контракт и границы
 
@@ -48,13 +46,13 @@ Own Session: RAM experts/default112 GPU slots/layer, static24/24, Q4 KV/FP32 ind
 SeparateSessionRouteStats last-callmax assignments одномуexpert/layer+cumulativegroups>128 since reset; publishonlysuccess/resetzero/invalid+executionfailurepreserve, failure требуетreset. Lastemittedtoken pending; greedy/trace diagnostic-only.
 Batchprimitive ADAPT currentfurnace-derivedN1/privatequerydimension/exactoldQ4→halfRNE/sortedselectedID/64-keysplit/merge; mx/furnaceMIT/reinstinctApachepinsunchanged. Originalboundedowner/API/CLI/schemafixtures/no newdependency; tile1/OFF/originalAPIdefault unchanged.
 QualifiedCPUlinear_GPUmiddle exactCPUgateup/down+canonicalGPUSiLU/Q8 onceCPU-bearinglayer; force_cpu НЕwholeCPU. WholeCPUlibm755/759 fullgatefailed, primitiveboundspassed — no tolerancewaiver/repeat; pipeline/lifetime detailsREADME.md.
-FutureunlinkedSpec3/MtpModel3/newinspector/ignoredcheckpointpatch excludedfromB8CLI2slice; no trainedMTP/longAPI/converter qualification. Exactpeak/occupied128K/fullR4/R5policy/R6–R8/finalspeeds remainOPEN.
+LOCALONLY Sessioncheckpoint/tap/restore+newfixture, MtpModelguards/Specmath/denseQ4attention НЕmirrored/compiled/promoted, excludedfrommeasurement-onlyslice. No trainedMTP/longAPI/converterqualification; exactpeak/occupied128K/fullR4/R5policy/R6–R8/finalspeedsOPEN.
 
 ## Следующие действия
 
-1. ONEcurrentbaseline `/core/build/core-session-baseline`1556208B SOURCEa4b55d84724ba15bbae7013d5a107b7671b7a409/dirtytrue qualified765, alreadycopied; НЕoverwrite beforepairedB8performance. Candidatealready775/source77fdirtytrue;775/820TERMINAL, неresume/relaunch.
-2. Trace-off own A1baseline→Btile8→A2baseline ОБАchunk1024slots112/fresh/CPU0disabled/MTPoff/noPrefixReuse/warmnessunknown/primary1/.95/20/seed12345×512ignoreEOS; oneGPUload/noheavycompile. Baselineoriginaltile1/no newCLIflags; Bexplicitworkers0/disabled/tile8.
-Fixed4KIDs `ROOT/runs/r0-20261001T154816Z-4sffu3gz/4k.prompt-ids.json`;16K fourconcat `ROOT/runs/r4-fullrequest-b522-16k.prompt-ids.json`, неretokenize/originaluser. Capacities4608/16896, freshlogs/fullDockercontractREADME.md.
-Brequestargs: `--capacity 4608 --slots 112 --prefill-chunk 1024 --generate 512 --ignore-eos --sample --seed 12345 --temperature 1.0 --top-p .95 --top-k 20 --cpu-workers 0 --hybrid-mode disabled --attention-query-tile 8 MODEL exact4KIDs`;16K capacity16896/exactsavedIDs.
-3. После B8 performance — CPUworkers/admission-policy measurements, fullR4/R5→trainedMTP/R7occupiedlongAPI/R8converter. No newB8speedclaim доpairedactual512; no duplicateappends.
+1. Parent next normalcommit/push ONLYREADME.md/PLAN.md/STATE.md/third_party/NOTICE.md/results.jsonl; excludes ALLSessioncheckpoint/MtpModel/Spec/dense/inspectorfuturecode. 823 ACCEPTED/CLOSED — no duplicateappend/newHEADclaim/Source rewrite.
+2. AFTERparentcommit/push promotequalified775attention/source77fdirtytrue/explicittile8 ONEbaseline, then actualHIP Sessionverify_window/restore_prefix/target_tap fixture vs consumed-input sequential state/prefix0..N/repeatedreject/EOS/PLE/QSA-tail/error+reset; denseQ4component BOTHGPU/actualdescriptor gates.
+Mtpguards:32exactroles, BF16indexQ/KONLY, fulltop-k10budget/blk.48compression0dense, everytypedtokenizerfield equal; actualdonorreader convention. Descriptor/puremath НЕtrainedMTPforwardproof.
+3. Mirror/build NEWSNAPSHOTactualrevisiondirty; actualfixtureexit0+collect, fullrelevantCTest+DEFAULTreset/batch/memory; keepR6candidate outside823measurement-onlycommit. Then R5workers/admissionpolicy+remainingPPweighttraffic measurements.
+Freshperformance commandsfixedNEWfilenames/actualargv-vs-Source README.md;4K ROOT/runs/r0-20261001T154816Z-4sffu3gz/4k.prompt-ids.json,16K ROOT/runs/r4-fullrequest-b522-16k.prompt-ids.json; cap4608/16896, neverretokenize/reuseacceptedrecords.
 Indexraw128 безH/inverse; GDN[V][v][k],h%16; PLEhash/convresetвместе; RoPE64j/j+32/absolute, sectionsARRAYINT32. НеfullBF16download/ROCmchange/wave32; QSAfork неHForacle; MCPtransferlocal_root толькоcheckout.

@@ -13,13 +13,23 @@ GPU/model execution: a collector incorrectly required two host-logit owners with
 CPU workers off. Correcting that source-derived memory floor, without changing
 numerical gates, enabled continuation job `1791087203796-820` to complete exit0
 in 21m01s on the **same already-built binaries**, including CTest36/36 and all
-remaining gates. Detailed evidence and fresh commands are below.
-The remote canonical journal is **41 records / 2,563,568 bytes**, exactly three
-appends from38 with the old byte prefix/parsed history preserved; the parent's
-journal download and Git +3/-0 check are pending confirmation.
-Earlier trace-off GPU-copy A/B/A measured a modest 2–2.7% PP/about1.9% request
-gain. Its qualified a4 binary is now the one saved baseline; next measure B8
-against it at chunk1024/slots112 with CPU disabled and trace off.
+remaining gates. The bounded correctness slice is accepted and pushed as
+`3cc594d0783974aec4cf6f4657d8e0c6864139d2`; compiled provenance is unchanged.
+The subsequent **trace-off B8 A/B/A job `1791090828619-823` completed exit0 in
+52m44s** against the saved a4 baseline. B measured **35.5848 PP / 10.0650 TG at4K**
+and **32.1364 PP / 9.7726 TG at16K**; mean-A/B PP gains are **1.3931× / 1.4200×**,
+full-request gains **1.2711× / 1.3818×**. Detailed timings and fresh commands are below.
+Remote canonical history is **48 records / 2,897,341 bytes**, exactly seven
+appends41→48 with the old byte prefix/parsed history verified remotely. All six
+strict remote request collections passed. Parent confirmed all six local
+collections, exact Source/completion/rates against the journal, Git HEAD41
+byte-prefix/parsed-history preservation and **+7/-0 / diff --check PASS**.
+The bounded performance-measurement slice is **accepted and closed**.
+Next parent commits/pushes only these four docs and the journal, then promotes
+the qualified attention binary to the one baseline. Qualify the locally prepared
+target checkpoint/tap/restore, dense-Q4 attention component and actual MTP
+descriptor with new strict gates/default regressions; CPU-worker/admission-policy
+and remaining PP weight-traffic measurements follow.
 Full R4–R8, exact peak-VRAM qualification, MTP, serving and the
 400–600PP/30–40TG speed targets remain open; those targets are not met.
 Scope and acceptance are in [PLAN.md](PLAN.md); current evidence in [STATE.md](STATE.md).
@@ -1414,19 +1424,21 @@ The769 artifacts retain their historical b522→a4 binary identities. Fresh B8
 paired reproduction follows the current-baseline recipe below, using saved exact
 IDs/capacities, chunk1024 on all three runs and fresh stdout/stderr names.
 Preserve each actual binary's revision/dirty flags. The769 series is complete.
-The qualified765 a4 binary is now the **one current
-baseline**, `/core/build/core-session-baseline` (**1,556,208 bytes**), source
-`a4b55d84724ba15bbae7013d5a107b7671b7a409`/dirtytrue. Preserve it through the
-next paired B8 performance series. `/core/build/core-session` is the already-built
-job775 candidate, source77f/dirtytrue; neither binary is retagged to a future commit.
+During823, the qualified765 a4 binary was the **one saved baseline**,
+`/core/build/core-session-baseline` (**1,556,208 bytes**), source
+`a4b55d84724ba15bbae7013d5a107b7671b7a409`/dirtytrue. The completed B8 series below
+used this binary against the already-built job775 candidate
+`/core/build/core-session`, source77f/dirtytrue. Neither binary is retagged to a
+future commit.
 
 ## R4: qualified B8 attention and explicit CLI2 correctness slice
 
 ### Strict build, collector repair and completed continuation
 
-Controller HEAD/origin for this work is
-`77f89c3412fff65634df8b45b08fab1b3da028a0`. GPU artifacts carry that compiled
-source snapshot with **dirtytrue**, not a future closure commit.
+The correctness work used source snapshot
+`77f89c3412fff65634df8b45b08fab1b3da028a0`. GPU artifacts retain that compiled
+snapshot with **dirtytrue**; the accepted/pushed correctness closure is
+`3cc594d0783974aec4cf6f4657d8e0c6864139d2`.
 Job **`1791083481832-775` terminated exit1 in 26m29s**, after the full strict
 **CXX20/HIP20 gfx906 Release/all-warning-gates build**, **CTest36/36 in 803.76s**,
 both-GPU attention component PASS and original Model B8 executable **exit0**.
@@ -1518,7 +1530,8 @@ With `ROOT=/home/radneon/gfx906-core`, original raws are
 `ROOT/runs/r4-attention-77f-a-{build.log,component.jsonl,model.jsonl}`; continuation
 raws are `ROOT/runs/r4-attention-77f-b-{gates.log,cli2-mixed.jsonl,cli2-off.jsonl,reset.jsonl,batch.jsonl,memory.jsonl}`.
 The parent downloaded the actual model/component/CLI2 raws and strict local
-collection passed. Remote canonical `ROOT/results.jsonl` is **41 records /
+collection passed. At this correctness closure, canonical `ROOT/results.jsonl`
+reached **41 records /
 2,563,568 bytes**, **exactly three appends38→41**: one `r4_attention_prefill`, one
 protocol2 mixed `r4_request`, one protocol2 off `r4_request`. The old38-record
 byte prefix and parsed history are **exactly preserved**; source77f/dirtytrue is
@@ -1560,16 +1573,132 @@ For off use workers0/disabled/tile1; choose fresh stdout/stderr names for each.
 Only after each executable exit0 collect with
 `record_request.py --raw FRESH --results "$ROOT/results.jsonl"`.
 
-**Next:** own trace-off **A1→B→A2** on both4K/16K lengths, fixed R0 archive/code
-4K IDs and four concatenations for16K, primary seed12345/512 actual outputs,
-chunk1024/slots112 on both, CPU workers0/hybrid disabled. B uses tile8; saved
-baseline A uses its original tile1 default (no new CLI flags on that binary).
-Reuse the Docker/request contract above, fresh logs and the actual binary source
-identities; no GPU workload or heavy compilation concurrently. CPU-worker/admission
-policy measurements follow. Attention tile1/OFF and original API remain defaults.
-FullR4/R5 policy, R6 trained MTP, R7 occupied long/API, R8 converter and final
-400–600PP/30–40TG goals remain open. Future unlinked Spec3/MtpModel3, the new
-inspector and ignored checkpoint patch are outside this correctness slice.
+### Accepted and closed trace-off B8 full-request A/B/A measurement slice
+
+Exclusive job **`1791090828619-823` completed exit0 / 52m44s**, using the saved
+job765 A binary above and **already-built job775 B**, without rebuild, heavy
+compilation or another GPU workload. A retains source
+`a4b55d84724ba15bbae7013d5a107b7671b7a409`/dirtytrue; B retains
+`77f89c3412fff65634df8b45b08fab1b3da028a0`/dirtytrue. A uses the original
+N1 attention/tile1; B explicitly uses **query tile8 / workers0 / hybrid disabled**.
+B emits protocol2 with literal **`candidate_unqualified` / `local_unqualified`**
+labels. These labels and both compiled Source records remain unchanged by this
+measurement or a future closure commit.
+
+Each length ran **A1→B→A2**, chunk1024/slots112 on both, fresh Session/no prefix
+reuse/cache warmness unknown/MTP off. Sampling stayed **temperature1.0/top-p.95/
+top-k20/seed12345/ignoreEOS**. All six emitted **512 actual outputs each / 3072
+total**, with **511 TG forwards / 512 RNG draws per request**; consumed4607 at
+capacity4608 for4K, consumed16895 at capacity16896 for16K. All three512-ID arrays
+within each length match, **diagnostic-only**. Inputs are the saved exact R0
+archive/code4K IDs and four concatenations for16K, not original-user prompts,
+retokenized text or an external MTP baseline comparison.
+
+| Length / run | PP elapsed (ms) | TG elapsed (ms) | Full request (ms) | PP tokens/s | TG tokens/s |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| 4K A1 | 160152.153592 | 50828.622536 | 210982.242626 | 25.5756785540 | 10.0533906784 |
+| 4K B | 115105.478965 | 50769.941198 | 165876.889925 | 35.5847526706 | 10.0650106725 |
+| 4K A2 | 160544.563734 | 50172.369423 | 210718.406950 | 25.5131653463 | 10.1848887321 |
+| 16K A1 | 724478.209838 | 53140.681118 | 777620.365975 | 22.6148968699 | 9.6159851407 |
+| 16K B | 509826.542585 | 52289.067381 | 562117.081524 | 32.1364201968 | 9.7725973247 |
+| 16K A2 | 723419.610449 | 52437.016154 | 775858.095619 | 22.6479898573 | 9.7450243641 |
+
+| Length | Mean-A PP (ms) | Mean-A request (ms) | Mean-A / B PP | Mean-A / B request |
+| --- | ---: | ---: | ---: | ---: |
+| 4K | 160348.358663 | 210850.324788 | 1.39305583109347× | 1.2711253802945932× |
+| 16K | 723948.9101435 | 776739.230797 | 1.419990623620387× | 1.3818104027209437× |
+
+**B is faster than both As in PP and full request at each length.** TG remains
+about10 tokens/s; 400–600PP/30–40TG targets and full R4/R5–R8/final gates remain
+open and unmet. Timings are completed wall measurements: PP excludes output
+sampling, TG counts actual forwards (`outputs−1`), load is separate. This series
+adds no GPU-event/profile/VRAM/exact-peak, independent-HF, marginal-RNG or CPU
+dispatch qualification; model weights, precision, numerical gates and Q4 K/V
+remain unchanged.
+
+Raw stdout/stderr are **`ROOT/runs/r4-attention-77f-ab-{4k,16k}-{a1,b,a2}.jsonl`
+/ `.err`**; series log and provenance are
+`ROOT/runs/r4-attention-77f-ab-series.log` and
+`ROOT/runs/r4-attention-77f-ab-fixture-source.json`.
+Canonical **ROOT/results.jsonl advanced41→48 / 2,897,341 bytes**, exactly six
+`r4_request` appends and one `r4_attention_batched_query_ab`; the paired record
+retains source77f/dirtytrue and each request its own compiled source.
+The old41-record byte prefix and parsed history were **verified remotely**;
+all six strict remote collections passed. Parent downloaded all six raws,
+fixture metadata and the canonical48-record journal. **All six actual local
+collections passed**, with Source/completion/rates exactly matching the recorded
+ROOT rows and three512-ID arrays per length identical, diagnostic-only. The
+downloaded journal preserves the old **Git HEAD41 exact byte prefix and parsed
+history**; actual **git diff numstat +7/-0 and diff --check passed**.
+The bounded **performance-measurement slice is accepted and closed**.
+**Never append these seven records again.** Parent's next normal commit/push
+contains only `README.md`, `PLAN.md`, `STATE.md`, `third_party/NOTICE.md` and
+`results.jsonl`; all future Session checkpoint/MtpModel/speculative/dense/inspector
+code is excluded. After that closure commit/push, promote the qualified775
+attention binary, source77f/dirtytrue with explicit query tile8, to the **one
+baseline** before qualifying new R6 prerequisites. This is the next action,
+not a claim of a new HEAD or completed binary replacement; compiled Source
+remains unchanged.
+
+Fresh B reproduction on the GPU host (choose new filenames before every run):
+
+```sh
+set -eu
+set -C
+ROOT=/home/radneon/gfx906-core
+PROMPT="$ROOT/runs/r0-20261001T154816Z-4sffu3gz/4k.prompt-ids.json"
+docker run --rm --name core-attention-ab-4k-b-repro \
+  --device /dev/kfd --device /dev/dri --group-add video --ipc host \
+  --security-opt seccomp=unconfined --entrypoint /core/build/core-session \
+  -v /home/radneon/gfx906-core:/core \
+  -v /home/radneon/models-nvme:/models:ro \
+  llama.cpp-gfx906:cmake-4.4.3 \
+  --capacity 4608 --slots 112 --prefill-chunk 1024 \
+  --generate 512 --ignore-eos --sample --seed 12345 \
+  --temperature 1.0 --top-p 0.95 --top-k 20 \
+  --cpu-workers 0 --hybrid-mode disabled --attention-query-tile 8 \
+  /models/qwen38-keep1-Q4_0.gguf \
+  $(python3 -B -c 'import json,sys; print(*json.load(open(sys.argv[1])))' "$PROMPT") \
+  > "$ROOT/runs/NEW-attention-ab-4k-b.jsonl" \
+  2> "$ROOT/runs/NEW-attention-ab-4k-b.err"
+# Only after exit0; append this ONE fresh request, never an accepted historical raw.
+python3 -B "$ROOT/src/tools/record_request.py" \
+  --raw "$ROOT/runs/NEW-attention-ab-4k-b.jsonl" --results "$ROOT/results.jsonl"
+```
+
+For historical **A1 and A2**, while the saved baseline still reports sourcea4,
+use entrypoint `/core/build/core-session-baseline`, omit the
+three new flags `--cpu-workers`, `--hybrid-mode`, `--attention-query-tile` and their
+values, and choose distinct container/stdout/stderr names
+`NEW-attention-ab-4k-a1` / `NEW-attention-ab-4k-a2`; keep chunk1024/slots112.
+For16K use prompt `ROOT/runs/r4-fullrequest-b522-16k.prompt-ids.json`, capacity16896
+and fresh `NEW-attention-ab-16k-{a1,b,a2}` filenames. Run A1→B→A2 sequentially at
+each length and collect each fresh raw only after executable exit0. Fixed raw
+filenames identify the recorded variant; verify actual arguments, sampling,
+prompt IDs and revision/dirty against **Source**, not the filename or current
+Git HEAD. Preserve the literal raw labels. A rebuilt future binary must report
+its actual source, not borrow823 provenance. Keep tracing off and one GPU workload
+without heavy compilation.
+
+After promoting77f to the one baseline, that saved path no longer represents
+the823 A binary. Use the archived823 raws for its historical comparison; new
+paired measurements use the qualified77f baseline with explicit tile8 and a
+new candidate, checking each actual Source.
+
+**Next qualification:** locally prepared `src/session.hpp` / `src/session.hip`
+checkpoint/tap/restore and `src/session_restore_test.cpp`, `MtpModel` guards,
+speculative math and `src/hip/mtp_attention.{cuh,hip}` dense-Q4 component have
+**not been mirrored, compiled or promoted on the GPU host**. They are outside
+this measurement-only slice. Qualify actual HIP target restore and tap against
+sequential consumed-input state, the dense component on both GPUs and descriptor
+gates against the actual sidecar, then run default regressions. Descriptor guards
+cover32 exact roles (BF16 only indexer Q/K), the full top-10 expert budget,
+blk.48 compression0/dense attention and every typed tokenizer field's equality; confirm
+the convention against the actual donor reader. These are prerequisites, not
+trained MTP runtime/rollback or performance evidence. CPU-worker/admission-policy
+and remaining PP weight-traffic measurements follow. Attention tile1/OFF and
+the original API remain defaults; full R4/R5 policy, trained MTP, occupied long/API,
+converter and final speed goals remain open.
 
 ## R5: qualified CPU-linear/canonical-GPU-middle correctness slice
 
@@ -1716,11 +1845,15 @@ a measured dispatch threshold or MTP. The completed exclusive trace-off
 comparison **job769** measured a modest GPU-copy PP/request gain using saved
 baselineb522 versus already-built job765; its measurement slice is accepted
 with local actual-log and exact history/+7/-0 proofs above. The qualified a4
-binary is now the saved current baseline. The subsequent B8/CLI2 correctness
-slice passed jobs775/820 as recorded above; next is trace-off B8 A/B/A against
-that baseline, then CPU-worker/admission-policy measurements. Attention/API/CLI
-and bounded owner/schema fixtures have their own new correctness scope; future
-unlinked Spec3/MtpModel3, the new inspector and ignored checkpoint patch are
-excluded from it. No B8 performance qualification follows from either closure.
+binary was the saved baseline for823. B8/CLI2 correctness was accepted/pushed as
+3cc594d after jobs775/820; separate trace-off B8 job823 is complete with the PP
+and request gains above. Parent local six-raw collection/exact journal matches,
+Git HEAD41 byte/parsed-prefix proof and +7/-0/diff --check passed; the bounded
+performance-measurement slice is accepted and closed. Parent's next normal
+five-file docs/journal commit/push precedes promoting77f to the one baseline,
+then new strict checkpoint/tap/restore, dense-Q4 component and actual MTP descriptor
+gates with default regressions. CPU-worker/admission-policy and PP weight traffic
+measurements follow. All unqualified R6/future code is excluded from this
+measurement-only commit; it provides no trained MTP runtime proof.
 Full R4/R5 performance, occupied128K, MTP2 and the **400–600PP / 30–40TG** targets
 remain open and unmet.
