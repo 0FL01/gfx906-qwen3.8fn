@@ -57,10 +57,16 @@ Selective dispatch accepted for measured workloads, not full-plan/llama win.
 Baseline executable remains7df: attempted overwrite with accepted candidate was
 blocked by action review; no overwrite happened. Do not circumvent the block.
 Candidate core-mtp-run remains60d. Original core-session-baseline untouched.
-ACTIVE diagnostic job1791152862637-393: separate traced PP4K/MTP4K+128, raw
-ROOT/runs/r4-profile-tiled-20261004. No other GPU workload or heavy build.
-Next: inspect completed phase summaries, select next measured bottleneck and
-continue full plan. Closure commits do not retag compiled binary provenance.
+Diagnostic jobs393/395 COMPLETE exit0; journal63, source60d341e/dirtytrue.
+PP4K traced72.995s/1,503,743 kernels/summed46.932s; Q4 tiled15.570s(33.18%),
+attention9.333s(19.89%), Q6head2.795s(5.96%). Dense tiled1.700s; large dense
+0.958s. GPU unions22.471/24.450s, H2D7.460/7.233s; do not add overlaps.
+MTP verify128outputs11.677s/588140kernels; Q4 paths lead, draft0.513s,
+restore0.091s. No boundary-crossing trace events; diagnostic not speed result.
+Next bounded experiment: Q4 tiled physicalN8 row reuse2->4, unchanged per-row
+FP order, common-Q8/component bit parity plus same-coordinate A/B/A. Build only
+component target, preserve current runtime and denied baseline until permission.
+Full-model gates/trace-off requests required before integration/promotion.
 Further candidates require fresh measured priority: PP launch density/selection,
 per-column dense reductions, two-GPU chunk overlap, grouped short MoE. Do not
 mix another optimization into this still-unqualified integration slice.
