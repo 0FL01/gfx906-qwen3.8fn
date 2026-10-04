@@ -123,7 +123,9 @@ if(BUILD_TESTING)
     -s ${CMAKE_CURRENT_SOURCE_DIR}/tests -p observe_vram_test.py)
   add_test(NAME hybrid-results COMMAND ${Python3_EXECUTABLE} -B -m unittest discover
     -s ${CMAKE_CURRENT_SOURCE_DIR}/tests -p hybrid_results_test.py)
-  set_tests_properties(session-comparison session-results memory-results batch-results mmq-results mmq-wide-results prefill-results prefill-wide-results prefill-long-results request-results vram-observer hybrid-results PROPERTIES
+  add_test(NAME prefill-attention-results COMMAND ${Python3_EXECUTABLE} -B -m unittest discover
+    -s ${CMAKE_CURRENT_SOURCE_DIR}/tests -p prefill_attention_results_test.py)
+  set_tests_properties(session-comparison session-results memory-results batch-results mmq-results mmq-wide-results prefill-results prefill-wide-results prefill-long-results request-results vram-observer hybrid-results prefill-attention-results PROPERTIES
     ENVIRONMENT "TMPDIR=${CMAKE_CURRENT_BINARY_DIR}")
 endif()
 if(CORE_WITH_HIP)
@@ -183,6 +185,11 @@ if(CORE_WITH_HIP)
   target_link_libraries(core-prefill-long-test PRIVATE qwen-session)
   target_compile_definitions(core-prefill-long-test PRIVATE CORE_REVISION="${CORE_REVISION}" CORE_DIRTY=$<BOOL:${CORE_DIRTY}>)
   target_compile_options(core-prefill-long-test PRIVATE -Wall -Wextra -Wpedantic -Werror -ffp-contract=off)
+
+  add_executable(core-prefill-attention-test src/prefill_attention_test.cpp)
+  target_link_libraries(core-prefill-attention-test PRIVATE qwen-session)
+  target_compile_definitions(core-prefill-attention-test PRIVATE CORE_REVISION="${CORE_REVISION}" CORE_DIRTY=$<BOOL:${CORE_DIRTY}>)
+  target_compile_options(core-prefill-attention-test PRIVATE -Wall -Wextra -Wpedantic -Werror -ffp-contract=off)
 
   add_executable(core-prefill-failure-trace src/prefill_failure_trace.cpp)
   target_link_libraries(core-prefill-failure-trace PRIVATE qwen-session)
@@ -281,6 +288,10 @@ if(CORE_WITH_HIP)
   target_link_libraries(core-qsa PRIVATE qwen-qsa-gpu)
   target_compile_definitions(core-qsa PRIVATE CORE_REVISION="${CORE_REVISION}" CORE_DIRTY=$<BOOL:${CORE_DIRTY}>)
   target_compile_options(core-qsa PRIVATE -Wall -Wextra -Werror -ffp-contract=off)
+  add_executable(core-attention-batch tests/attention_batch_test.hip)
+  target_link_libraries(core-attention-batch PRIVATE qwen-qsa-gpu)
+  target_compile_definitions(core-attention-batch PRIVATE CORE_REVISION="${CORE_REVISION}" CORE_DIRTY=$<BOOL:${CORE_DIRTY}>)
+  target_compile_options(core-attention-batch PRIVATE -Wall -Wextra -Werror -ffp-contract=off)
   add_executable(core-probe src/probe.cpp src/hip/probe.hip)
   target_include_directories(core-probe PRIVATE src)
   target_link_libraries(core-probe PRIVATE roc::rocblas)

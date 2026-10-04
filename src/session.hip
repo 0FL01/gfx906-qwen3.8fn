@@ -45,6 +45,12 @@ static_assert(microtile_tokens == blocks_device_max_tokens && microtile_tokens =
 static_assert(H == moe_copy_width && H / 32 == moe_copy_q8_blocks && moe_copy_ranks == 10 &&
               sizeof(RouteAssignment) == 16 && sizeof(MoeRouteIndex) == 8);
 static_assert(silu_pairs_width == 640 && silu_pairs_max_columns == cpu_expert_max_jobs);
+static_assert(attention_query_heads == 24 && attention_kv_heads == 2 && attention_gqa == 12 &&
+    attention_head_dim == 256 && attention_query_elements == 6144 &&
+    attention_max_selected == 2051 && attention_chunk_keys == 64 && attention_max_chunks == 33);
+static_assert(attention_batch_workspace_bytes_per_query == 5042368 &&
+    attention_batch_workspace_bytes_per_query * 8 == 40338944 &&
+    (attention_max_selected + 512 + 2) * sizeof(int) == 10260);
 std::size_t checked_size(std::size_t count, std::size_t width) {
     if (width && count > static_cast<std::size_t>(std::numeric_limits<std::ptrdiff_t>::max()) / width)
         throw std::overflow_error("Session allocation size");
@@ -63,6 +69,8 @@ SessionConfig checked_config(SessionConfig config) {
     if (config.trace_first_token < 0 || config.trace_first_token > config.capacity)
         throw std::invalid_argument("Session trace_first_token");
     if (config.hybrid_probe && !config.cpu_workers) throw std::invalid_argument("Session hybrid probe resources");
+    if (config.attention_query_tile < 1 || config.attention_query_tile > attention_max_batch)
+        throw std::invalid_argument("Session attention_query_tile");
     return config;
 }
 void hip(hipError_t e) {
@@ -270,7 +278,7 @@ struct Device {
     std::unique_ptr<RouteGroups> routes;
     std::vector<float> route_probabilities, route_weights;
     std::vector<std::int32_t> route_ids;
-    explicit Device(int d, int max_tokens, bool prepare_hybrid = false) : id(d) {
+    explicit Device(int d, int max_tokens, bool prepare_hybrid, int attention_tile) : id(d) {
         hip(hipSetDevice(id));
         hipDeviceProp_t p{}; hip(hipGetDeviceProperties(&p, id));
         const std::string arch(p.gcnArchName);
@@ -286,15 +294,25 @@ struct Device {
             // f(16) also holds 32768 completed-block scores at capacity 128K.
             // N3 QSA projections require 36864 floats. N1 sizes/counts stay exact.
             const auto elements = std::max<std::size_t>(32768, checked_size(max_tokens, 12288));
-            for (int i = 0; i < 24; ++i) scratch.emplace_back(checked_size(elements, sizeof(float)));
+            for (int i = 0; i < 24; ++i) {
+                // Score temporary dies before staged_output f(15); append's
+                // f(17) dies before attention output. Only these prefixes grow
+                // if tile exceeds the existing logical chunk scratch capacity.
+                const auto n = (i == 15 || i == 17) ?
+                    std::max(elements, checked_size(attention_tile, attention_query_elements)) : elements;
+                scratch.emplace_back(checked_size(n, sizeof(float)));
+            }
             q8 = Buffer(checked_size(std::max<std::size_t>(512, checked_size(max_tokens, W / 32)), sizeof(Q8_1)));
             error = Buffer(sizeof(int)); logits = Buffer(checked_size(checked_size(max_tokens, V), sizeof(float)));
-            gathered_k = Buffer(1050112 * sizeof(std::uint16_t));
-            gathered_v = Buffer(1050112 * sizeof(std::uint16_t));
-            partial_o = Buffer(202752 * sizeof(float)); partial_ms = Buffer(792 * sizeof(float2));
+            gathered_k = Buffer(checked_size(checked_size(attention_tile, attention_gather_elements), sizeof(std::uint16_t)));
+            gathered_v = Buffer(checked_size(checked_size(attention_tile, attention_gather_elements), sizeof(std::uint16_t)));
+            partial_o = Buffer(checked_size(checked_size(attention_tile, attention_partial_elements), sizeof(float)));
+            partial_ms = Buffer(checked_size(checked_size(attention_tile, attention_partial_ml_elements), sizeof(float2)));
             histogram = Buffer(8192 * sizeof(int)); select_state = Buffer(16 * sizeof(std::uint64_t));
-            candidates = Buffer(512 * sizeof(std::uint64_t)); ids = Buffer(2051 * sizeof(std::int32_t));
-            block_ids = Buffer(512 * sizeof(std::int32_t)); counts = Buffer(2 * sizeof(int));
+            candidates = Buffer(512 * sizeof(std::uint64_t));
+            ids = Buffer(checked_size(checked_size(attention_tile, attention_max_selected), sizeof(std::int32_t)));
+            block_ids = Buffer(checked_size(checked_size(attention_tile, 512), sizeof(std::int32_t)));
+            counts = Buffer(checked_size(checked_size(attention_tile, 2), sizeof(int)));
             if (max_tokens > 1 || prepare_hybrid) {
                 routed_contributions = Buffer(checked_size(checked_size(prepare_hybrid ? std::max(3, max_tokens) : max_tokens, 10 * H), sizeof(float)));
                 routes = std::make_unique<RouteGroups>(max_tokens);
@@ -938,7 +956,61 @@ struct Layer {
         auto& d = device; hip(hipSetDevice(d.id));
         for (auto* b : {&recurrent, &history, &tail}) if (b->bytes()) hip(hipMemsetAsync(b->get<void>(), 0, b->bytes(), d.stream));
     }
-    template<class Observe> void attention_chunk(int position, int capacity, float epsilon, int tokens, bool trace_stages, Observe&& observe) {
+    // ADAPT the existing furnace N1 chunk/merge API, pins/layout in attention.hip;
+    // KEEP canonical index score/select, Q4 cache and chronological postprocessing.
+    // No new attention arithmetic. All append work completes before this chain.
+    template<class Observe> void attention_queries(QsaIndexDeviceParameters p, int position, int capacity,
+        int tokens, SessionAttentionStats& calls, Observe&& observe) {
+        auto& d = device;
+        const int tile = static_cast<int>(d.counts.bytes() / (2 * sizeof(int)));
+        for (int first = 0; first < tokens; first += tile) {
+            const int count = std::min(tile, tokens - first);
+            // SAME scratch for serial score/radix selection, but separate immutable
+            // result slots. No D2H IDs or per-row copy. Previous batch consumers
+            // and postprocessing precede slot overwrite on this SAME stream.
+            for (int q = 0; q < count; ++q) {
+                const int t = first + q, visible = position + t + 1;
+                hip(launch_qsa_index_score(p, d.f(14) + t * 512, pooled.get(), visible,
+                    d.f(15), d.f(16), d.flag(), d.stream));
+                hip(launch_qsa_select(d.f(16), visible, d.ids.get<std::int32_t>() + q * attention_max_selected,
+                    d.block_ids.get<std::int32_t>() + q * 512, d.counts.get<int>() + q * 2,
+                    {d.histogram.get<int>(), d.select_state.get<std::uint64_t>(), d.candidates.get<std::uint64_t>(), d.flag()}, d.stream));
+            }
+            const auto query_offset = static_cast<std::size_t>(first) * attention_query_elements;
+            // Borrow the REMAINING query capacity after slicing, never base+offset
+            // with the original full elements. Other views use their actual whole
+            // allocations, tight private strides and unchanged row-major Q6144.
+            hip(launch_attention_q4_batch(
+                {d.f(12) + query_offset, d.scratch[12].bytes() / sizeof(float) - query_offset, attention_query_elements},
+                {kv_k.get<Q4_0>(), kv_k.bytes() / sizeof(Q4_0), kv_v.get<Q4_0>(), kv_v.bytes() / sizeof(Q4_0),
+                    capacity, position + tokens}, count, position + first + 1,
+                {d.ids.get<std::int32_t>(), d.ids.bytes() / sizeof(std::int32_t), attention_max_selected},
+                {d.counts.get<int>(), d.counts.bytes() / sizeof(int), 2},
+                {d.f(17), d.scratch[17].bytes() / sizeof(float), attention_query_elements},
+                {{d.gathered_k.get<std::uint16_t>(), d.gathered_k.bytes() / sizeof(std::uint16_t), attention_gather_elements},
+                 {d.gathered_v.get<std::uint16_t>(), d.gathered_v.bytes() / sizeof(std::uint16_t), attention_gather_elements},
+                 {d.partial_o.get(), d.partial_o.bytes() / sizeof(float), attention_partial_elements},
+                 {d.partial_ms.get<float2>(), d.partial_ms.bytes() / sizeof(float2), attention_partial_ml_elements},
+                 {d.f(15), d.scratch[15].bytes() / sizeof(float), attention_query_elements}, d.flag()}, d.stream));
+            // Provisional host accounting; published only after full-call/head
+            // completion and numeric checks. Not a physical launch-count proxy.
+            ++calls.batch_calls; calls.query_rows += static_cast<std::uint64_t>(count);
+            if (count > 1) { ++calls.multiquery_calls; calls.multiquery_rows += static_cast<std::uint64_t>(count); }
+            else ++calls.singleton_tail_calls;
+            calls.max_query_rows = std::max(calls.max_query_rows, static_cast<std::uint64_t>(count));
+            for (int q = 0; q < count; ++q) {
+                const int t = first + q;
+                const auto* rotated = d.f(17) + q * attention_query_elements;
+                observe("qsa_attention_rotated", rotated, 6144, t);
+                launch_hadamard(rotated, d.f(18), 6144, 64, d.stream);
+                observe("qsa_attention_inverse_h64", d.f(18), 6144, t);
+                hip(launch_sigmoid_gate(d.f(18), d.f(13) + t * 6144, 6144, d.f(9) + t * 6144, d.flag(), d.stream));
+                observe("qsa_attention_gated", d.f(9) + t * 6144, 6144, t);
+            }
+        }
+    }
+    template<class Observe> void attention_chunk(int position, int capacity, float epsilon, int tokens, bool trace_stages,
+        bool batch_attention, SessionAttentionStats& calls, Observe&& observe) {
         auto& d = device;
         // All projections belong to the logical chunk; only their borrowed
         // launch geometry is tiled. Recurrent/append work retains active history
@@ -1001,9 +1073,10 @@ struct Layer {
                      work + microtile_tokens * 128 + 33 * 128, nullptr, d.flag()}, d.stream));
             });
             // Future main/pooled keys can be prepared, but NONE is visible to an
-            // earlier query. The existing one-query <=2051 gather remains bounded.
+            // earlier query. Every query keeps its own <=2051 selected gather.
             // All append inputs die before f(15..18) becomes the query workspace.
-            for (int t = 0; t < tokens; ++t) {
+            if (batch_attention) attention_queries(p, position, capacity, tokens, calls, observe);
+            else for (int t = 0; t < tokens; ++t) {
                 const int visible = position + t + 1;
                 hip(launch_qsa_index_score(p, d.f(14) + t * 512, pooled.get(), visible, d.f(15), d.f(16), d.flag(), d.stream));
                 hip(launch_qsa_select(d.f(16), visible, d.ids.get<std::int32_t>(), d.block_ids.get<std::int32_t>(), d.counts.get<int>(),
@@ -1024,8 +1097,9 @@ struct Layer {
         if (failure_probe && trace_stages) d.check("attention output layer 8");
         observe("block_attention_out", d.f(9), H);
     }
-    template<class Observe> void attention(int position, int capacity, float epsilon, int tokens, bool trace_stages, Observe&& observe) {
-        if (tokens > 3) { attention_chunk(position, capacity, epsilon, tokens, trace_stages, observe); return; }
+    template<class Observe> void attention(int position, int capacity, float epsilon, int tokens, bool trace_stages,
+        bool batch_attention, SessionAttentionStats& calls, Observe&& observe) {
+        if (tokens > 3) { attention_chunk(position, capacity, epsilon, tokens, trace_stages, batch_attention, calls, observe); return; }
         auto& d = device;
         qkv.apply(d, d.f(6), d.f(9), tokens);
         if ((index + 1) % 4) {
@@ -1079,7 +1153,8 @@ struct Layer {
             // ONLY start+t+1 visibility (and thus the actual causal tail). f(12)
             // queries, f(13) raw gates and f(14) index queries survive the loop.
             // Append's f(16..18) die before the serialized bounded query workspace.
-            for (int t = 0; t < tokens; ++t) {
+            if (batch_attention && tokens > 1) attention_queries(p, position, capacity, tokens, calls, observe);
+            else for (int t = 0; t < tokens; ++t) {
                 const int visible = position + t + 1;
                 hip(launch_qsa_index_score(p, d.f(14) + t * 512, pooled.get(), visible, d.f(15), d.f(16), d.flag(), d.stream));
                 hip(launch_qsa_select(d.f(16), visible, d.ids.get<std::int32_t>(), d.block_ids.get<std::int32_t>(), d.counts.get<int>(),
@@ -1326,6 +1401,8 @@ struct Session::Impl {
     SessionConfig config;
     SessionStats statistics;
     SessionRouteStats route_statistics;
+    SessionAttentionStats attention_statistics;
+    bool batch_attention = false;
     SessionHybridPolicy hybrid_policy;
     // Preserve the original 20-counter footprint/alignment in cpu_workers=0
     // Impl. The new six-counter tail is stored in opt-in HybridDevice only.
@@ -1410,8 +1487,8 @@ struct Session::Impl {
         embedding_type = embedding->type; embedding_stride = static_cast<std::size_t>(embedding->strides[1]);
         embeddings.resize(static_cast<std::size_t>(embedding->byte_size)); model.read_tensor(embedding->name, embeddings);
         int n = 0; hip(hipGetDeviceCount(&n)); if (n != 2) throw std::runtime_error("Session requires two gfx906");
-        devices[0] = std::make_unique<Device>(0, config.max_batch_tokens, config.cpu_workers > 0);
-        devices[1] = std::make_unique<Device>(1, config.max_batch_tokens, config.cpu_workers > 0);
+        devices[0] = std::make_unique<Device>(0, config.max_batch_tokens, config.cpu_workers > 0, config.attention_query_tile);
+        devices[1] = std::make_unique<Device>(1, config.max_batch_tokens, config.cpu_workers > 0, config.attention_query_tile);
         layers.reserve(48);
         for (int l = 0; l < 48; ++l) {
             std::fprintf(stderr, "load layer %d/48\n", l + 1);
@@ -1455,6 +1532,17 @@ struct Session::Impl {
         cpu_pool.reset(); // Drain/join BEFORE immutable RAM and pinned frames.
         for (auto& d : devices) if (d) d->drain_cleanup();
     }
+    void set_attention_batch(bool enabled) {
+        // ALL validation precedes any drain, device switch or policy mutation.
+        // Reject even trace_first_token==capacity: the mode is truthful for the
+        // entire Session lifetime and legacy manifest ordering stays unchanged.
+        if (enabled && !config.trace_directory.empty())
+            throw std::invalid_argument("Session attention batch requires trace off");
+        if (!usable) throw std::runtime_error("Session invalidated; reset required");
+        if (cpu_pool) cpu_ok(cpu_pool->drain());
+        for (auto& d : devices) d->drain();
+        batch_attention = enabled;
+    }
     void set_hybrid_policy(SessionHybridPolicy policy) {
         switch (policy.mode) {
         case SessionHybridMode::disabled: case SessionHybridMode::mixed:
@@ -1490,7 +1578,7 @@ struct Session::Impl {
         for (auto& l : layers) { l->experts.finish_admissions(false); l->reset(); }
         hip(hipSetDevice(0)); hip(hipMemsetAsync(ple_history.get<void>(), 0, ple_history.bytes(), devices[0]->stream));
         for (auto& d : devices) { hip(hipSetDevice(d->id)); d->clear(); hip(hipStreamSynchronize(d->stream)); }
-        ple_hash.reset(); statistics = {}; route_statistics = {}; publish_hybrid({});
+        ple_hash.reset(); statistics = {}; route_statistics = {}; attention_statistics = {}; publish_hybrid({});
         probe_tokens = 0; usable = true;
     }
     SessionMemory memory() const {
@@ -1501,6 +1589,7 @@ struct Session::Impl {
         } restore{previous};
         SessionMemory result;
         result.capacity = config.capacity; result.expert_slots = config.expert_slots;
+        result.attention_query_tile = config.attention_query_tile;
         result.host_embedding_capacity = embeddings.capacity();
         result.host_logit_capacity = (host_logits.capacity() + working_logits.capacity()) * sizeof(float);
         result.pinned_handoff = pinned->bytes;
@@ -1524,6 +1613,10 @@ struct Session::Impl {
                 static_cast<std::size_t>(config.max_batch_tokens) * 10 * sizeof(RouteAssignment);
             if (d.route_dto) result.pinned_route_metadata += d.route_metadata.bytes();
             result.route_metadata_bytes[id] = d.route_metadata.bytes();
+            result.attention[id] = {d.gathered_k.bytes(), d.gathered_v.bytes(), d.partial_o.bytes(), d.partial_ms.bytes(),
+                d.scratch[15].bytes(), d.scratch[17].bytes(), d.ids.bytes(), d.block_ids.bytes(), d.counts.bytes(),
+                d.gathered_k.bytes() + d.gathered_v.bytes() + d.partial_o.bytes() + d.partial_ms.bytes() +
+                    checked_size(checked_size(config.attention_query_tile, attention_query_elements), sizeof(float))};
             out.device = id; out.first_layer = id * 24; out.last_layer = id * 24 + 23;
             auto add = [&](std::uint64_t& category, const Buffer& b) {
                 if (!b.bytes()) {
@@ -1689,6 +1782,7 @@ struct Session::Impl {
         SessionStats working_stats = statistics;
         auto& execution_stats = transactional ? working_stats : statistics;
         SessionHybridStats working_hybrid = hybrid_stats();
+        SessionAttentionStats working_attention = attention_statistics;
         const auto cpu_return_baseline = working_hybrid.cpu_return_bytes;
         const auto begin = std::chrono::steady_clock::now();
         try {
@@ -1725,7 +1819,7 @@ struct Session::Impl {
                     capture_batch(*d, "hc_attn_gate_raw", d->f(5), W, tokens, l);
                     capture_batch(*d, "hc_attn_inject_raw", d->f(7), 4, tokens, l);
                 }
-                layer.attention(position, config.capacity, epsilon, tokens, trace_stages,
+                layer.attention(position, config.capacity, epsilon, tokens, trace_stages, batch_attention, working_attention,
                     [&](const char* name, const float* x, int count, int token_offset = -1) {
                         if (l == 0 || l == 1 || l == 2 || l == 3 || l == 6 || l == 8 || l == 19 || l == 22 || l == 47) {
                             if (token_offset < 0) capture_batch(*d, name, x, count, tokens, l);
@@ -1779,6 +1873,7 @@ struct Session::Impl {
             execution_stats.last_completed_ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - begin).count();
             if (transactional) { statistics = working_stats; host_logits.swap(working_logits); }
             route_statistics = call_routes;
+            attention_statistics = working_attention;
             publish_hybrid(working_hybrid);
             if (config.hybrid_probe && tokens <= 3) {
                 probe_down[0].swap(probe_down[1]); probe_ffn[0].swap(probe_ffn[1]); probe_tokens = tokens;
@@ -1806,6 +1901,9 @@ std::span<const float> Session::step_batch(std::span<const std::int32_t> tokens)
 void Session::reset() { impl_->reset(); }
 SessionStats Session::stats() const { return impl_->statistics; }
 SessionRouteStats Session::route_stats() const { return impl_->route_statistics; }
+void Session::set_attention_batch(bool enabled) { impl_->set_attention_batch(enabled); }
+bool Session::attention_batch() const { return impl_->batch_attention; }
+SessionAttentionStats Session::attention_stats() const { return impl_->attention_statistics; }
 void Session::set_hybrid_policy(SessionHybridPolicy policy) { impl_->set_hybrid_policy(policy); }
 SessionHybridPolicy Session::hybrid_policy() const { return impl_->hybrid_policy; }
 SessionHybridStats Session::hybrid_stats() const { return impl_->hybrid_stats(); }

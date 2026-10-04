@@ -23,12 +23,13 @@ VOCAB, EOS, Q40, Q41 = 248320, 248046, 2764800, 2867200
 COUNTERS = ("expert_hits", "expert_misses", "expert_upload_bytes")
 
 
-def fixture(mode="stochastic", outputs=None, requested=None, chunk=2, trace="", logits="", ignore=False):
+def fixture(mode="stochastic", outputs=None, requested=None, chunk=2, trace="", logits="", ignore=False,
+            prompt=None):
     """Independent transcription of the current driver, not production evidence."""
     outputs = [101, 102, 103] if outputs is None else outputs
     requested = len(outputs) if requested is None else requested
     diagnostic = mode == "greedy_diagnostic" or bool(trace) or bool(logits)
-    prompt = [248044, 100, 101, 102, 103]
+    prompt = [248044, 100, 101, 102, 103] if prompt is None else prompt
     sampling = {"mode": mode}
     if mode == "stochastic":
         sampling.update(seed=42, temperature=1., top_p=.95, top_k=20,
@@ -140,6 +141,130 @@ def vram_fixture(request):
                      "observed_max_used_bytes": 12000000000 + i,
                      "observed_min_free_bytes": total - 12000000000 - i} for i in range(2)],
     }]
+
+
+def candidate_fixture(mode="stochastic", *, workers=0, policy=None, quota=2, tile=1, **kwargs):
+    """Independent closed protocol-2 transcription; synthetic, not runtime proof."""
+    rows = fixture(mode, **kwargs)
+    origin, footer = rows[0], rows[-1]
+    capacity = max(32, len(origin["prompt_ids"]) + footer["output_tokens"])
+    origin["config"]["capacity"] = (capacity + 3) // 4 * 4
+    policy = ("mixed" if workers else "disabled") if policy is None else policy
+    knobs = {"cpu_workers": workers, "hybrid_mode": policy, "gpu_missquota": quota,
+             "attention_tile": tile, "attention_enabled": tile > 1}
+    labels = {"cpu_path_scope": "CPUlinear_GPUmiddle", "pure_cpu": False,
+              "knob_status": "candidate_unqualified", "hybrid_mode_role":
+              "disabled" if policy == "disabled" else "experimental_admission" if policy == "mixed" else "diagnostic_force",
+              "attention_status": "local_unqualified" if tile > 1 else "disabled",
+              "counter_scope": "completed_call_public_getters_not_physical_kernel_counts",
+              "gpu_event_timing": "not_collected", "host_timing": "completed_wall"}
+    for row in rows:
+        row["protocol"] = 2
+    origin.update(kind="session_candidate_request_source", **labels)
+    origin["config"].update(knobs)
+    footer.update(kind="session_candidate_request_complete", execution_config=knobs.copy(), **labels)
+    prompt, chunk = len(origin["prompt_ids"]), origin["config"]["max_batch_tokens"]
+    pp = [min(chunk, prompt - first) for first in range(0, prompt, chunk)]
+    widths = pp + [1] * footer["tg_forwards"]
+    short = [n for n in widths if n <= 3]
+    # Ten distinct repeated experts/layer, fresh route groups per accepted call.
+    hybrid = {key: 0 for key in (
+        "short_layers", "gpu_only_wide_layers", "ready_hit_assignments", "physical_miss_assignments",
+        "group_reuse_assignments", "cpu_groups", "cpu_assignments", "gpu_hit_groups", "gpu_hit_assignments",
+        "gpu_miss_groups", "gpu_miss_assignments", "admitted_groups", "evicted_ready_slots", "input_extractions",
+        "input_bytes", "cpu_return_bytes", "cpu_input_bytes_checked", "all_hit_layers", "forced_cpu_layers",
+        "forced_gpu_layers", "cpu_gate_up_jobs", "cpu_down_jobs", "gpu_middle_columns", "gpu_middle_batches",
+        "paired_gate_up_bytes", "middle_q8_bytes")}
+    if policy != "disabled":
+        layers, assignments = 48 * len(short), 480 * sum(short)
+        gpu_per_layer = quota if policy == "mixed" else 0 if policy == "force-cpu" else 10
+        cpu_per_layer = 10 - gpu_per_layer
+        hybrid.update(short_layers=layers, gpu_only_wide_layers=48 * (len(widths) - len(short)),
+                      physical_miss_assignments=assignments, group_reuse_assignments=assignments - 10 * layers,
+                      cpu_groups=cpu_per_layer * layers, cpu_assignments=cpu_per_layer * 48 * sum(short),
+                      gpu_miss_groups=gpu_per_layer * layers, gpu_miss_assignments=gpu_per_layer * 48 * sum(short),
+                      admitted_groups=0 if policy == "force-cpu" else quota * layers,
+                      input_extractions=layers if cpu_per_layer else 0,
+                      input_bytes=2880 * 48 * sum(short) if cpu_per_layer else 0,
+                      forced_cpu_layers=layers if policy == "force-cpu" else 0,
+                      forced_gpu_layers=layers if policy == "force-gpu-misses" else 0)
+        hybrid.update(cpu_gate_up_jobs=hybrid["cpu_groups"], cpu_down_jobs=hybrid["cpu_groups"],
+                      gpu_middle_columns=hybrid["cpu_assignments"], gpu_middle_batches=hybrid["input_extractions"],
+                      paired_gate_up_bytes=5120 * hybrid["cpu_assignments"], middle_q8_bytes=720 * hybrid["cpu_assignments"],
+                      cpu_return_bytes=10240 * hybrid["cpu_assignments"])
+        uploaded = 0
+        windows = iter(row for row in rows if row["kind"] == "session_request_window")
+        for n in widths:
+            factor = gpu_per_layer if n <= 3 else 10
+            uploaded += 42 * factor * Q40 + 6 * factor * Q41
+            if origin["config"]["diagnostic_rows"]:
+                next(windows)["expert_upload_bytes"] = uploaded
+        footer["expert_upload_bytes"] = uploaded
+    footer["hybrid_stats"] = hybrid
+    footer["route_stats"] = {"last_max_expert_group_assignments": widths[-1],
+                             "expert_groups_gt128": 480 * sum(n > 128 for n in widths)}
+    attention = {key: 0 for key in ("batch_calls", "query_rows", "multiquery_calls", "multiquery_rows",
+                                   "singleton_tail_calls", "max_query_rows")}
+    if tile > 1:
+        for n in pp:
+            if n == 1:
+                continue
+            for first in range(0, n, tile):
+                size = min(tile, n - first)
+                attention["batch_calls"] += 12
+                attention["query_rows"] += 12 * size
+                attention["singleton_tail_calls" if size == 1 else "multiquery_calls"] += 12
+                if size > 1:
+                    attention["multiquery_rows"] += 12 * size
+                attention["max_query_rows"] = max(attention["max_query_rows"], size)
+    footer["attention_stats"] = attention
+    return rows
+
+
+def candidate_vram_fixture(request):
+    observation = vram_fixture(request)
+    config = request[0]["config"]
+    argv = observation[0]["command_argv"]
+    start = argv.index("--capacity")
+    argv[start:start] = ["--cpu-workers", str(config["cpu_workers"]), "--hybrid-mode", config["hybrid_mode"],
+                         "--gpu-miss-groups", str(config["gpu_missquota"]),
+                         "--attention-query-tile", str(config["attention_tile"])]
+    return observation
+
+
+def candidate_warm_fixture(policy="mixed"):
+    """Six N1 calls: admit two new groups/call, finally select ten READY groups."""
+    rows = candidate_fixture("greedy_diagnostic", workers=2, policy=policy, chunk=1, outputs=[101, 102])
+    footer, h = rows[-1], rows[-1]["hybrid_stats"]
+    for key in h:
+        h[key] = 0
+    counters = dict.fromkeys(COUNTERS, 0)
+    for call, window in enumerate(row for row in rows if row["kind"] == "session_request_window"):
+        ready, missing = min(2 * call, 10), max(10 - 2 * call, 0)
+        cpu = max(missing - 2, 0) if policy == "mixed" else 0
+        gpu_miss = min(missing, 2) if policy == "mixed" else 10
+        gpu_hit = ready if policy == "mixed" else 0
+        h["short_layers"] += 48
+        h["ready_hit_assignments"] += 48 * ready
+        h["physical_miss_assignments"] += 48 * missing
+        h["all_hit_layers"] += 48 * int(missing == 0)
+        for prefix, groups in (("cpu", cpu), ("gpu_hit", gpu_hit), ("gpu_miss", gpu_miss)):
+            h[prefix + "_groups"] += 48 * groups
+            h[prefix + "_assignments"] += 48 * groups
+        h["admitted_groups"] += 48 * min(missing, 2)
+        h["input_extractions"] += 48 * int(cpu > 0)
+        h["input_bytes"] += 2880 * 48 * int(cpu > 0)
+        h["forced_gpu_layers"] += 48 * int(policy == "force-gpu-misses")
+        counters["expert_hits"] += 48 * ready
+        counters["expert_misses"] += 48 * missing
+        counters["expert_upload_bytes"] += gpu_miss * (42 * Q40 + 6 * Q41)
+        window.update(counters)
+    h.update(cpu_gate_up_jobs=h["cpu_groups"], cpu_down_jobs=h["cpu_groups"],
+             gpu_middle_columns=h["cpu_assignments"], gpu_middle_batches=h["input_extractions"],
+             cpu_return_bytes=10240 * h["cpu_assignments"], paired_gate_up_bytes=5120 * h["cpu_assignments"],
+             middle_q8_bytes=720 * h["cpu_assignments"])
+    footer.update(counters)
+    return rows
 
 
 class RequestResultsTest(unittest.TestCase):
@@ -1178,6 +1303,550 @@ class VramRequestResultsTest(unittest.TestCase):
                 MODULE.append_result(self.results, record)
         self.assertEqual(self.vram.read_bytes(), before)
         self.assertIs(MODULE.append_record, record_memory.append_result)
+
+
+class CandidateRequestResultsTest(unittest.TestCase):
+    collect = RequestResultsTest.collect
+    reject = RequestResultsTest.reject
+    change = RequestResultsTest.change
+    cli = RequestResultsTest.cli
+
+    def setUp(self):
+        self.temporary = tempfile.TemporaryDirectory(prefix="candidate-request-results-")
+        self.addCleanup(self.temporary.cleanup)
+        self.root = Path(self.temporary.name)
+        self.raw, self.results = self.root / "request.jsonl", self.root / "results.jsonl"
+        self.rows = candidate_fixture()
+        self.raw.write_bytes(encoded(self.rows))
+
+    def test_explicit_off_retains_full_source_footer_and_old_semantics(self):
+        before = self.raw.read_bytes()
+        result = self.collect()
+        self.assertEqual((result["kind"], result["protocol"]), ("r4_request", 2))
+        self.assertEqual(result["source"], self.rows[0])
+        self.assertEqual(result["complete"], self.rows[-1])
+        self.assertEqual(result["raw_logs"], {"request": str(self.raw.resolve())})
+        self.assertEqual(result["model"], self.rows[0]["model"])
+        self.assertEqual((result["revision"], result["dirty"]), (REVISION, True))
+        old = self.collect(fixture())
+        for key in ("counts", "timings_ms", "throughput", "expert_counters", "diagnostics", "output_ids", "scope"):
+            self.assertEqual(result[key], old[key])
+        self.assertEqual(result["scope"], "candidate_non_mtp_full_request_no_speed_claim")
+        for key in ("mtp", "performance_claim", "speedup_claim", "paired_ab_claim",
+                    "long_context_qualification_claim", "peak_vram_qualification_claim", "independent_reference_claim"):
+            self.assertIs(result[key], False)
+        self.assertIsNone(result["mtp_acceptance"])
+        self.raw.write_bytes(before)
+        with mock.patch.object(MODULE, "source", wraps=MODULE.source) as source, \
+                mock.patch.object(MODULE, "completed", wraps=MODULE.completed) as complete, \
+                mock.patch.object(MODULE, "timeline", wraps=MODULE.timeline) as timeline:
+            self.collect()
+            self.assertEqual(source.call_args.args[0]["protocol"], 1)
+            self.assertNotIn("cpu_workers", source.call_args.args[0]["config"])
+            self.assertNotIn("hybrid_stats", complete.call_args.args[0])
+            self.assertEqual(timeline.call_args.args[0][0]["kind"], "session_request_source")
+        self.assertEqual(self.raw.read_bytes(), before)
+
+    def test_mixed_cpu_public_jobs_bytes_and_historical_reuse_are_distinct(self):
+        for workers, quota in ((1, 1), (4, 2), (15, 2)):
+            rows = candidate_fixture(workers=workers, quota=quota)
+            result = self.collect(rows)
+            h = result["complete"]["hybrid_stats"]
+            self.assertEqual(h["cpu_groups"], (10 - quota) * 240)
+            self.assertEqual(h["cpu_assignments"], (10 - quota) * 48 * 7)
+            self.assertEqual(h["group_reuse_assignments"], 960)
+            self.assertEqual(result["expert_counters"]["expert_hits"], 960)
+            self.assertEqual(h["physical_miss_assignments"], 3360)
+            self.assertEqual(result["expert_counters"]["expert_misses"], 2400)
+            self.assertEqual(h["input_bytes"], 2880 * 48 * 7)
+            self.assertEqual(h["gpu_middle_batches"], 240)
+            self.assertEqual(h["cpu_gate_up_jobs"], h["cpu_groups"])
+            self.assertEqual(h["cpu_down_jobs"], h["cpu_groups"])
+            self.assertEqual(h["gpu_middle_columns"], h["cpu_assignments"])
+            self.assertEqual(h["paired_gate_up_bytes"], 5120 * h["cpu_assignments"])
+            self.assertEqual(h["middle_q8_bytes"], 720 * h["cpu_assignments"])
+            self.assertEqual(h["cpu_return_bytes"], 10240 * h["cpu_assignments"])
+            self.assertEqual(h["cpu_input_bytes_checked"], 0)
+            self.assertEqual(result["source"]["knob_status"], "candidate_unqualified")
+
+    def test_warm_mixed_all_hit_and_gpu_only_miss_layers_have_no_cpu_extraction(self):
+        rows = candidate_warm_fixture()
+        result = self.collect(rows)
+        h = result["complete"]["hybrid_stats"]
+        self.assertEqual(result["complete"]["expert_hits"], 1440)
+        self.assertEqual(h["ready_hit_assignments"], 1440)
+        self.assertEqual(h["group_reuse_assignments"], 0)
+        self.assertEqual(h["cpu_groups"], 960)
+        self.assertEqual(h["input_extractions"], 192)
+        self.assertEqual(h["all_hit_layers"], 48)
+        self.assertLess(h["input_extractions"], h["short_layers"] - h["all_hit_layers"])
+        self.assertEqual(h["gpu_hit_assignments"], h["ready_hit_assignments"])
+        self.assertIs(result["source"]["pure_cpu"], False)
+        self.change(-1, ("hybrid_stats", "group_reuse_assignments"), 1440, rows)
+
+    def test_forced_gpu_uploads_ready_groups_without_historical_misses(self):
+        rows = candidate_warm_fixture("force-gpu-misses")
+        result = self.collect(rows)
+        h = result["complete"]["hybrid_stats"]
+        self.assertEqual(h["ready_hit_assignments"], 1440)
+        self.assertEqual(h["gpu_miss_assignments"], 2880)
+        self.assertEqual(h["all_hit_layers"], 48)
+        self.assertGreater(result["complete"]["expert_upload_bytes"], result["complete"]["expert_misses"] * Q41)
+        self.assertEqual(h["input_extractions"], 0)
+        self.assertEqual(h["admitted_groups"], 480)
+        self.change(-1, ("hybrid_stats", "gpu_miss_assignments"), h["physical_miss_assignments"], rows)
+        self.change(-1, ("hybrid_stats", "admitted_groups"), 481, rows)
+
+    def test_forced_modes_are_diagnostic_and_force_cpu_can_have_misses_without_uploads(self):
+        for policy in ("force-cpu", "force-gpu-misses"):
+            for quota in (0, 2):
+                rows = candidate_fixture("greedy_diagnostic", workers=3, policy=policy, quota=quota)
+                result = self.collect(rows)
+                self.assertEqual(result["source"]["hybrid_mode_role"], "diagnostic_force")
+                self.assertIs(result["source"]["pure_cpu"], False)
+                h = result["complete"]["hybrid_stats"]
+                if policy == "force-cpu":
+                    self.assertGreater(result["complete"]["expert_misses"], 0)
+                    self.assertEqual(result["complete"]["expert_upload_bytes"], 0)
+                    self.assertEqual(h["cpu_assignments"], 3360)
+                    self.assertEqual(h["forced_cpu_layers"], 240)
+                else:
+                    self.assertEqual(h["input_extractions"], 0)
+                    self.assertEqual(h["gpu_miss_assignments"], 3360)
+                    self.assertEqual(h["forced_gpu_layers"], 240)
+
+    def test_wide_gpu_fallback_mixed_with_short_calls_and_prepared_disabled_pool(self):
+        for policy in ("mixed", "force-cpu", "force-gpu-misses", "disabled"):
+            rows = candidate_fixture("greedy_diagnostic", workers=2, policy=policy, chunk=4)
+            self.assertIs(self.collect(rows)["passed"], True)
+        rows = candidate_fixture(workers=2, policy="disabled", chunk=4)
+        self.assertIs(self.collect(rows)["passed"], True)
+        for count in (1, 48, 49, 96):
+            self.change(-1, ("hybrid_stats", "gpu_only_wide_layers"), count, rows)
+
+    def test_tile8_exact_pp_batches_tail_and_singleton_apis_not_tg(self):
+        rows = candidate_fixture(workers=2, tile=8, chunk=17, prompt=[100] * 18)
+        result = self.collect(rows)
+        self.assertEqual(result["complete"]["attention_stats"], {
+            "batch_calls": 36, "query_rows": 204, "multiquery_calls": 24,
+            "multiquery_rows": 192, "singleton_tail_calls": 12, "max_query_rows": 8})
+        self.assertEqual(result["complete"]["route_stats"]["last_max_expert_group_assignments"], 1)
+        self.assertEqual(result["source"]["attention_status"], "local_unqualified")
+        rows = candidate_fixture("greedy_diagnostic", tile=2, chunk=3)
+        self.assertEqual(self.collect(rows)["complete"]["attention_stats"], {
+            "batch_calls": 36, "query_rows": 60, "multiquery_calls": 24,
+            "multiquery_rows": 48, "singleton_tail_calls": 12, "max_query_rows": 2})
+
+    def test_attention_enabled_all_singleton_windows_still_use_old_api(self):
+        for tile in (2, 8, 128):
+            rows = candidate_fixture("greedy_diagnostic", tile=tile, chunk=1)
+            result = self.collect(rows)
+            self.assertTrue(result["source"]["config"]["attention_enabled"])
+            self.assertTrue(all(value == 0 for value in result["complete"]["attention_stats"].values()))
+
+    def test_uint64_seed_model_vocabulary_and_primary_sampler_preserved_exactly(self):
+        for seed in ((1 << 63) + 7, (1 << 64) - 1):
+            rows = candidate_fixture(workers=2, tile=8)
+            rows[0]["sampling"]["seed"] = seed
+            result = self.collect(rows)
+            self.assertEqual(json.loads(json.dumps(result))["source"]["sampling"]["seed"], seed)
+            self.assertEqual(result["source"]["sampling"], rows[0]["sampling"])
+            self.assertEqual(result["source"]["series"], "primary_sampling")
+            self.assertEqual(result["source"]["prompt_ids"], rows[0]["prompt_ids"])
+        for seed in (-1, True, float(1 << 63), 1 << 64):
+            self.change(0, ("sampling", "seed"), seed)
+        self.change(0, ("prompt_ids",), [VOCAB])
+        self.change(1, ("token",), VOCAB)
+
+    def test_generation_zero_greedy_eos_actual_counts_and_pending(self):
+        rows = candidate_fixture("greedy_diagnostic", outputs=[], tile=8, workers=2)
+        result = self.collect(rows)
+        self.assertEqual(result["counts"]["output_tokens"], 0)
+        self.assertEqual(result["counts"]["tg_forwards"], 0)
+        self.assertEqual(result["counts"]["consumed_tokens"], 5)
+        self.assertIsNone(result["complete"]["pending_token"])
+        self.assertIsNone(result["timings_ms"]["first_output_ms"])
+        self.assertIsNone(result["throughput"]["request_output_tokens_per_second"])
+        for outputs in ([EOS], [101, EOS]):
+            result = self.collect(candidate_fixture(workers=2, outputs=outputs, requested=5, tile=8))
+            self.assertEqual(result["counts"]["output_tokens"], len(outputs))
+            self.assertEqual(result["counts"]["tg_forwards"], len(outputs) - 1)
+            self.assertEqual(result["complete"]["pending_token"], EOS)
+            self.assertEqual(result["counts"]["random_draws"], len(outputs))
+
+    def test_dispatch_is_only_exact_new_source_kind_and_integer_version(self):
+        for rows in (fixture(), candidate_fixture(), candidate_fixture("greedy_diagnostic")):
+            for i in (0, -1):
+                for protocol in (1, 2, True, 2., "2", None):
+                    if type(protocol) is int and protocol == rows[i]["protocol"]:
+                        continue
+                    self.change(i, ("protocol",), protocol, rows)
+            old = rows[0]["protocol"] == 1
+            self.change(0, ("kind",), "session_candidate_request_source" if old else "session_request_source", rows)
+            self.change(-1, ("kind",), "session_candidate_request_complete" if old else "session_request_complete", rows)
+        diagnostic = candidate_fixture("greedy_diagnostic")
+        for i in range(1, len(diagnostic) - 1):
+            self.change(i, ("protocol",), 1, diagnostic)
+            self.change(i, ("protocol",), 2., diagnostic)
+            self.change(i, ("kind",), "session_candidate_request_row", diagnostic)
+        self.reject([candidate_fixture()[0], *fixture()[1:]])
+        self.reject([fixture()[0], *candidate_fixture()[1:]])
+
+    def test_all_new_closed_fields_required_no_old_schema_widening(self):
+        rows = candidate_fixture("greedy_diagnostic", workers=2, tile=8)
+        for i, row in enumerate(rows):
+            for field in row:
+                changed = copy.deepcopy(rows)
+                del changed[i][field]
+                with self.subTest(index=i, missing=field):
+                    self.reject(changed)
+            self.change(i, ("unknown",), 0, rows)
+        for i, key in ((0, "config"), (-1, "execution_config"), (-1, "hybrid_stats"),
+                       (-1, "route_stats"), (-1, "attention_stats")):
+            for field in rows[i][key]:
+                changed = copy.deepcopy(rows)
+                del changed[i][key][field]
+                self.reject(changed)
+            self.change(i, (key, "unknown"), 0, rows)
+            self.change(i, (key,), [], rows)
+        old = fixture()
+        self.change(0, ("cpu_path_scope",), "CPUlinear_GPUmiddle", old)
+        self.change(0, ("config", "cpu_workers"), 0, old)
+        self.change(-1, ("hybrid_stats",), rows[-1]["hybrid_stats"], old)
+        self.change(-1, ("execution_config",), rows[-1]["execution_config"], old)
+
+    def test_new_labels_remain_truthfully_unqualified_and_mode_derived(self):
+        bads = {"cpu_path_scope": "pure_cpu", "pure_cpu": True, "knob_status": "qualified",
+                "hybrid_mode_role": "threshold_proven", "attention_status": "qualified",
+                "counter_scope": "physical_GPU_kernel_counts", "gpu_event_timing": "collected",
+                "host_timing": "host_enqueue"}
+        for policy in ("disabled", "mixed", "force-cpu", "force-gpu-misses"):
+            rows = candidate_fixture(workers=2, policy=policy, tile=8)
+            for i in (0, -1):
+                for key, bad in bads.items():
+                    self.change(i, (key,), bad, rows)
+                self.change(i, ("pure_cpu",), 0, rows)
+                self.change(i, ("attention_status",), "disabled", rows)
+        self.change(0, ("hybrid_mode_role",), "experimental_admission")
+        self.change(-1, ("attention_status",), "local_unqualified")
+
+    def test_knob_types_ranges_relationships_and_exact_execution_config_join(self):
+        for key, bads in {
+            "cpu_workers": (-1, 16, True, 2., "2"),
+            "hybrid_mode": ("cpu", "force-gpu", "", [], False),
+            "gpu_missquota": (-1, 3, True, 2., "2"),
+            "attention_tile": (0, 129, True, 8., "8"),
+            "attention_enabled": (0, 1, "false", True),
+        }.items():
+            for bad in bads:
+                self.change(0, ("config", key), bad)
+                self.change(-1, ("execution_config", key), bad)
+        for key, bad in (("cpu_workers", 1), ("hybrid_mode", "mixed"),
+                         ("gpu_missquota", 1), ("attention_tile", 8)):
+            self.change(-1, ("execution_config", key), bad)
+        for policy in ("mixed", "force-cpu", "force-gpu-misses"):
+            self.reject(candidate_fixture(workers=0, policy=policy))
+        self.reject(candidate_fixture(workers=2, quota=0))
+        self.reject(candidate_fixture(tile=8, chunk=1, trace="trace"))
+        self.assertIs(self.collect(candidate_fixture(workers=15, policy="disabled", quota=0))["passed"], True)
+
+    def test_all_new_statistics_are_closed_uint64_not_bool_float_or_overflow(self):
+        rows = candidate_fixture(workers=2, tile=8)
+        for key in ("hybrid_stats", "route_stats", "attention_stats"):
+            for field in rows[-1][key]:
+                for bad in (-1, True, float(rows[-1][key][field]), 1 << 64, "0", None):
+                    self.change(-1, (key, field), bad, rows)
+        self.assertEqual(len(rows[-1]["hybrid_stats"]), 26)
+        self.assertEqual(len(rows[-1]["route_stats"]), 2)
+        self.assertEqual(len(rows[-1]["attention_stats"]), 6)
+
+    def test_hybrid_job_byte_dispatch_reuse_and_admission_tampers(self):
+        rows = candidate_fixture(workers=2)
+        h = rows[-1]["hybrid_stats"]
+        for field in h:
+            bad = h["admitted_groups"] + 1 if field == "evicted_ready_slots" else h[field] + 1
+            self.change(-1, ("hybrid_stats", field), bad, rows)
+        self.change(-1, ("expert_misses",), rows[-1]["expert_misses"] + 1, rows)
+        self.change(-1, ("expert_upload_bytes",), 0, rows)
+        self.change(-1, ("expert_upload_bytes",), rows[-1]["expert_misses"] * Q40, rows)
+        for workers, policy in ((0, "disabled"), (2, "disabled"), (2, "force-cpu"), (2, "force-gpu-misses")):
+            self.change(-1, ("hybrid_stats", "cpu_input_bytes_checked"), 1,
+                        candidate_fixture(workers=workers, policy=policy))
+        self.change(-1, ("hybrid_stats", "cpu_groups"), 1)
+
+    def test_input_bytes_follow_original_window_rows_not_dispatched_assignments(self):
+        rows = candidate_fixture(workers=2, chunk=3, outputs=[101])
+        h = rows[-1]["hybrid_stats"]
+        self.assertEqual(h["input_bytes"], 2880 * 48 * 5)
+        self.change(-1, ("hybrid_stats", "input_bytes"), 2880 * h["cpu_assignments"], rows)
+        self.change(-1, ("hybrid_stats", "input_bytes"), 8640 * h["input_extractions"], rows)
+        self.change(-1, ("hybrid_stats", "input_bytes"), h["input_bytes"] + 1, rows)
+        rows = candidate_fixture(workers=2, chunk=2, outputs=[101], prompt=[100] * 6)
+        self.change(-1, ("hybrid_stats", "input_bytes"), rows[-1]["hybrid_stats"]["input_bytes"] + 2880, rows)
+
+    def test_attention_all_six_fields_derive_from_accepted_pp_not_pending_outputs(self):
+        for rows in (candidate_fixture(tile=8, chunk=17, prompt=[100] * 18),
+                     candidate_fixture(tile=8, chunk=1), candidate_fixture(tile=1)):
+            for key, value in rows[-1]["attention_stats"].items():
+                self.change(-1, ("attention_stats", key), value + 1, rows)
+        rows = candidate_fixture(tile=8, outputs=[101] * 20, chunk=5)
+        result = self.collect(rows)
+        self.assertEqual(result["complete"]["attention_stats"]["query_rows"], 60)
+        self.assertEqual(result["complete"]["attention_stats"]["batch_calls"], 12)
+
+    def test_route_last_pp_bound_tg1_and_mathematical_gt128_range(self):
+        for outputs in ([], [101], [101, 102]):
+            mode = "greedy_diagnostic" if not outputs else "stochastic"
+            rows = candidate_fixture(mode, chunk=5, outputs=outputs)
+            result = self.collect(rows)
+            expected = 5 if len(outputs) < 2 else 1
+            self.assertEqual(result["complete"]["route_stats"]["last_max_expert_group_assignments"], expected)
+            self.change(-1, ("route_stats", "last_max_expert_group_assignments"), expected + 1, rows)
+            self.change(-1, ("route_stats", "expert_groups_gt128"), 1, rows)
+        rows = candidate_fixture("greedy_diagnostic", outputs=[], chunk=129, prompt=[100] * 129)
+        self.assertEqual(self.collect(rows)["complete"]["route_stats"]["expert_groups_gt128"], 480)
+        self.change(-1, ("route_stats", "expert_groups_gt128"), 481, rows)
+        self.change(-1, ("route_stats", "expert_groups_gt128"), 0, rows)
+        self.change(-1, ("route_stats", "last_max_expert_group_assignments"), 2, rows)
+        rows = candidate_fixture(chunk=129, prompt=[100] * 129)
+        self.assertEqual(self.collect(rows)["complete"]["route_stats"]["last_max_expert_group_assignments"], 1)
+        self.assertEqual(rows[-1]["route_stats"]["expert_groups_gt128"], 480)
+
+    def test_protocol2_keeps_old_chronology_timing_finite_and_count_validation(self):
+        rows = candidate_fixture("greedy_diagnostic", workers=2, tile=8)
+        for index, path, bad in (
+            (1, ("finite",), False), (1, ("position",), 1), (1, ("token",), 77),
+            (7, ("argmax",), 77), (-1, ("consumed_tokens",), 8), (-1, ("random_draws",), 1),
+            (-1, ("generated_ids",), [101, 102]), (-1, ("pending_token",), 99),
+            (-1, ("load_ms",), -1), (-1, ("pp_ms",), 5.), (-1, ("total_ms",), 2.),
+            (-1, ("tg_ms",), 1.), (-1, ("first_output_ms",), None),
+        ):
+            self.change(index, path, bad, rows)
+        changed = copy.deepcopy(rows)
+        changed[1], changed[2] = changed[2], changed[1]
+        self.reject(changed)
+        window = next(i for i, row in enumerate(rows) if row["kind"] == "session_request_window")
+        for field in COUNTERS:
+            self.change(window, (field,), -1, rows)
+        rows = candidate_fixture("greedy_diagnostic", workers=2, policy="force-cpu", chunk=4)
+        window = next(i for i, row in enumerate(rows) if row["kind"] == "session_request_window")
+        self.change(window, ("expert_upload_bytes",), 0, rows)  # Wide calls retain old per-miss bounds.
+        rows[window]["expert_upload_bytes"] -= Q40
+        self.reject(rows)  # Compensating bytes in the next CPU-only short window are still invalid.
+
+    def test_failures_and_truncation_never_append_existing_or_new_destination(self):
+        bads = []
+        for field in ("kind", "passed", "hybrid_stats"):
+            rows = copy.deepcopy(self.rows)
+            rows[-1][field] = "session_candidate_request_failure" if field == "kind" else False
+            bads.append(encoded(rows))
+        for index, path, bad in ((0, ("config", "cpu_workers"), 16),
+                                 (-1, ("hybrid_stats", "cpu_input_bytes_checked"), 1),
+                                 (-1, ("execution_config", "attention_enabled"), True)):
+            rows = copy.deepcopy(self.rows)
+            rows[index][path[0]][path[1]] = bad
+            bads.append(encoded(rows))
+        bads.extend((encoded(self.rows)[:-1], encoded(self.rows[:-1]), encoded(self.rows) + b"\n"))
+        history = b'{ "kind":"history" }\n'
+        for bad in bads:
+            for existing in (False, True):
+                self.raw.write_bytes(bad)
+                if self.results.exists():
+                    self.results.unlink()
+                if existing:
+                    self.results.write_bytes(history)
+                self.assertEqual(self.cli().returncode, 1)
+                self.assertEqual(self.raw.read_bytes(), bad)
+                if existing:
+                    self.assertEqual(self.results.read_bytes(), history)
+                else:
+                    self.assertFalse(self.results.exists())
+
+    def test_atomic_append_alias_guards_and_short_write_rollback_are_shared(self):
+        RequestResultsTest.test_shared_lock_serialization_failure_and_short_write_io_rollback(self)
+        history = b'{ "kind":"history" }\n'
+        self.results.write_bytes(history)
+        before = self.raw.read_bytes()
+        symlink, hardlink = self.root / "raw.sym", self.root / "raw.hard"
+        symlink.symlink_to(self.raw)
+        os.link(self.raw, hardlink)
+        for destination in (self.raw, symlink, hardlink):
+            self.assertEqual(self.cli(destination=destination).returncode, 1)
+            self.assertEqual(self.raw.read_bytes(), before)
+        self.assertEqual(self.results.read_bytes(), history)
+        self.assertIs(MODULE.append_record, record_memory.append_result)
+        self.assertEqual(self.cli().returncode, 0)
+        saved = self.results.read_bytes()
+        self.assertTrue(saved.startswith(history))
+        self.assertEqual(json.loads(saved.splitlines()[-1])["complete"], self.rows[-1])
+
+
+class CandidateVramRequestResultsTest(unittest.TestCase):
+    collect = VramRequestResultsTest.collect
+    reject = VramRequestResultsTest.reject
+    change = VramRequestResultsTest.change
+    reject_command = VramRequestResultsTest.reject_command
+    cli = VramRequestResultsTest.cli
+
+    def setUp(self):
+        self.temporary = tempfile.TemporaryDirectory(prefix="candidate-vram-results-")
+        self.addCleanup(self.temporary.cleanup)
+        self.root = Path(self.temporary.name)
+        self.raw, self.vram, self.results = (self.root / name for name in
+                                            ("request.jsonl", "vram.jsonl", "results.jsonl"))
+        self.rows = candidate_fixture(workers=2, tile=8)
+        self.observation = candidate_vram_fixture(self.rows)
+        self.raw.write_bytes(encoded(self.rows))
+        self.vram.write_bytes(encoded(self.observation))
+
+    def test_new_typed_join_preserves_full_provenance_and_sampled_global_scope(self):
+        before = self.raw.read_bytes(), self.vram.read_bytes()
+        result = self.collect()
+        self.assertEqual(result["protocol"], 2)
+        self.assertEqual(result["source"], self.rows[0])
+        self.assertEqual(result["complete"], self.rows[-1])
+        self.assertEqual(result["vram_observation"]["source"], self.observation[0])
+        self.assertEqual(result["raw_logs"], {"request": str(self.raw.resolve()), "vram": str(self.vram.resolve())})
+        self.assertEqual(result["vram_observation"]["scope"], "sampled_global_driver_VRAM_not_exact_instantaneous_peak")
+        self.assertFalse(result["peak_vram_qualification_claim"])
+        self.assertEqual((self.raw.read_bytes(), self.vram.read_bytes()), before)
+
+    def test_explicit_disabled_defaults_and_each_single_selection_flag(self):
+        for flag, value in (("--cpu-workers", "0"), ("--hybrid-mode", "disabled"),
+                            ("--gpu-miss-groups", "2"), ("--attention-query-tile", "1")):
+            request = candidate_fixture("greedy_diagnostic", outputs=[], chunk=1)
+            request[0]["config"]["capacity"] = 4096
+            observation = candidate_vram_fixture(request)
+            argv = observation[0]["command_argv"]
+            start = argv.index("--cpu-workers")
+            argv[start:] = [flag, value, request[0]["model"], *map(str, request[0]["prompt_ids"])]
+            self.assertIs(self.collect(observation, request)["passed"], True)
+            del argv[start:start + 2]
+            self.reject(observation)  # Default values alone do not select protocol 2.
+
+    def test_workers_imply_mixed_only_without_explicit_disabled_and_typed_defaults(self):
+        for policy in ("mixed", "disabled", "force-cpu", "force-gpu-misses"):
+            request = candidate_fixture(workers=15, policy=policy, tile=128)
+            observation = candidate_vram_fixture(request)
+            argv = observation[0]["command_argv"]
+            for flag in ("--gpu-miss-groups",):
+                i = argv.index(flag)
+                del argv[i:i + 2]
+            if policy == "mixed":
+                i = argv.index("--hybrid-mode")
+                del argv[i:i + 2]
+            argv[argv.index("--cpu-workers") + 1] = "015"
+            argv[argv.index("--attention-query-tile") + 1] = "0128"
+            self.assertIs(self.collect(observation, request)["passed"], True)
+
+    def test_max_seed_custom_sampler_and_generation_zero_join(self):
+        for request in (candidate_fixture(), candidate_fixture("greedy_diagnostic", outputs=[], tile=8),
+                        candidate_fixture(workers=2, policy="force-cpu", quota=0)):
+            if request[0]["sampling"]["mode"] == "stochastic":
+                request[0]["sampling"]["seed"] = (1 << 64) - 1
+            self.assertIs(self.collect(candidate_vram_fixture(request), request)["passed"], True)
+        request = candidate_fixture()
+        request[0]["series"] = "custom_sampling"
+        request[0]["sampling"].update(seed=(1 << 63) + 17, temperature=.7, top_p=1., top_k=0)
+        self.assertIs(self.collect(candidate_vram_fixture(request), request)["passed"], True)
+
+    def test_new_options_among_positionals_use_typed_defaults_and_exact_max_seed(self):
+        request = candidate_fixture(workers=2, tile=8)
+        request[0]["sampling"]["seed"] = (1 << 64) - 1
+        observation = candidate_vram_fixture(request)
+        argv = observation[0]["command_argv"]
+        start = argv.index("--cpu-workers")
+        argv[start:] = [request[0]["model"], "0248044", "--cpu-workers", "002", "100",
+                        "--attention-query-tile", "008", "101", "--generate", "03", "--sample",
+                        "--seed", str((1 << 64) - 1), "--prefill-chunk", "02", "102",
+                        "--capacity", "32", "103"]
+        result = self.collect(observation, request)
+        self.assertEqual(result["source"]["sampling"]["seed"], (1 << 64) - 1)
+        self.assertEqual(result["source"]["config"]["hybrid_mode"], "mixed")
+
+    def test_every_knob_tamper_duplicate_bad_numeric_mode_and_protocol_selection_rejected(self):
+        argv = self.observation[0]["command_argv"]
+        for flag, bads in {
+            "--cpu-workers": ("0", "3", "16", "-1", "2.0", "2e0", "true", str(1 << 64)),
+            "--hybrid-mode": ("disabled", "force-cpu", "force-gpu", "mixed ", ""),
+            "--gpu-miss-groups": ("0", "1", "3", "2.0"),
+            "--attention-query-tile": ("1", "7", "129", "0", "8.0"),
+        }.items():
+            for bad in bads:
+                command = argv.copy()
+                command[command.index(flag) + 1] = bad
+                self.reject_command(command)
+            i = argv.index(flag)
+            self.reject_command(argv[:i] + argv[i:i + 2] + argv[i:])
+        command = argv.copy()
+        start = command.index("--cpu-workers")
+        del command[start:start + 8]
+        self.reject_command(command)  # --sample/--prefill-chunk select only protocol 1.
+        for flag in ("--cpu-workers=2", "--hybrid-policy", "--gpu-missquota", "--attention-tile"):
+            command = argv.copy()
+            command[command.index("--cpu-workers")] = flag
+            self.reject_command(command)
+        request = fixture()
+        observation = vram_fixture(request)
+        command = observation[0]["command_argv"]
+        i = command.index("--capacity")
+        command[i:i] = ["--cpu-workers", "0"]
+        self.raw.write_bytes(encoded(request))
+        self.reject(observation)  # Never widen the old command grammar.
+
+    def test_docker_native_model_ids_sampler_mutations_and_wrappers_stay_closed(self):
+        argv = self.observation[0]["command_argv"]
+        mutations = []
+        for existing, bad in (("--sample", "--greedy"), ("/core/build/core-session", "/core/build/other"),
+                              ("--entrypoint", "--entrypoint=/core/build/core-session"),
+                              (self.rows[0]["model"], "/models/other.gguf"), ("--slots", "--experts")):
+            command = argv.copy()
+            command[command.index(existing)] = bad
+            mutations.append(command)
+        for flag, bad in (("--seed", "43"), ("--top-p", "0.9"), ("--top-k", "21"),
+                          ("--prefill-chunk", "3"), ("--generate", "4")):
+            command = argv.copy()
+            command[command.index(flag) + 1] = bad
+            mutations.append(command)
+        mutations.extend((["sh", "-c", " ".join(argv)], ["sudo", *argv], argv + ["104"]))
+        for command in mutations:
+            self.reject_command(command)
+
+    def test_failed_v2_native_or_observer_logs_never_append_and_alias_guards_retained(self):
+        history = b'{ "kind":"history" }\n'
+        bad = copy.deepcopy(self.observation)
+        bad[1].update(kind="vram_failure", child_returncode=1)
+        bad_command = copy.deepcopy(self.observation)
+        argv = bad_command[0]["command_argv"]
+        argv[argv.index("--cpu-workers") + 1] = "3"
+        for observation in (bad, bad_command):
+            self.vram.write_bytes(encoded(observation))
+            for existing in (False, True):
+                if self.results.exists():
+                    self.results.unlink()
+                if existing:
+                    self.results.write_bytes(history)
+                self.assertEqual(self.cli().returncode, 1)
+                self.assertEqual(self.vram.read_bytes(), encoded(observation))
+                self.assertEqual(self.raw.read_bytes(), encoded(self.rows))
+                if existing:
+                    self.assertEqual(self.results.read_bytes(), history)
+                else:
+                    self.assertFalse(self.results.exists())
+        self.vram.write_bytes(encoded(self.observation))
+        for artifact in (self.raw, self.vram):
+            before = artifact.read_bytes()
+            for suffix, hard in ((".sym", False), (".hard", True)):
+                alias = self.root / (artifact.name + suffix)
+                if hard:
+                    os.link(artifact, alias)
+                else:
+                    alias.symlink_to(artifact)
+                self.assertEqual(self.cli(destination=alias).returncode, 1)
+                self.assertEqual(artifact.read_bytes(), before)
+        self.assertEqual(self.cli().returncode, 0)
+        self.assertEqual(json.loads(self.results.read_bytes().splitlines()[-1])["protocol"], 2)
+        VramRequestResultsTest.test_locked_append_rechecks_vram_alias_and_retains_shared_guards(self)
 
 
 if __name__ == "__main__":

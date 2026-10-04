@@ -29,6 +29,9 @@ struct SessionConfig {
     // Bounded correctness fixture capture, independent of text tracing. Extra
     // pageable host frames only when explicitly requested with cpu_workers>0.
     bool hybrid_probe = false;
+    // Constructor-only bounded query-private QSA capacity, 1..128. Does not
+    // enable batching; tile=1 preserves the historical GPU allocations.
+    int attention_query_tile = 1;
 };
 
 // force_cpu is a source-compatible diagnostic name for CPU LINEAR projections
@@ -122,6 +125,28 @@ struct SessionRouteStats {
     std::uint64_t expert_groups_gt128 = 0;
 };
 
+// Experimental batch API invocations in successfully completed full calls only,
+// cumulative since reset. Disabled/N1 calls contribute nothing. These are NOT
+// physical kernel counts or selected-ID/visibility observations. Rejection and
+// failed execution retain the last published counters; reset clears them.
+struct SessionAttentionStats {
+    std::uint64_t batch_calls = 0, query_rows = 0;
+    std::uint64_t multiquery_calls = 0, multiquery_rows = 0;
+    std::uint64_t singleton_tail_calls = 0, max_query_rows = 0;
+};
+
+// Actual backing Buffer bytes, already included in workspace/owned_bytes.
+// staged/output reuse the existing f(15)/f(17) scratch buffers; private_workspace
+// describes only the fixed tile prefix of staged, plus the four private buffers.
+// Selection stride/width is 2051 IDs, 512 blocks, 2 counts (10260 bytes/query).
+struct SessionAttentionMemory {
+    std::uint64_t gathered_key_bytes = 0, gathered_value_bytes = 0;
+    std::uint64_t partial_output_bytes = 0, partial_max_sum_bytes = 0;
+    std::uint64_t staged_buffer_bytes = 0, output_buffer_bytes = 0;
+    std::uint64_t selected_id_bytes = 0, selected_block_bytes = 0, selected_count_bytes = 0;
+    std::uint64_t private_workspace_bytes = 0;
+};
+
 struct SessionDeviceMemory {
     int device = 0, first_layer = 0, last_layer = 0;
     int gdn_layers = 0, qsa_layers = 0;
@@ -173,6 +198,8 @@ struct SessionMemory {
     std::uint64_t pinned_hybrid_middle = 0;
     std::array<std::uint64_t, 2> hybrid_gate_up_bytes{}, hybrid_middle_float_bytes{},
         hybrid_middle_q8_bytes{}, hybrid_middle_error_bytes{};
+    int attention_query_tile = 1;
+    std::array<SessionAttentionMemory, 2> attention{};
 };
 
 // One exclusive interactive session, static 24/24 layer split. Canonical expert
@@ -199,6 +226,14 @@ public:
     // Failed execution/argument rejection retains the last successful diagnostics.
     // Construction and a successfully completed reset() clear both fields.
     SessionRouteStats route_stats() const;
+    // Exclusive allocation-free mode toggle. Validate before draining owned
+    // CPU/GPU work; explicit enable with a nonempty trace directory is rejected
+    // even outside its capture range. N1 always uses the historical API/body.
+    // Neither toggle changes state, logits, cache budget, counters or probes.
+    // Reset retains the mode. Getter is the explicit policy, not a kernel claim.
+    void set_attention_batch(bool enabled);
+    bool attention_batch() const;
+    SessionAttentionStats attention_stats() const;
     // Exclusive API. Validates before any drain/mutation; enabling requires
     // constructor cpu_workers>0. Changing a bounded policy allocates nothing.
     void set_hybrid_policy(SessionHybridPolicy);

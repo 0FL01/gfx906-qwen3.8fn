@@ -69,6 +69,13 @@
   output publication. Copyright (c) 2023-2026 The ggml authors; full MIT notices
   appear inline and in `mx-LICENSE`. Reinstinct partial/merge at the revision
   above is a design/algebra reference, not an imported Q8 backend.
+  The batched primitive ADAPTs this current furnace-derived N1 implementation
+  with a private query dimension, retaining its exact old Q4-to-half RNE gather,
+  sorted selected IDs, 64-key split and merge arithmetic. Typed borrowed
+  capacity/stride/overlap validation, shared-sticky all-query publication,
+  bounded Session owner integration, API/CLI/schema fixtures and collectors are
+  original code. Existing mx/furnace MIT and reinstinct Apache-2.0 pins remain
+  unchanged; this adaptation introduces no dependency or donor whole runtime.
 
 - `src/hip/linear.hip` adapts mx canonical Q4_0/Q4_1/Q5_0/Q8_0/Q6_K
   `vecdotq.cuh`, Q8_1 `quantize.cu` and qualified R1 register-reuse/DPP patterns.
@@ -189,21 +196,50 @@
   Git HEAD31 byte prefix and parsed31 history are exactly preserved in38;
   actual +7/-0 and diff whitespace checks passed. This measurement slice is
   accepted and closed; accepted requests/paired record must not be appended again.
-  Hybrid performance, measured dispatch thresholds, fullR4/R5 and MTP remain
-  open. Prepared component-state cleanup has source checks only. Post765 CPU/
-  attention CLI controls, protocol2 and request/attention collectors passed
-  local tests, not HIP/GPU attention/Model B8 qualification. Next advance
-  the qualified a4 binary to one current baseline, then full strict36 candidate
-  build/CTest and both-GPU attention-batch/Model B8 full-logit/visibility/private-
-  buffer/default-regression gates. Completed765 full35 is the previous scope,
-  not a result for these36 gates; query-batch statistics are not kernel counts.
-  Default attention tile1/OFF and the original API
-  remain unchanged, CPUlinear_GPUmiddle retains its job765 qualification.
-  These candidate changes and future Spec/R6 pure-math helpers are outside
-  the accepted765 closure; they are not trained-MTP integration or actual
-  HIP/model/performance qualification. The future attention adaptation reuses
-  the existing furnace/mx primitive attribution above, with no new donor runtime.
-  Existing mx/furnace MIT and reinstinct Apache-2.0 attribution is retained.
+  The subsequent B8 attention/explicit CLI2 correctness slice has its own
+  bounded qualification on compiled snapshot
+  `77f89c3412fff65634df8b45b08fab1b3da028a0`/dirtytrue, never retagged to a
+  future closure commit. Job1791083481832-775 terminated exit1/26m29s AFTER
+  strict CXX20/HIP20 gfx906 Release/all-warning build/CTest36/36 (803.76s),
+  both-GPU attention component PASS and original Model B8 exit0/31records.
+  The failure was a collector's two-host-logit-owner requirement with cpu0;
+  actual Session owns host_logits1017118720B, with working_logits only when
+  cpu_workers>0. Correcting the source-derived lower floor to one owner,
+  not numerical tolerances, passed regression29/29 (43.187s) and actual local/
+  remote B8 collection. Continuation1791087203796-820 completed exit0/21m01s
+  on SAME already-built775 binaries: CTest36/36 (808.07s), corrected B8 collect,
+  CLI2mixed/off32 and default reset/batch/memory/strict actual collection PASS.
+  The component raw is source+twoGPU records, NOT a footer; each GPU passed
+  26cases/304queries/1867776 bit- and CPU-compared values with frozen gates.
+  Model B8 uses one same-Session old-N1 reference,2056teacher+32continuation,
+  enabled1024 and occupied5→997 schedules; all1036984320 full-vocabulary
+  comparisons have zero numerical/violation/diagnostic-bit errors. Logical
+  boundary2047–2056 is not a GPU selected-ID trace or independent HF oracle.
+  Actual private workspace40338944B/GPU includes four buffers40142336B plus
+  reused staging prefix196608B, not another allocation; selection82080B is
+  separate, f(15)/f(17) backing50331648B each already counted in the ledger.
+  Query-batch counters count completed API invocations, not physical kernels.
+  Actual CLI2mixed/off32 output/RNG/consumed-count contracts and typed26hybrid/
+  2route/6attention counters passed strict local/remote collection. Literal raw
+  candidate_unqualified/local_unqualified labels are preserved; documentation
+  records bounded correctness evidence without rewriting Source. Short timings
+  are diagnostic, not a paired speed gain or a promoted CPU default.
+  Parent downloaded model/component/CLI2 raws and strict local collection passed.
+  Canonical ROOT journal38→41 / 2563568B has exactly one r4_attention_prefill and
+  two protocol2 r4_request appends, preserving old38 byte prefix/parsed history
+  and source77f/dirtytrue. Parent downloaded the canonical journal, verified exact
+  Git HEAD38 byte/parsed history and +3/-0, and accepted the bounded correctness
+  slice. Accepted logs must never be appended again. Full evidence/
+  raw paths/reproduction are in README.md. These bounded owner/API/CLI/schema
+  fixtures introduce no new third-party dependency or license.
+  Qualified765 a4 is now the one saved baseline; next is trace-off B8 A/B/A
+  against it with chunk1024/slots112/CPUdisabled/tile8 versus original tile1.
+  Default attention tile1/OFF and the original API remain unchanged.
+  Hybrid performance, measured dispatch thresholds, fullR4/R5, trained MTP,
+  occupied long/API, converter and final speed targets remain open. Future
+  unlinked Spec3/MtpModel3, the new inspector and ignored checkpoint patch are
+  outside this correctness slice. Existing mx/furnace MIT and reinstinct
+  Apache-2.0 attribution is retained.
 
 - `src/hip/mmq.hip` adapts mx `mmq-load-tiles.cuh`, `mmq-vec-dot.cuh`,
   `mmq.cuh` and `vecdotq.cuh` canonical Q4 DP4A tile/load/dot/writeback seams

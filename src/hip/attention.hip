@@ -427,4 +427,331 @@ hipError_t launch_attention_q4(const float* query, const Q4_0* keys, const Q4_0*
     return hipGetLastError();
 }
 
+namespace {
+
+// ADAPT only addresses/grid dimensions of the already qualified furnace/mx
+// adaptation above (pinned revisions in its source comments and RECON §16).
+// Keep N1 bodies/dispatch unchanged. Batch copies deliberately retain every
+// numerical statement, including decode_half, max64 and mx sum64 hazard waits.
+template<class T>
+Range batch_range(AttentionQ4BatchView<T> v, int batch, std::size_t width,
+                  bool writable = false, std::size_t alignment = alignof(T)) noexcept {
+    if (v.stride < width || v.stride > v.elements || v.elements < width ||
+        (v.stride % alignment) * sizeof(T) % alignment != 0 ||
+        (batch > 1 && v.stride > (v.elements - width) / static_cast<std::size_t>(batch - 1)))
+        return {0, 0, writable, false};
+    return range(v.data, v.elements, writable, alignment);
+}
+
+template<class T>
+__device__ __forceinline__ T* batch_row(AttentionQ4BatchView<T> v, unsigned q) {
+    return v.data + static_cast<std::size_t>(q) * v.stride;
+}
+
+__device__ __forceinline__ AttentionQ4DeviceWorkspace batch_workspace(
+    AttentionQ4BatchWorkspace w, unsigned q) {
+    return {batch_row(w.gathered_keys, q), batch_row(w.gathered_values, q),
+            batch_row(w.partial_output, q), batch_row(w.partial_max_sum, q),
+            batch_row(w.staged_output, q), w.error};
+}
+
+__global__ __launch_bounds__(threads)
+void validate_inputs_batch(AttentionQ4BatchView<const float> queries,
+                          AttentionQ4BatchView<const std::int32_t> selections,
+                          AttentionQ4BatchView<const int> lengths, int first_visible,
+                          AttentionQ4BatchWorkspace workspace) {
+    const auto q = blockIdx.x;
+    const auto* query = batch_row(queries, q);
+    const auto* ids = batch_row(selections, q);
+    const auto* counts = batch_row(lengths, q);
+    const int visible = first_visible + static_cast<int>(q);
+    auto* ordered_ids = reinterpret_cast<std::int32_t*>(batch_row(workspace.partial_output, q));
+    auto* error = workspace.error;
+    __shared__ int active;
+    __shared__ std::int32_t ordered[4096];
+    if (threadIdx.x == 0) active = ready(counts, visible, error);
+    __syncthreads();
+    if (!active) return;
+    const int n = counts[0];
+    int flags = 0;
+    for (int j = threadIdx.x; j < n; j += threads)
+        if (ids[j] < 0 || ids[j] >= visible) flags |= attention_error_invalid;
+    for (int i = threadIdx.x; i < static_cast<int>(attention_query_elements); i += threads)
+        if (!isfinite(query[i])) flags |= attention_error_invalid;
+    report(flags, error);
+    __syncthreads();
+    if (threadIdx.x == 0) active = __atomic_load_n(error, __ATOMIC_RELAXED) == 0;
+    __syncthreads();
+    if (!active) return;
+    int width = 1;
+    while (width < n) width *= 2;
+    for (int i = threadIdx.x; i < width; i += threads)
+        ordered[i] = i < n ? ids[i] : INT32_MAX;
+    __syncthreads();
+    for (int span = 2; span <= width; span *= 2) {
+        for (int stride = span / 2; stride > 0; stride /= 2) {
+            for (int i = threadIdx.x; i < width; i += threads) {
+                const int other = i ^ stride;
+                if (i < other) {
+                    const auto a = ordered[i], b = ordered[other];
+                    if (((i & span) == 0 && a > b) || ((i & span) != 0 && a < b)) {
+                        ordered[i] = b; ordered[other] = a;
+                    }
+                }
+            }
+            __syncthreads();
+        }
+    }
+    for (int i = threadIdx.x; i < n; i += threads) ordered_ids[i] = ordered[i];
+}
+
+__global__ __launch_bounds__(threads)
+void validate_scales_batch(const Q4_0* keys, const Q4_0* values,
+                          AttentionQ4BatchView<const std::int32_t> selections,
+                          AttentionQ4BatchView<const int> lengths, int first_visible, int* error) {
+    const auto q = blockIdx.x;
+    const auto* ids = batch_row(selections, q);
+    const auto* counts = batch_row(lengths, q);
+    const int visible = first_visible + static_cast<int>(q);
+    __shared__ int active;
+    if (threadIdx.x == 0) active = ready(counts, visible, error);
+    __syncthreads();
+    if (!active) return;
+    const int n = counts[0];
+    int flags = 0;
+    for (int i = threadIdx.x; i < n * row_blocks; i += threads) {
+        const int id = ids[i / row_blocks];
+        if (id < 0 || id >= visible) { flags |= attention_error_invalid; continue; }
+        const std::size_t b = static_cast<std::size_t>(id) * row_blocks + i % row_blocks;
+        if ((keys[b].d & 0x7c00) == 0x7c00 || (values[b].d & 0x7c00) == 0x7c00)
+            flags |= attention_error_invalid;
+    }
+    report(flags, error);
+}
+
+__global__ __launch_bounds__(threads)
+void gather_selected_batch(const Q4_0* keys, const Q4_0* values,
+                           AttentionQ4BatchView<const int> lengths, int first_visible,
+                           AttentionQ4BatchWorkspace workspace) {
+    const auto q = blockIdx.y;
+    auto w = batch_workspace(workspace, q);
+    const auto* ids = reinterpret_cast<const std::int32_t*>(w.partial_output);
+    const auto* counts = batch_row(lengths, q);
+    const int visible = first_visible + static_cast<int>(q);
+    __shared__ int active;
+    if (threadIdx.x == 0) active = ready(counts, visible, w.error);
+    __syncthreads();
+    if (!active) return;
+    const int j = blockIdx.x * 4 + threadIdx.x / 64;
+    if (j >= counts[0]) return;
+    const int id = ids[j];
+    if (id < 0 || id >= visible) { report(attention_error_invalid, w.error); return; }
+    const std::size_t base = static_cast<std::size_t>(id) * row_blocks;
+    int flags = 0;
+    for (int d = threadIdx.x % 64; d < row_values; d += 64) {
+        const std::size_t b = base + d / 32;
+        const std::size_t target = static_cast<std::size_t>(j) * row_values + d;
+        w.gathered_keys[target] = decode_half(keys[b], d % 32, flags);
+        w.gathered_values[target] = decode_half(values[b], d % 32, flags);
+    }
+    report(flags, w.error);
+}
+
+__global__ __launch_bounds__(threads)
+void fattn_dec_chunk_batch(AttentionQ4BatchView<const float> queries,
+                         AttentionQ4BatchView<const int> lengths, int first_visible,
+                         AttentionQ4BatchWorkspace workspace) {
+    const auto q = blockIdx.z;
+    const auto* query = batch_row(queries, q);
+    const auto* counts = batch_row(lengths, q);
+    const int visible = first_visible + static_cast<int>(q);
+    auto w = batch_workspace(workspace, q);
+    constexpr int H = G / 4;
+    __shared__ float4 qs[G][D / 4];
+    __shared__ float ps[G][C];
+    __shared__ float maxima[G];
+    __shared__ int cells[C];
+    __shared__ int active;
+    if (threadIdx.x == 0) active = ready(counts, visible, w.error);
+    __syncthreads();
+    if (!active) return;
+    const int n = counts[0];
+    const int chunk = blockIdx.x, g = blockIdx.y;
+    if (chunk >= (n + C - 1) / C) return;
+    const int chunk_count = n - chunk * C < C ? n - chunk * C : C;
+    const int tid = threadIdx.x, lane = tid % 64, wave = tid / 64;
+    int flags = 0;
+    for (int i = tid; i < G * D / 4; i += threads) {
+        const int h = i / (D / 4), d4 = i % (D / 4);
+        qs[h][d4] = reinterpret_cast<const float4*>(query + (g * G + h) * D)[d4];
+    }
+    if (tid < C) {
+        const int j = chunk * C + tid;
+        cells[tid] = j < n ? j : -1;
+    }
+    __syncthreads();
+    {
+        const int cell = cells[lane];
+        float s[H];
+#pragma unroll
+        for (int h = 0; h < H; ++h) s[h] = 0.0f;
+        const auto* kr = w.gathered_keys + static_cast<std::size_t>(cell >= 0 ? cell : 0) * row_values + g * D;
+#pragma unroll
+        for (int c = 0; c < D / 8; ++c) {
+            const float k0 = cell >= 0 ? half_value(kr[8 * c + 0]) : 0.0f;
+            const float k1 = cell >= 0 ? half_value(kr[8 * c + 1]) : 0.0f;
+            const float k2 = cell >= 0 ? half_value(kr[8 * c + 2]) : 0.0f;
+            const float k3 = cell >= 0 ? half_value(kr[8 * c + 3]) : 0.0f;
+            const float k4 = cell >= 0 ? half_value(kr[8 * c + 4]) : 0.0f;
+            const float k5 = cell >= 0 ? half_value(kr[8 * c + 5]) : 0.0f;
+            const float k6 = cell >= 0 ? half_value(kr[8 * c + 6]) : 0.0f;
+            const float k7 = cell >= 0 ? half_value(kr[8 * c + 7]) : 0.0f;
+#pragma unroll
+            for (int h = 0; h < H; ++h) {
+                const float4 qa = qs[wave + 4 * h][2 * c];
+                const float4 qb = qs[wave + 4 * h][2 * c + 1];
+                s[h] = checked(s[h] + checked(qa.x * k0, flags), flags);
+                s[h] = checked(s[h] + checked(qa.y * k1, flags), flags);
+                s[h] = checked(s[h] + checked(qa.z * k2, flags), flags);
+                s[h] = checked(s[h] + checked(qa.w * k3, flags), flags);
+                s[h] = checked(s[h] + checked(qb.x * k4, flags), flags);
+                s[h] = checked(s[h] + checked(qb.y * k5, flags), flags);
+                s[h] = checked(s[h] + checked(qb.z * k6, flags), flags);
+                s[h] = checked(s[h] + checked(qb.w * k7, flags), flags);
+            }
+        }
+#pragma unroll
+        for (int i = 0; i < H; ++i) {
+            const int h = wave + 4 * i;
+            const float score = cell >= 0 ? checked(s[i] * attention_query_coefficient, flags) : -INFINITY;
+            const float m = max64(score);
+            const float difference = cell >= 0 ? checked(score - m, flags) : 0.0f;
+            ps[h][lane] = cell >= 0 ? checked(static_cast<float>(exp(static_cast<double>(difference))), flags) : 0.0f;
+            if (lane == 0) maxima[h] = m;
+        }
+    }
+    __syncthreads();
+    if (lane == 0) for (int h = wave; h < G; h += 4) {
+        float l = 0.0f;
+        for (int j = 0; j < chunk_count; ++j) l = checked(l + ps[h][j], flags);
+        if (!(l > 0.0f)) flags |= attention_error_arithmetic;
+        w.partial_max_sum[(chunk * attention_kv_heads + g) * G + h] = make_float2(maxima[h], l);
+    }
+    float o[G];
+#pragma unroll
+    for (int h = 0; h < G; ++h) o[h] = 0.0f;
+    for (int j0 = 0; j0 < chunk_count; j0 += 16) {
+        float v[16];
+#pragma unroll
+        for (int jj = 0; jj < 16; ++jj) {
+            const int cell = cells[j0 + jj];
+            v[jj] = cell >= 0 ? half_value(w.gathered_values[static_cast<std::size_t>(cell) * row_values + g * D + tid]) : 0.0f;
+        }
+#pragma unroll
+        for (int h = 0; h < G; ++h) {
+#pragma unroll
+            for (int jj = 0; jj < 16; ++jj)
+                if (j0 + jj < chunk_count)
+                    o[h] = checked(o[h] + checked(ps[h][j0 + jj] * v[jj], flags), flags);
+        }
+    }
+#pragma unroll
+    for (int h = 0; h < G; ++h)
+        w.partial_output[((chunk * attention_kv_heads + g) * G + h) * D + tid] = o[h];
+    report(flags, w.error);
+}
+
+__global__ __launch_bounds__(threads)
+void fattn_dec_combine_batch(AttentionQ4BatchView<const int> lengths, int first_visible,
+                           AttentionQ4BatchWorkspace workspace) {
+    const auto q = blockIdx.y;
+    const auto* counts = batch_row(lengths, q);
+    const int visible = first_visible + static_cast<int>(q);
+    auto w = batch_workspace(workspace, q);
+    __shared__ float factor[attention_max_chunks];
+    __shared__ float red[4];
+    __shared__ int active;
+    if (threadIdx.x == 0) active = ready(counts, visible, w.error);
+    __syncthreads();
+    if (!active) return;
+    const int n_chunks = (counts[0] + C - 1) / C;
+    const int hq = blockIdx.x, tid = threadIdx.x;
+    int flags = 0;
+    float2 ml = make_float2(-INFINITY, 0.0f);
+    if (tid < n_chunks) {
+        ml = w.partial_max_sum[tid * attention_query_heads + hq];
+        if (!isfinite(ml.x) || !isfinite(ml.y) || !(ml.y > 0.0f)) {
+            flags |= attention_error_arithmetic;
+            ml = make_float2(-INFINITY, 0.0f);
+        }
+    }
+    float m = max64(ml.y > 0.0f ? ml.x : -INFINITY);
+    if (tid % 64 == 0) red[tid / 64] = m;
+    __syncthreads();
+    const float m_all = checked(fmaxf(fmaxf(red[0], red[1]), fmaxf(red[2], red[3])), flags);
+    __syncthreads();
+    const float f = ml.y > 0.0f ? checked(expf(checked(ml.x - m_all, flags)), flags) : 0.0f;
+    if (tid < n_chunks) factor[tid] = f;
+    const float l = sum64(checked(ml.y * f, flags));
+    if (tid % 64 == 0) red[tid / 64] = l;
+    __syncthreads();
+    const float l_all = checked((red[0] + red[1]) + (red[2] + red[3]), flags);
+    if (!(l_all > 0.0f)) flags |= attention_error_arithmetic;
+    const float inv_l = l_all > 0.0f ? checked(1.0f / l_all, flags) : 0.0f;
+    float acc = 0.0f;
+    for (int c = 0; c < n_chunks; ++c)
+        acc = checked(acc + checked(w.partial_output[(c * attention_query_heads + hq) * D + tid] * factor[c], flags), flags);
+    w.staged_output[hq * D + tid] = checked(acc * inv_l, flags);
+    report(flags, w.error);
+}
+
+__global__ __launch_bounds__(threads)
+void publish_output_batch(AttentionQ4BatchView<float> stages, AttentionQ4BatchView<float> outputs,
+                         const int* error) {
+    const auto* staged = batch_row(stages, blockIdx.y);
+    auto* output = batch_row(outputs, blockIdx.y);
+    if (__atomic_load_n(error, __ATOMIC_RELAXED) != 0) return;
+    const int i = blockIdx.x * threads + threadIdx.x;
+    if (i < static_cast<int>(attention_query_elements)) output[i] = staged[i];
+}
+
+} // namespace
+
+hipError_t launch_attention_q4_batch(AttentionQ4BatchView<const float> query,
+    AttentionQ4BatchCache cache, int batch, int first_visible,
+    AttentionQ4BatchView<const std::int32_t> ids, AttentionQ4BatchView<const int> counts,
+    AttentionQ4BatchView<float> output, AttentionQ4BatchWorkspace w, hipStream_t stream) noexcept {
+    // Subtraction BEFORE addition/multiplication: signed visibility cannot wrap.
+    if (batch <= 0 || batch > attention_max_batch || cache.capacity <= 0 ||
+        cache.capacity > attention_max_capacity || cache.valid_rows <= 0 ||
+        cache.valid_rows > cache.capacity || first_visible <= 0 ||
+        first_visible > cache.valid_rows || batch - 1 > cache.valid_rows - first_visible)
+        return hipErrorInvalidValue;
+    const auto blocks = static_cast<std::size_t>(cache.capacity) * row_blocks;
+    if (cache.key_elements < blocks || cache.value_elements < blocks ||
+        !valid_ranges(std::array{
+            batch_range(query, batch, attention_query_elements, false, 16),
+            range(cache.keys, cache.key_elements), range(cache.values, cache.value_elements),
+            batch_range(ids, batch, attention_max_selected), batch_range(counts, batch, 2),
+            batch_range(output, batch, attention_query_elements, true),
+            batch_range(w.gathered_keys, batch, attention_gather_elements, true),
+            batch_range(w.gathered_values, batch, attention_gather_elements, true),
+            batch_range(w.partial_output, batch, attention_partial_elements, true),
+            batch_range(w.partial_max_sum, batch, attention_partial_ml_elements, true),
+            batch_range(w.staged_output, batch, attention_query_elements, true), range(w.error, 1, true)}))
+        return hipErrorInvalidValue;
+    validate_inputs_batch<<<batch, threads, 0, stream>>>(query, ids, counts, first_visible, w);
+    auto status = hipGetLastError(); if (status != hipSuccess) return status;
+    validate_scales_batch<<<batch, threads, 0, stream>>>(cache.keys, cache.values, ids, counts, first_visible, w.error);
+    status = hipGetLastError(); if (status != hipSuccess) return status;
+    gather_selected_batch<<<dim3((attention_max_selected + 3) / 4, batch), threads, 0, stream>>>(cache.keys, cache.values, counts, first_visible, w);
+    status = hipGetLastError(); if (status != hipSuccess) return status;
+    fattn_dec_chunk_batch<<<dim3(attention_max_chunks, attention_kv_heads, batch), threads, 0, stream>>>(query, counts, first_visible, w);
+    status = hipGetLastError(); if (status != hipSuccess) return status;
+    fattn_dec_combine_batch<<<dim3(attention_query_heads, batch), threads, 0, stream>>>(counts, first_visible, w);
+    status = hipGetLastError(); if (status != hipSuccess) return status;
+    publish_output_batch<<<dim3(attention_query_heads, batch), threads, 0, stream>>>(w.staged_output, output, w.error);
+    return hipGetLastError();
+}
+
 } // namespace qwen

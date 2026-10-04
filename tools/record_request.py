@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Validate protocol-1 core-session full requests and append ONE r4_request.
+"""Validate closed protocol-1/2 core-session requests and append ONE r4_request.
 
 Only emitted structured records are evidence. Legacy session JSON is rejected.
 PP, first-output and TG are completed wall intervals, with sampling/CLI IO in
@@ -52,6 +52,29 @@ VRAM_SCOPE = "sampled_global_driver_VRAM_not_exact_instantaneous_peak"
 VRAM_MAPPING = "caller_supplied_labels_no_HIP_index_attestation"
 VRAM_COMMAND_JOIN = "direct_Docker_core_session_structured_argv_matches_request_source_only_no_binary_or_mount_identity_attestation"
 DOCKER_IMAGE = "llama.cpp-gfx906:cmake-4.4.3"
+EXECUTION_FIELDS = ("cpu_workers", "hybrid_mode", "gpu_missquota", "attention_tile", "attention_enabled")
+EXECUTION_FLAGS = ("--cpu-workers", "--hybrid-mode", "--gpu-miss-groups", "--attention-query-tile")
+EXECUTION_LABEL_FIELDS = ("cpu_path_scope", "pure_cpu", "knob_status", "hybrid_mode_role",
+                          "attention_status", "counter_scope", "gpu_event_timing", "host_timing")
+CONFIG_FIELDS = ("capacity", "expert_slots", "max_batch_tokens", "requested_output_tokens",
+                 "ignore_eos", "trace", "trace_directory", "logits_path", "diagnostic_rows")
+SOURCE_FIELDS = ("revision", "dirty", "model", "series", "config", "sampling", "prompt_ids",
+                 "runtime", "kv", "candidate", "mtp", "mtp_acceptance", "session_start",
+                 "prefix_reuse", "expert_cache_warmness", "timing_scope", "pp_scope", "tg_scope")
+COMPLETE_FIELDS = ("candidate", "mtp", "mtp_acceptance", "scope", "passed", "input_tokens",
+                   "output_tokens", "consumed_tokens", "pp_calls", "tg_forwards", "random_draws",
+                   "load_ms", "pp_ms", "tg_ms", "total_ms", "first_output_ms", "first_output_after_pp_ms",
+                   "stop_reason", "pending_token", *COUNTERS, "generated_ids")
+HYBRID_FIELDS = ("short_layers", "gpu_only_wide_layers", "ready_hit_assignments", "physical_miss_assignments",
+                 "group_reuse_assignments", "cpu_groups", "cpu_assignments", "gpu_hit_groups",
+                 "gpu_hit_assignments", "gpu_miss_groups", "gpu_miss_assignments", "admitted_groups",
+                 "evicted_ready_slots", "input_extractions", "input_bytes", "cpu_return_bytes",
+                 "cpu_input_bytes_checked", "all_hit_layers", "forced_cpu_layers", "forced_gpu_layers",
+                 "cpu_gate_up_jobs", "cpu_down_jobs", "gpu_middle_columns", "gpu_middle_batches",
+                 "paired_gate_up_bytes", "middle_q8_bytes")
+ROUTE_FIELDS = ("last_max_expert_group_assignments", "expert_groups_gt128")
+ATTENTION_FIELDS = ("batch_calls", "query_rows", "multiquery_calls", "multiquery_rows",
+                    "singleton_tail_calls", "max_query_rows")
 
 
 def cli_text(value, label, empty=False):
@@ -146,7 +169,7 @@ def source(obj):
           "config.diagnostic_rows")
 
 
-def counter_delta(obj, previous, consumed, width, label):
+def counter_delta(obj, previous, consumed, width, label, *, historical_payload=True):
     for key in COUNTERS:
         integer(obj[key], label + "." + key)
     delta = {key: obj[key] - previous[key] for key in COUNTERS}
@@ -155,8 +178,9 @@ def counter_delta(obj, previous, consumed, width, label):
             delta["expert_hits"] + delta["expert_misses"] == 480 * width,
             label + ": incomplete expert assignment accounting")
     misses, uploaded = delta["expert_misses"], delta["expert_upload_bytes"]
-    require(misses * Q40 <= uploaded <= misses * Q41,
-            label + ": expert upload bytes outside per-miss payload bounds")
+    if historical_payload:
+        require(misses * Q40 <= uploaded <= misses * Q41,
+                label + ": expert upload bytes outside per-miss payload bounds")
 
 
 def chronological_le(lower, upper, label):
@@ -168,7 +192,7 @@ def chronological_le(lower, upper, label):
             label + ": impossible timing chronology")
 
 
-def completed(obj, origin):
+def completed(obj, origin, *, historical_payload=True):
     config = origin["config"]
     requested, prompt = config["requested_output_tokens"], origin["prompt_ids"]
     expect(obj, {
@@ -212,10 +236,11 @@ def completed(obj, origin):
         require(obj["first_output_after_pp_ms"] == 0, "complete: prompt-only first-output time is not zero")
     require(obj["tg_ms"] > 0 if forwards else obj["tg_ms"] == 0,
             "complete: TG elapsed inconsistent with remaining forwards")
-    counter_delta(obj, dict.fromkeys(COUNTERS, 0), obj["consumed_tokens"], obj["consumed_tokens"], "complete")
+    counter_delta(obj, dict.fromkeys(COUNTERS, 0), obj["consumed_tokens"], obj["consumed_tokens"], "complete",
+                  historical_payload=historical_payload)
 
 
-def timeline(rows, origin, footer):
+def timeline(rows, origin, footer, *, historical_payload=True):
     """Match the driver's rows-then-window PP, output, (TG, output)* order."""
     diagnostic = origin["config"]["diagnostic_rows"]
     prompt, outputs = origin["prompt_ids"], footer["generated_ids"]
@@ -244,7 +269,8 @@ def timeline(rows, origin, footer):
                             "first_position": position, "rows": len(tokens)},
                    ("completed_ms", *COUNTERS), "window")
             times[phase].append(number(window["completed_ms"], "window.completed_ms"))
-            counter_delta(window, previous, position + len(tokens), len(tokens), "window")
+            counter_delta(window, previous, position + len(tokens), len(tokens), "window",
+                          historical_payload=historical_payload or len(tokens) > 3)
             previous = {key: window[key] for key in COUNTERS}
         position += len(tokens)
 
@@ -271,6 +297,229 @@ def timeline(rows, origin, footer):
         "pp_completed_call_ms_sum": math.fsum(times["pp"]) if diagnostic else None,
         "tg_completed_call_ms_sum": math.fsum(times["tg"]) if diagnostic else None,
     }
+
+
+def execution_config(config, label):
+    """Typed CLI knobs, independent of controller CPU/ISA or runtime attestation."""
+    workers = integer(config["cpu_workers"], label + ".cpu_workers", 0, 15)
+    mode = config["hybrid_mode"]
+    require(type(mode) is str and mode in ("disabled", "mixed", "force-cpu", "force-gpu-misses"),
+            label + ": invalid hybrid mode")
+    require(mode == "disabled" or workers > 0, label + ": enabled hybrid requires workers")
+    integer(config["gpu_missquota"], label + ".gpu_missquota", 1 if mode == "mixed" else 0, 2)
+    tile = integer(config["attention_tile"], label + ".attention_tile", 1, 128)
+    exact(config["attention_enabled"], tile > 1, label + ".attention_enabled")
+
+
+def execution_labels(config):
+    mode = config["hybrid_mode"]
+    return {"cpu_path_scope": "CPUlinear_GPUmiddle", "pure_cpu": False,
+            "knob_status": "candidate_unqualified",
+            "hybrid_mode_role": "disabled" if mode == "disabled" else
+                                "experimental_admission" if mode == "mixed" else "diagnostic_force",
+            "attention_status": "local_unqualified" if config["attention_enabled"] else "disabled",
+            "counter_scope": "completed_call_public_getters_not_physical_kernel_counts",
+            "gpu_event_timing": "not_collected", "host_timing": "completed_wall"}
+
+
+def uint64_stats(obj, fields, label):
+    expect(obj, {}, fields, label)
+    for key in fields:
+        integer(obj[key], label + "." + key)
+
+
+def candidate_normalization(rows):
+    """Validate new closed fields, then adapt COPIES to the old closed helpers.
+
+    Old counters/IDs/times are never edited. Hybrid dispatch changes upload/miss
+    relationships, so only that historical payload check is selected separately.
+    The raw records remain the provenance in the compact result.
+    """
+    origin, footer = rows[0], rows[-1]
+    expect(origin, {"kind": "session_candidate_request_source", "protocol": 2},
+           (*SOURCE_FIELDS, *EXECUTION_LABEL_FIELDS),
+           "candidate source")
+    config = origin["config"]
+    expect(config, {}, (*CONFIG_FIELDS, *EXECUTION_FIELDS), "candidate config")
+    execution_config(config, "candidate config")
+    labels = execution_labels(config)
+    for key, value in labels.items():
+        exact(origin[key], value, "candidate source." + key)
+    require(not config["trace_directory"] or not config["attention_enabled"],
+            "candidate config: trace is incompatible with attention batching")
+    expect(footer, {"kind": "session_candidate_request_complete", "protocol": 2, **labels},
+           (*COMPLETE_FIELDS, "execution_config", "hybrid_stats", "route_stats", "attention_stats"),
+           "candidate complete")
+    expect(footer["execution_config"], {}, EXECUTION_FIELDS, "complete.execution_config")
+    execution_config(footer["execution_config"], "complete.execution_config")
+    for key in EXECUTION_FIELDS:
+        exact(footer["execution_config"][key], config[key], "complete.execution_config." + key)
+    for key, fields in (("hybrid_stats", HYBRID_FIELDS), ("route_stats", ROUTE_FIELDS),
+                        ("attention_stats", ATTENTION_FIELDS)):
+        uint64_stats(footer[key], fields, "complete." + key)
+    normalized = [{key: value for key, value in origin.items() if key not in labels}]
+    normalized[0].update(kind="session_request_source", protocol=1,
+                         config={key: config[key] for key in CONFIG_FIELDS})
+    source(normalized[0])
+    intermediate_fields = {
+        "session_request_row": ("phase", "position", "token", "finite", "argmax"),
+        "session_request_window": ("phase", "first_position", "rows", "completed_ms", *COUNTERS),
+        "session_request_output": ("index", "token"),
+    }
+    for row in rows[1:-1]:
+        kind = row.get("kind")
+        require(type(kind) is str and kind in intermediate_fields, "candidate timeline: invalid record kind")
+        expect(row, {"kind": kind, "protocol": 2}, intermediate_fields[kind], "candidate timeline")
+        normalized.append({**row, "protocol": 1})
+    normalized.append({key: value for key, value in footer.items()
+                       if key not in (*labels, "execution_config", "hybrid_stats", "route_stats", "attention_stats")})
+    normalized[-1].update(kind="session_request_complete", protocol=1)
+    return normalized
+
+
+def candidate_counters(rows):
+    """Successful public getter relationships; no physical kernel-count inference."""
+    origin, footer = rows[0], rows[-1]
+    config, h = origin["config"], footer["hybrid_stats"]
+    chunk, prompt = config["max_batch_tokens"], len(origin["prompt_ids"])
+    pp = [min(chunk, prompt - first) for first in range(0, prompt, chunk)]
+    widths = pp + [1] * footer["tg_forwards"]
+    short = [n for n in widths if n <= 3]
+    wide = [n for n in widths if n > 3]
+    layers, assignments = 48 * len(short), 480 * sum(short)
+    mode, quota = config["hybrid_mode"], config["gpu_missquota"]
+    if config["cpu_workers"] == 0:
+        exact(h, dict.fromkeys(HYBRID_FIELDS, 0), "hybrid_stats.unprepared")
+    elif mode == "disabled":
+        # Inspect the policy guard in Layer::ffn, not pool existence: this
+        # branch also gates gpu_only_wide_layers on mode != disabled.
+        exact(h, dict.fromkeys(HYBRID_FIELDS, 0), "hybrid_stats.disabled")
+    else:
+        exact(h["short_layers"], layers, "hybrid_stats.short_layers")
+        exact(h["gpu_only_wide_layers"], 48 * len(wide), "hybrid_stats.gpu_only_wide_layers")
+        exact(h["ready_hit_assignments"] + h["physical_miss_assignments"], assignments,
+              "hybrid_stats.residency_assignments")
+        exact(h["cpu_assignments"] + h["gpu_hit_assignments"] + h["gpu_miss_assignments"], assignments,
+              "hybrid_stats.dispatch_assignments")
+        maximum = max(short, default=1)
+        groups = h["cpu_groups"] + h["gpu_hit_groups"] + h["gpu_miss_groups"]
+        require(10 * layers <= groups <= assignments, "hybrid_stats: logical group bounds")
+        exact(h["group_reuse_assignments"], assignments - groups, "hybrid_stats.group_reuse_assignments")
+        for prefix in ("cpu", "gpu_hit", "gpu_miss"):
+            g, a = h[prefix + "_groups"], h[prefix + "_assignments"]
+            require(g <= a <= maximum * g, "hybrid_stats: " + prefix + " group/assignment bounds")
+        require(h["all_hit_layers"] <= layers and
+                (h["physical_miss_assignments"] == 0) == (h["all_hit_layers"] == layers) and
+                h["physical_miss_assignments"] >= layers - h["all_hit_layers"] and
+                h["ready_hit_assignments"] >= 10 * h["all_hit_layers"], "hybrid_stats: all-hit bounds")
+        for key, value in {
+            "forced_cpu_layers": layers if mode == "force-cpu" else 0,
+            "forced_gpu_layers": layers if mode == "force-gpu-misses" else 0,
+            "cpu_gate_up_jobs": h["cpu_groups"], "cpu_down_jobs": h["cpu_groups"],
+            "gpu_middle_columns": h["cpu_assignments"], "gpu_middle_batches": h["input_extractions"],
+            "paired_gate_up_bytes": 5120 * h["cpu_assignments"], "middle_q8_bytes": 720 * h["cpu_assignments"],
+            "cpu_return_bytes": 10240 * h["cpu_assignments"], "cpu_input_bytes_checked": 0,
+        }.items():
+            exact(h[key], value, "hybrid_stats." + key)
+        x = h["input_extractions"]
+        require(x <= layers and x <= h["cpu_groups"] <= 10 * maximum * x,
+                "hybrid_stats: CPU-bearing layer/group bounds")
+        require(h["input_bytes"] % 2880 == 0 and 2880 * x <= h["input_bytes"] <= 8640 * x,
+                "hybrid_stats: original Q8 input byte bounds")
+        require(h["cpu_assignments"] <= 10 * (h["input_bytes"] // 2880),
+                "hybrid_stats: CPU columns exceed extracted original-row assignments")
+        # Each extraction copies ALL N original rows once, not CPU assignment
+        # rows. Check existence of a subset of actual N1/2/3 layer calls.
+        extra = h["input_bytes"] // 2880 - x
+        capacities = {n: 48 * short.count(n) for n in (1, 2, 3)}
+        lower = max(0, (extra - capacities[2] + 1) // 2, extra - x)
+        upper = min(capacities[3], extra // 2, capacities[1] - x + extra)
+        require(lower <= upper, "hybrid_stats: input bytes cannot come from accepted short windows")
+        require(h["evicted_ready_slots"] <= h["admitted_groups"] <= h["gpu_miss_groups"],
+                "hybrid_stats: admission/eviction bounds")
+        ready, missing = h["ready_hit_assignments"], h["physical_miss_assignments"]
+        # Historical misses count first acquisitions, not missing columns.
+        miss_low = max((missing + maximum - 1) // maximum, groups - ready)
+        miss_high = min(missing, groups - (ready + maximum - 1) // maximum)
+        if mode == "mixed":
+            exact(h["gpu_hit_assignments"], ready, "hybrid_stats.mixed.ready_dispatch")
+            exact(h["cpu_assignments"] + h["gpu_miss_assignments"], missing, "hybrid_stats.mixed.miss_dispatch")
+            require(layers - h["all_hit_layers"] <= h["gpu_miss_groups"] <=
+                    quota * (layers - h["all_hit_layers"]), "hybrid_stats: mixed miss quota")
+            require(x <= layers - h["all_hit_layers"] and quota * x <= h["gpu_miss_groups"],
+                    "hybrid_stats: mixed CPU-bearing layer admission bounds")
+            exact(h["admitted_groups"], h["gpu_miss_groups"], "hybrid_stats.mixed.admission")
+            miss_low = miss_high = h["cpu_groups"] + h["gpu_miss_groups"]
+        elif mode == "force-cpu":
+            exact(h["cpu_assignments"], assignments, "hybrid_stats.force_cpu.dispatch")
+            exact(x, layers, "hybrid_stats.force_cpu.extractions")
+            exact(h["input_bytes"], 2880 * 48 * sum(short), "hybrid_stats.force_cpu.input_bytes")
+        else:
+            exact(h["gpu_miss_assignments"], assignments, "hybrid_stats.force_gpu.dispatch")
+        require(h["admitted_groups"] <= quota * (layers - h["all_hit_layers"]) and h["admitted_groups"] <= missing,
+                "hybrid_stats: physical admission bounds")
+        if mode == "force-gpu-misses" and quota:
+            require(h["admitted_groups"] >= layers - h["all_hit_layers"],
+                    "hybrid_stats: forced GPU missing-layer admission bounds")
+        wide_group_limit = sum(48 * min(512, 10 * n) for n in wide)
+        wide_miss_low = max(0, footer["expert_misses"] - miss_high)
+        wide_miss_high = min(wide_group_limit, footer["expert_misses"] - miss_low)
+        require(wide_miss_low <= wide_miss_high, "hybrid_stats: historical miss/group bounds")
+        upload_low, upload_high = h["gpu_miss_groups"] + wide_miss_low, h["gpu_miss_groups"] + wide_miss_high
+        require(Q40 * upload_low <= footer["expert_upload_bytes"] <= Q41 * upload_high,
+                "hybrid_stats: actual uploaded group payload bounds")
+        if config["diagnostic_rows"]:
+            previous = dict.fromkeys(COUNTERS, 0)
+            short_misses, short_uploads = 0, 0
+            for row in rows[1:-1]:
+                if row["kind"] != "session_request_window":
+                    continue
+                misses = row["expert_misses"] - previous["expert_misses"]
+                uploaded = row["expert_upload_bytes"] - previous["expert_upload_bytes"]
+                if row["rows"] <= 3:
+                    short_misses += misses
+                    short_uploads += uploaded
+                    if mode == "force-cpu":
+                        low, high = 0, 0
+                    elif mode == "mixed":
+                        low, high = 0, 48 * quota
+                    else:
+                        low, high = 480, 480 * row["rows"]
+                    require(Q40 * low <= uploaded <= Q41 * high,
+                            "hybrid_stats: short-window dispatch upload bounds")
+                previous = {key: row[key] for key in COUNTERS}
+            require(miss_low <= short_misses <= miss_high,
+                    "hybrid_stats: diagnostic short-window historical misses")
+            require(Q40 * h["gpu_miss_groups"] <= short_uploads <= Q41 * h["gpu_miss_groups"],
+                    "hybrid_stats: diagnostic short-window uploaded groups")
+
+    routes = footer["route_stats"]
+    last = widths[-1]
+    maximum = routes["last_max_expert_group_assignments"]
+    require((10 * last + 511) // 512 <= maximum <= last, "route_stats: last-call group bounds")
+    # Per-token expert IDs are unique. Each >128 group consumes >=129 of
+    # the 10*N assignments per layer; singleton TG contributes no such groups.
+    group_limit = sum(48 * min(512, 10 * n // 129) for n in widths if n > 128)
+    if last > 128 and maximum <= 128:
+        group_limit -= 48 * min(512, 10 * last // 129)
+    require(int(maximum > 128) <= routes["expert_groups_gt128"] <= group_limit,
+            "route_stats: cumulative >128 group bounds")
+    attention = dict.fromkeys(ATTENTION_FIELDS, 0)
+    if config["attention_enabled"]:
+        tile = config["attention_tile"]
+        for n in pp:
+            if n == 1:  # N1, including every TG call, always uses the old API.
+                continue
+            calls, remainder = divmod(n, tile)
+            calls += bool(remainder)
+            singles = int(remainder == 1)
+            attention["batch_calls"] += 12 * calls
+            attention["query_rows"] += 12 * n
+            attention["multiquery_calls"] += 12 * (calls - singles)
+            attention["multiquery_rows"] += 12 * (n - singles)
+            attention["singleton_tail_calls"] += 12 * singles
+            attention["max_query_rows"] = max(attention["max_query_rows"], min(tile, n))
+    exact(footer["attention_stats"], attention, "attention_stats.accepted_PP_API_calls")
 
 
 def rate(count, elapsed, label):
@@ -402,6 +651,10 @@ def join_native_command(argv, origin):
     values = {"--capacity": 4096, "--slots": 112, "--generate": 0, "--prefill-chunk": 1,
               "--trace": "", "--logits": "", "--sample": False, "--ignore-eos": False,
               "--seed": None, "--temperature": 1., "--top-p": .95, "--top-k": 20}
+    candidate = origin["protocol"] == 2
+    if candidate:
+        values.update({"--cpu-workers": 0, "--hybrid-mode": "disabled", "--gpu-miss-groups": 2,
+                       "--attention-query-tile": 1})
     seen, model, prompt = set(), None, []
     cursor = 0
     while cursor < len(args):
@@ -416,7 +669,7 @@ def join_native_command(argv, origin):
             require(cursor < len(args), "VRAM native command: missing option value " + arg)
             value = args[cursor]
             cursor += 1
-            if arg in ("--trace", "--logits"):
+            if arg in ("--trace", "--logits", "--hybrid-mode"):
                 values[arg] = value
             elif arg in ("--temperature", "--top-p"):
                 values[arg] = native_float(value, "VRAM native " + arg)
@@ -429,8 +682,9 @@ def join_native_command(argv, origin):
         else:
             require(len(prompt) < MAX_CAPACITY, "VRAM native command: too many prompt IDs")
             prompt.append(native_integer(arg, "VRAM native token ID"))
-    require(values["--sample"] or "--prefill-chunk" in seen,
-            "VRAM native command: would not emit request protocol")
+    require(bool(seen.intersection(EXECUTION_FLAGS)) if candidate else
+            values["--sample"] or "--prefill-chunk" in seen,
+            "VRAM native command: would not emit matching request protocol")
     if not values["--sample"]:
         require(not seen.intersection(("--seed", "--temperature", "--top-p", "--top-k")),
                 "VRAM native command: filters/seed require --sample")
@@ -439,6 +693,15 @@ def join_native_command(argv, origin):
     exact(model, origin["model"], "VRAM native model")
     exact(prompt, origin["prompt_ids"], "VRAM native prompt IDs")
     config = origin["config"]
+    if candidate:
+        if "--hybrid-mode" not in seen and values["--cpu-workers"] > 0:
+            values["--hybrid-mode"] = "mixed"
+        knobs = {"cpu_workers": values["--cpu-workers"], "hybrid_mode": values["--hybrid-mode"],
+                 "gpu_missquota": values["--gpu-miss-groups"], "attention_tile": values["--attention-query-tile"],
+                 "attention_enabled": values["--attention-query-tile"] > 1}
+        execution_config(knobs, "VRAM native execution config")
+        for key in EXECUTION_FIELDS:
+            exact(knobs[key], config[key], "VRAM native config." + key)
     for key, value in {
         "capacity": values["--capacity"], "expert_slots": values["--slots"],
         "max_batch_tokens": values["--prefill-chunk"], "requested_output_tokens": values["--generate"],
@@ -510,16 +773,25 @@ def collect(raw_path, vram_path=None):
         distinct_paths((raw_path, vram_path))
     rows = records(raw_path)
     origin, footer = rows[0], rows[-1]
-    source(origin)
-    completed(footer, origin)
-    diagnostics = timeline(rows, origin, footer)
+    candidate = (origin.get("kind") == "session_candidate_request_source" and
+                 type(origin.get("protocol")) is int and origin["protocol"] == 2)
+    if candidate:
+        normalized = candidate_normalization(rows)
+        historical_payload = origin["config"]["hybrid_mode"] == "disabled"
+        completed(normalized[-1], normalized[0], historical_payload=historical_payload)
+        diagnostics = timeline(normalized, normalized[0], normalized[-1], historical_payload=historical_payload)
+        candidate_counters(rows)
+    else:
+        source(origin)
+        completed(footer, origin)
+        diagnostics = timeline(rows, origin, footer)
     raw_logs = {"request": str(raw_path)}
     if origin["config"]["logits_path"]:
         # This protects a reported binary artifact against journal aliasing;
         # its contents are not independently inspected or qualified here.
         raw_logs["logits_artifact"] = str(Path(origin["config"]["logits_path"]).resolve())
     result = {
-        "kind": "r4_request", "protocol": 1,
+        "kind": "r4_request", "protocol": 2 if candidate else 1,
         "timestamp": datetime.datetime.now(datetime.timezone.utc).isoformat(),
         "revision": origin["revision"], "dirty": origin["dirty"], "runtime": origin["runtime"],
         "model": origin["model"], "raw_logs": raw_logs, "scope": SCOPE,

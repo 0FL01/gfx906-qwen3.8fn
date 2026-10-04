@@ -4,26 +4,22 @@ Standalone C++20/HIP core under implementation. `core-session` now executes the
 own 48-layer model with Q4_0 K/V on both gfx906 GPUs. R3 teacher32/reset/generation
 are qualified; short, logical-wide and real4K/16K teacher fixtures pass
 same-Session N1 full-logit parity and continuation with observed expert groups
-over 128. Latest completed correctness job765 exited0 in 34m46s: full strict
-CXX20/HIP20 gfx906 Release/warning gates, CTest35/35 (735.71s), both-GPU
-route-copy/paired-middle fixtures, the full CPUlinear_GPUmiddle fixture and
-default reset/batch/wide1024/capacity131072 regressions passed. Its compiled
-snapshot is `a4b55d84724ba15bbae7013d5a107b7671b7a409`/dirtytrue.
-The earlier strict targeted `core-session` build and request-results/VRAM-observer
-gates passed, followed by eight fresh 4K/16K requests with 512 actual sampled outputs.
-Trace-free chunk128/chunk1024/chunk128 comparisons establish a same-own-config
-PP/request improvement; separate observed runs provide sampled driver VRAM.
-The actual512 measurement slice is accepted and closed: all eight downloaded
-request logs and both observer joins passed local collection; the canonical
-journal's exact history and +9/-0 diff are verified. A completed diagnostic
-rocprofv3 run identified the per-assignment GPU route-copy seam. Current route-copy
-and CPU-linear/canonical-GPU-middle correctness slice is accepted: local actual
-hybrid collection and exact journal history/+1/-0 verification passed. Exclusive
-trace-off paired GPU-copy job `1791073403122-769` completed exit0 in 57m33s:
-PP improved 2.0–2.7% and full-request time about 1.9% against mean A1/A2.
-This measurement slice is accepted: all six local collectors and exact
-31→38 journal history/+7/-0 checks passed. Next advance the qualified a4 binary
-to the one current baseline, then qualify the GPU attention/B8 candidate.
+over 128. The **B8 attention / explicit CLI protocol2 correctness slice is
+qualified**, with the component, full-model self-parity, actual request collectors
+and default regressions passing. The compiled snapshot remains
+`77f89c3412fff65634df8b45b08fab1b3da028a0`/dirtytrue. Job
+`1791083481832-775` ended exit1 after a successful strict build/CTest36/36 and
+GPU/model execution: a collector incorrectly required two host-logit owners with
+CPU workers off. Correcting that source-derived memory floor, without changing
+numerical gates, enabled continuation job `1791087203796-820` to complete exit0
+in 21m01s on the **same already-built binaries**, including CTest36/36 and all
+remaining gates. Detailed evidence and fresh commands are below.
+The remote canonical journal is **41 records / 2,563,568 bytes**, exactly three
+appends from38 with the old byte prefix/parsed history preserved; the parent's
+journal download and Git +3/-0 check are pending confirmation.
+Earlier trace-off GPU-copy A/B/A measured a modest 2–2.7% PP/about1.9% request
+gain. Its qualified a4 binary is now the one saved baseline; next measure B8
+against it at chunk1024/slots112 with CPU disabled and trace off.
 Full R4–R8, exact peak-VRAM qualification, MTP, serving and the
 400–600PP/30–40TG speed targets remain open; those targets are not met.
 Scope and acceptance are in [PLAN.md](PLAN.md); current evidence in [STATE.md](STATE.md).
@@ -1410,29 +1406,170 @@ parsed31-record history exactly**; actual git numstat **+7/-0** and diff whitesp
 checks passed. **The measurement-only slice is accepted and closed**; do not
 append these six requests or their paired record again. Full R4/R5 remains open.
 
-New local request tests **79/79 in 5.055s** and attention-collector tests
-**28/28 in 43.004s** passed. These cover local CLI/protocol2/collector contracts,
-not HIP execution, GPU attention or Model B8 qualification.
+At that measurement closure, local request tests **79/79 in 5.055s** and
+attention-collector tests **28/28 in 43.004s** covered the CLI/protocol2/collector
+contracts. The subsequent actual GPU/model/CLI qualification is recorded below.
 
-Fresh paired reproduction reuses the Docker/request command above, with
-chunk1024 on all three runs: saved-baseline entrypoint for A1/A2, candidate
-entrypoint for B, fresh `NEW-indexed-{4k,16k}-{a1,b,a2}` stdout/stderr names and
-the saved exact IDs/capacities. Preserve each actual binary's revision/dirty flags.
-The parent can now promote the already-qualified a4 binary to the **one current
-baseline** before the next candidate build; the769 series is complete.
+The769 artifacts retain their historical b522→a4 binary identities. Fresh B8
+paired reproduction follows the current-baseline recipe below, using saved exact
+IDs/capacities, chunk1024 on all three runs and fresh stdout/stderr names.
+Preserve each actual binary's revision/dirty flags. The769 series is complete.
+The qualified765 a4 binary is now the **one current
+baseline**, `/core/build/core-session-baseline` (**1,556,208 bytes**), source
+`a4b55d84724ba15bbae7013d5a107b7671b7a409`/dirtytrue. Preserve it through the
+next paired B8 performance series. `/core/build/core-session` is the already-built
+job775 candidate, source77f/dirtytrue; neither binary is retagged to a future commit.
 
-Next run the candidate's full strict **36-gate build/CTest**, both-GPU
-attention-batch and Model B8 Session full logits, causal visibility2047–2056,
-private-buffer ownership and default regressions. The36-gate candidate is
-pending remote qualification; job765's completed35/35 is the previous full-build
-scope. Explicit CPU/attention CLI controls, request protocol2 and collectors are
-locally tested, while attention/B8 and component/state cleanup have no new HIP/
-model qualification. Runtime query-batch statistics count queries, not kernel launches.
-Attention tile1/OFF and the original API default remain unchanged.
-The CPUlinear_GPUmiddle pipeline retains its job765 qualification. Three future
-Spec/R6 helpers remain outside that closure and are not trained-MTP integration.
-Exact peak VRAM, full R4/R5–R8, occupied128K, MTP2 and project speed targets
-remain open.
+## R4: qualified B8 attention and explicit CLI2 correctness slice
+
+### Strict build, collector repair and completed continuation
+
+Controller HEAD/origin for this work is
+`77f89c3412fff65634df8b45b08fab1b3da028a0`. GPU artifacts carry that compiled
+source snapshot with **dirtytrue**, not a future closure commit.
+Job **`1791083481832-775` terminated exit1 in 26m29s**, after the full strict
+**CXX20/HIP20 gfx906 Release/all-warning-gates build**, **CTest36/36 in 803.76s**,
+both-GPU attention component PASS and original Model B8 executable **exit0**.
+The failure was in the collector: it required two host-logit owners for
+`cpu_workers=0`, whereas this Session owns only **`host_logits`, 1,017,118,720
+bytes**. `working_logits` is allocated only with `cpu_workers>0`.
+
+The parent corrected the **source-derived lower floor to one owner**, with no
+numerical tolerance change, and added a regression: local **29/29 in 43.187s**.
+Corrected actual B8 collection passed both locally and remotely. Continuation
+job **`1791087203796-820` completed exit0 in 21m01s**, reusing the **same775
+binaries**: full **CTest36/36 in 808.07s** with corrected collector tests, actual
+B8 collection, CLI2 mixed/off32, default reset/batch/memory and strict actual
+collection all passed. The separate default `core-memory` capacity131072/slots112
+collector passed; this is not an occupied128K test or an additional journal append.
+
+### Both-GPU attention component and actual Model B8
+
+`core-attention-batch` is a model-free primitive fixture. Its successful raw has
+**three JSON records: source plus one correctness record per GPU**, with **no
+completion footer**. Each GPU passed **26 cases / 304 queries / 1,867,776
+bit-compared values and 1,867,776 CPU-compared values**, maxabs
+**1.1920928955078125e-7**, max-bound-ratio **0.0003692344547586807**, **23 device
+rejects / 180 host rejects / 6 sticky checks**. The frozen component gate is
+`2e-4 + 2e-4*abs(ref)`; parity with the old N1 primitive is bit-exact on these cases.
+
+The new batch primitive **ADAPTs the current furnace-derived N1 path**, adding
+an independent private query dimension while retaining exact old Q4→half RNE
+gather, sorted selected IDs, 64-key split and merge arithmetic. Its typed borrowed
+API checks capacities/strides/overlaps, uses the explicit stream and a shared
+sticky flag, and suppresses all output publication on a detected query failure.
+It adds no dependency; existing mx/furnace MIT and reinstinct Apache-2.0 pins apply.
+
+The original `core-prefill-attention-test MODEL` completed **exit0 / 31 records**.
+It uses **one same Session**, capacity2088/slots1/max1024/query-tile8/CPU workers0:
+
+- Old N1 reference consumes all2088 rows: **2056 teacher + 32 continuation**.
+- Enabled B8 consumes teacher chunks **1024/1024/8**, then32 N1 continuations.
+- Occupied-prefix phase consumes **5 N1**, chunks **997/997/57**, then32 N1
+  continuations.
+
+Totals are **2163 completed calls / 6264 rows / 1,555,476,480 finite values /
+1,036,984,320 full-vocabulary comparisons**. Numerical errors, violations and
+diagnostic bit differences are **zero**; **4176 diagnostic argmax matches**.
+The gate remains **`.02 + .002*abs(ref)`**; bit/argmax identity is not required.
+Logical boundary coverage2047–2056 follows the accepted source rows, not a
+GPU-observed visibility/selected-ID trace or an independent HF oracle.
+
+Attention counters total **6180 batch API calls / 49,284 query rows / 6168
+multiquery calls / 49,272 multiquery rows / 12 singleton-tail calls / max8**.
+These count successfully completed **API invocations**, not physical kernels.
+There are **2190 in-process memory observations / 26 serialized ledgers / 8
+atomic rejects / 6 toggles / 6,073,162,240 preserved values**; individual toggle
+states and the remaining observations are driver assertions, not additional raw
+ledgers. Minimum observed free GPU0/1 is **12,671,549,440 / 12,115,804,160 bytes**.
+
+Reported private workspace per GPU is **40,338,944 bytes**: four independent
+buffers **40,142,336 bytes** plus **196,608 bytes reused from the f(15) prefix**,
+not another allocation. Selection is separate, **82,080 bytes**. Actual f(15)
+staging and f(17) output backing capacities are **50,331,648 bytes each**, already
+in the workspace/owned ledger. This bounded self-reference does not qualify new
+4K/16K B8 execution, performance, exact peak VRAM or measured owned-buffer release.
+
+### Actual explicit CLI2 mixed/off32
+
+Both requests used capacity64/slots1/chunk32, prompt **`[248044,100..130]`**,
+generate32/ignoreEOS/sample/seed42 and primary **temperature1.0/top-p.95/top-k20**.
+Mixed used **CPU workers1 / mixed / GPU-miss quota2 / attention tile8**; off used
+**CPU workers0 / disabled / tile1**. Each emitted **32 actual outputs**, consumed63
+rows, completed31 TG forwards, used32 RNG draws and one PP call. Output IDs were
+identical, diagnostic-only. Protocol2 emitted the explicit execution knobs and
+**26 hybrid + 2 route + 6 attention typed counters**; strict actual request
+collection passed **locally and remotely**.
+
+Mixed counters: **1488 short / 48 GPU-only-wide layers**, **11,255 CPU groups /
+11,255 gate-up jobs / 11,255 down jobs / 11,255 middle columns / 1488 middle
+batches**; paired H2D **57,625,600 bytes**, Q8 D2H **8,103,600 bytes**, CPU returns
+**115,251,200 bytes**. GPU-hit groups649 / GPU-miss groups2976 / admitted2976 /
+evicted1440. Diagnostic short TG wall times were **27789.104387 ms mixed versus
+6521.876872 ms off**. This is not a proper paired performance series or a speed-gain
+claim; CPU workers remain opt-in, not a promoted default or measured policy.
+Raw **`candidate_unqualified` / `local_unqualified`** labels remain literal.
+This documentation records the bounded qualification above without rewriting
+Source records or claiming qualification for every exposed knob value.
+
+### Raw evidence, journal and fresh reproduction
+
+With `ROOT=/home/radneon/gfx906-core`, original raws are
+`ROOT/runs/r4-attention-77f-a-{build.log,component.jsonl,model.jsonl}`; continuation
+raws are `ROOT/runs/r4-attention-77f-b-{gates.log,cli2-mixed.jsonl,cli2-off.jsonl,reset.jsonl,batch.jsonl,memory.jsonl}`.
+The parent downloaded the actual model/component/CLI2 raws and strict local
+collection passed. Remote canonical `ROOT/results.jsonl` is **41 records /
+2,563,568 bytes**, **exactly three appends38→41**: one `r4_attention_prefill`, one
+protocol2 mixed `r4_request`, one protocol2 off `r4_request`. The old38-record
+byte prefix and parsed history are **exactly preserved**; source77f/dirtytrue is
+unchanged. Parent downloaded the canonical journal and verified the exact old Git
+HEAD38 byte prefix/parsed history and **+3/-0** diff. This bounded correctness slice
+is accepted. **Never append these accepted logs again.**
+
+For a fresh component/model reproduction on the GPU host, use the build contract
+above with actual synchronized revision/dirty and explicit
+`sh /core/src/tools/build.sh` (source mode100644). Run the following sequentially;
+the model executable is a manual model gate, separate from CTest:
+
+```sh
+set -eu
+set -C
+ROOT=/home/radneon/gfx906-core
+docker run --rm --name core-attention-batch-repro \
+  --device /dev/kfd --device /dev/dri --group-add video --ipc host \
+  --security-opt seccomp=unconfined --entrypoint /core/build/core-attention-batch \
+  -v /home/radneon/gfx906-core:/core llama.cpp-gfx906:cmake-4.4.3 \
+  > "$ROOT/runs/NEW-attention-component.jsonl" \
+  2> "$ROOT/runs/NEW-attention-component.err"
+docker run --rm --name core-prefill-attention-repro \
+  --device /dev/kfd --device /dev/dri --group-add video --ipc host \
+  --security-opt seccomp=unconfined --entrypoint /core/build/core-prefill-attention-test \
+  -v /home/radneon/gfx906-core:/core -v /home/radneon/models-nvme:/models:ro \
+  llama.cpp-gfx906:cmake-4.4.3 /models/qwen38-keep1-Q4_0.gguf \
+  > "$ROOT/runs/NEW-attention-model.jsonl" \
+  2> "$ROOT/runs/NEW-attention-model.err"
+# Only after executable exit0; append ONE validated fresh model record to ROOT.
+python3 -B "$ROOT/src/tools/record_prefill_attention.py" \
+  --raw "$ROOT/runs/NEW-attention-model.jsonl" --results "$ROOT/results.jsonl"
+```
+
+For a fresh CLI2 mixed smoke, use the same Docker/device/mount contract with
+entrypoint `/core/build/core-session` and arguments
+`--capacity 64 --slots 1 --prefill-chunk 32 --generate 32 --ignore-eos --sample --seed 42 --temperature 1.0 --top-p 0.95 --top-k 20 --cpu-workers 1 --hybrid-mode mixed --gpu-miss-groups 2 --attention-query-tile 8 /models/qwen38-keep1-Q4_0.gguf 248044 $(seq 100 130)`.
+For off use workers0/disabled/tile1; choose fresh stdout/stderr names for each.
+Only after each executable exit0 collect with
+`record_request.py --raw FRESH --results "$ROOT/results.jsonl"`.
+
+**Next:** own trace-off **A1→B→A2** on both4K/16K lengths, fixed R0 archive/code
+4K IDs and four concatenations for16K, primary seed12345/512 actual outputs,
+chunk1024/slots112 on both, CPU workers0/hybrid disabled. B uses tile8; saved
+baseline A uses its original tile1 default (no new CLI flags on that binary).
+Reuse the Docker/request contract above, fresh logs and the actual binary source
+identities; no GPU workload or heavy compilation concurrently. CPU-worker/admission
+policy measurements follow. Attention tile1/OFF and original API remain defaults.
+FullR4/R5 policy, R6 trained MTP, R7 occupied long/API, R8 converter and final
+400–600PP/30–40TG goals remain open. Future unlinked Spec3/MtpModel3, the new
+inspector and ignored checkpoint patch are outside this correctness slice.
 
 ## R5: qualified CPU-linear/canonical-GPU-middle correctness slice
 
@@ -1578,12 +1715,12 @@ This accepted correctness slice does not close fullR5, hybrid performance,
 a measured dispatch threshold or MTP. The completed exclusive trace-off
 comparison **job769** measured a modest GPU-copy PP/request gain using saved
 baselineb522 versus already-built job765; its measurement slice is accepted
-with local actual-log and exact history/+7/-0 proofs above. Next advance the
-qualified a4 binary to one current baseline, then run the full strict36 candidate
-gates, both-GPU attention-batch and Model B8 Session logits/visibility/private
-buffers/default regressions before CPU workers/admission-policy measurements.
-Post765 local `src/hip/attention.cuh`, `src/hip/attention.hip` and
-`tests/attention_batch_test.hip` changes and three future Spec/R6 helper files are
-excluded from this closure, with no actual HIP/model/performance claim here.
+with local actual-log and exact history/+7/-0 proofs above. The qualified a4
+binary is now the saved current baseline. The subsequent B8/CLI2 correctness
+slice passed jobs775/820 as recorded above; next is trace-off B8 A/B/A against
+that baseline, then CPU-worker/admission-policy measurements. Attention/API/CLI
+and bounded owner/schema fixtures have their own new correctness scope; future
+unlinked Spec3/MtpModel3, the new inspector and ignored checkpoint patch are
+excluded from it. No B8 performance qualification follows from either closure.
 Full R4/R5 performance, occupied128K, MTP2 and the **400–600PP / 30–40TG** targets
 remain open and unmet.
