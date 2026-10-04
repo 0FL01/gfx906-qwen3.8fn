@@ -5,6 +5,17 @@
 
 namespace qwen {
 
+// Fused canonical session_ops SiLU(gate)*up followed by canonical Q8_1.
+// Width is positive/multiple32/<=16384, columns1..128. Contiguous column-major
+// vectors; middle retains every sanitized FP32 result. Q8 flags/codes/raw half
+// sums match the two-launch path, including zero half scale with nonzero codes.
+// Gate/up may alias each other; all writable ranges must be pairwise disjoint
+// and disjoint from both inputs, all aligned4. Sticky flags are never cleared
+// and do not suppress valid output. Explicit stream; no allocation or sync.
+[[nodiscard]] hipError_t launch_silu_up_q8_1(const float* gate, const float* up,
+    int width, int columns, float* middle, Q8_1* output, int* error,
+    hipStream_t stream) noexcept;
+
 inline constexpr int linear_device_max_dimension = 16384;
 inline constexpr int linear_device_max_columns = 3;
 inline constexpr int linear_device_short_max_columns = 8;

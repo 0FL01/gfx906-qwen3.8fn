@@ -2479,3 +2479,22 @@ This accepts the selective dispatch for these workloads only. Pinned llama
 full requests remain faster (~57/~144s); no final speed target is met.
 A is rolled7df1c74/dirtytrue, B tiled60d341e/dirtytrue. Baseline executable still
 contains A; no subsequent build/profiling should relabel these historical runs.
+
+### Canonical fused SiLU/up and Q8 component
+
+launch_silu_up_q8_1 joins the unchanged SiLU division/product/sanitization and
+Q8_1 width32 scale/raw-sum/code operations. Middle FP32 remains materialized.
+Width32..16384 divisible32, columns1..128; input aliases are allowed but all
+writable ranges must be disjoint and aligned4. Sticky errors are preserved.
+
+core-silu-q8 tests both gfx906 without a model: 288 cases/device,48,302,592
+initial middle values and54,340,416Q8 bytes exact, including nonfinite inputs,
+overflow, signed zero, tiny scales, sticky flags,31 host rejections,36 one-node
+graph checks,144 same-owner numeric-failure recoveries,36 readable alias cases.
+Original paired-middle/linear-short/dense-MMVF regressions pass. Jobs470/479
+exit0; job475 failed solely on an incorrect build target name before tests.
+Source85ff77818b28e1f936afcb71b0e67773f5b66b7a/dirtytrue, journal67,
+raw ROOT/runs/r5-silu-q8-85f-expanded.jsonl. Build target core-silu-q8 then run
+/core/build/core-silu-q8 in the usual exclusive gfx906 build-image container.
+All24 resident width640 A/B/A coordinates improve1.345–1.577x over separate
+launches; this is component evidence only, not integrated PP/TG or MTP speed.

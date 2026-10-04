@@ -96,11 +96,28 @@ __device__ __forceinline__ std::uint32_t word2(const std::uint8_t* bytes, int in
            (std::uint32_t(halves[2 * index + 1]) << 16);
 }
 
-__global__ void quantize(const float* input, Q8_1* output, int elements, int* error) {
+template<bool FusedSilu = false>
+__global__ void quantize(const float* input, Q8_1* output, int elements, int* error,
+                        const float* up = nullptr, float* middle = nullptr) {
     const int index = blockIdx.x * blockDim.x + threadIdx.x;
     if (index >= elements) return; // Whole width32 groups; no partial XOR sum.
     const int lane = index % 32;
     float x = input[index];
+    if constexpr (FusedSilu) {
+        // KEEP session_ops::silu_up exactly, including per-element sanitized
+        // middle on failure. Quantization sees that middle, not raw bad inputs.
+        int flags = 0;
+        float u = up[index];
+        if (!isfinite(x)) { flags |= 1; x = 0.0f; }
+        if (!isfinite(u)) { flags |= 1; u = 0.0f; }
+        float activated = x / (1.0f + expf(-x));
+        if (!isfinite(activated)) { flags |= 2; activated = 0.0f; }
+        float value = activated * u;
+        if (!isfinite(value)) { flags |= 2; value = 0.0f; }
+        x = flags == 0 ? value : 0.0f;
+        middle[index] = x;
+        if (flags) atomicOr(error, flags);
+    }
     int bad = !isfinite(x);
     if (bad) x = 0.0f;
     float amax = fabsf(x);
@@ -485,7 +502,25 @@ hipError_t launch_quantize_q8_1(const float* input, Q8_1* output, int width,
         overlaps(error_range, output_range))
         return hipErrorInvalidValue;
     const int count = static_cast<int>(elements);
-    quantize<<<(count + 255) / 256, 256, 0, stream>>>(input, output, count, error);
+    quantize<false><<<(count + 255) / 256, 256, 0, stream>>>(input, output, count, error);
+    return hipGetLastError();
+}
+
+hipError_t launch_silu_up_q8_1(const float* gate, const float* up, int width,
+        int columns, float* middle, Q8_1* output, int* error, hipStream_t stream) noexcept {
+    if (!dimension(width) || width % 32 || columns < 1 || columns > 128)
+        return hipErrorInvalidValue;
+    const auto elements = std::size_t(width) * std::size_t(columns);
+    Range ranges[5]{};
+    if (!range(gate, elements * sizeof(float), 4, ranges[0]) ||
+        !range(up, elements * sizeof(float), 4, ranges[1]) ||
+        !range(middle, elements * sizeof(float), 4, ranges[2]) ||
+        !range(output, (elements / 32) * sizeof(Q8_1), 4, ranges[3]) ||
+        !range(error, sizeof(int), 4, ranges[4])) return hipErrorInvalidValue;
+    for (int i = 0; i < 5; ++i) for (int j = i + 1; j < 5; ++j)
+        if (j >= 2 && overlaps(ranges[i], ranges[j])) return hipErrorInvalidValue;
+    const int count = static_cast<int>(elements);
+    quantize<true><<<(count + 255) / 256, 256, 0, stream>>>(gate, output, count, error, up, middle);
     return hipGetLastError();
 }
 

@@ -79,8 +79,15 @@ not a proven cause in HC. Frozen bounds unchanged. Source reverted both hosts.
 Journal66 preserves negative and raw prefix ROOT/runs/r4-expert-mmq-aa1.
 Current core-mtp-run60d and baseline7df unchanged; model fixture binaries still
 contain the REJECTED MMQ candidate until rebuilt. Never use those for acceptance.
-Next bounded measured bottleneck: fuse canonical routed-expert SiLU/up and
-Q8 quantization, preserving middle FP32 values, all Q8 bytes and sticky flags.
+Fused SiLU/up+Q8 primitive now PASS: jobs470/479 nativeexit0; job475
+was only a wrong regression target name, corrected before tests. Source85ff778
+dirtytrue. Each GPU288cases,48,302,592 initial middle values/54,340,416Q8bytes
+exact,31host rejects,36single-node graph checks,144same-owner recoveries and
+36readonly aliases. Old paired-middle/linear/dense tests pass. Journal67.
+Resident A/B/A all24 width640 coordinates win1.345–1.577x; not runtime speed.
+Session NOT integrated yet. Next replace only routed Experts::project middle
+two-launch chain, then model gates and regressions; preserve runtime/baseline
+executables while baseline-replacement approval remains pending.
 Further candidates require fresh measured priority: PP launch density/selection,
 per-column dense reductions, two-GPU chunk overlap, grouped short MoE. Do not
 mix another optimization into this still-unqualified integration slice.
