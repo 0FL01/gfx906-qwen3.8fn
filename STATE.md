@@ -85,9 +85,21 @@ dirtytrue. Each GPU288cases,48,302,592 initial middle values/54,340,416Q8bytes
 exact,31host rejects,36single-node graph checks,144same-owner recoveries and
 36readonly aliases. Old paired-middle/linear/dense tests pass. Journal67.
 Resident A/B/A all24 width640 coordinates win1.345–1.577x; not runtime speed.
-Session NOT integrated yet. Next replace only routed Experts::project middle
-two-launch chain, then model gates and regressions; preserve runtime/baseline
-executables while baseline-replacement approval remains pending.
+Primitive PUSHED6c26e2abf9bfa14f175940f0a851fe829f464bd7.
+Routed Session integration is a4-line diff, correctness PASS.
+Job1791156231841-489 COMPLETE nativeexit0/33m04, source6c26e2a/dirtytrue.
+Strict SELECTED targets built, short/wide model gates and MTP API pass;
+39CTest pass1147.26s. Short29,798,400 and wide1,036,984,320 compared logits
+zero violations/diagnostic bit mismatches. Actual collectors rerun on copied
+raw files; journal68 old67-byteprefix unchanged. No speed promotion yet.
+Next trace-off MTP A/B/A4K/16K+512 using runs/r5-fused-session-ab.py.
+Safer comparison preserves core-mtp-run-baseline7df untouched: rebuild ONLY the
+ordinary core-mtp-run between separate/fused source snapshots, with no build
+during timed inference. Both source6c26e2a/dirtytrue; variant manifest explicit.
+Protected baseline checked unchanged; no permission to overwrite it inferred.
+User's prior replacement question remains unanswered but this comparison does
+not require that destructive step. Source snapshots are actual small code files,
+not extra model/worktree copies. One GPU workload, same original sampling.
 Further candidates require fresh measured priority: PP launch density/selection,
 per-column dense reductions, two-GPU chunk overlap, grouped short MoE. Do not
 mix another optimization into this still-unqualified integration slice.

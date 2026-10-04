@@ -2498,3 +2498,18 @@ raw ROOT/runs/r5-silu-q8-85f-expanded.jsonl. Build target core-silu-q8 then run
 /core/build/core-silu-q8 in the usual exclusive gfx906 build-image container.
 All24 resident width640 A/B/A coordinates improve1.345–1.577x over separate
 launches; this is component evidence only, not integrated PP/TG or MTP speed.
+
+Fused routed-expert Session integration passes native job1791156231841-489
+(exit0/33m04): strict selected model/API targets, short and2088-row attention
+fixtures, MTP request/reset/reject/custom-stop/capacity tests,39CTest1147.26s.
+Short29,798,400 and wide1,036,984,320 logits compare with zero differences.
+Compiled6c26e2abf9bfa14f175940f0a851fe829f464bd7/dirtytrue; raw
+ROOT/runs/r5-fused-session-6c2-*, journal68. This is same-build N1 model
+self-parity plus prior component two-launch reference, not independent HF.
+
+Next paired driver ROOT/runs/r5-fused-session-ab.py rebuilds the ordinary
+core-mtp-run between the actual separate/fused Session snapshots. The saved
+core-mtp-run-baseline remains untouched and is checked unchanged. Builds and
+model loads are outside request timings; no compilation overlaps inference.
+Both variants preserve source6c26e2a/dirtytrue with explicit variant manifests,
+prompt+1024 capacity,512 outputs,primary sampling and the same4K/16K fixtures.

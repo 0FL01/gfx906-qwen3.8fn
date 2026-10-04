@@ -828,8 +828,8 @@ struct Experts {
             hip(launch_quantized_linear_tiled({TensorType::Q4_0, base, H, 640}, input, columns, d.f(16), d.stream));
             hip(launch_quantized_linear_tiled({TensorType::Q4_0, base + bytes[0], H, 640}, input, columns, d.f(17), d.stream));
         }
-        hip(launch_silu_up(d.f(16), d.f(17), columns * 640, d.f(18), d.flag(), d.stream));
-        hip(launch_quantize_q8_1(d.f(18), d.q8.get<Q8_1>(), 640, columns, d.flag(), d.stream));
+        hip(launch_silu_up_q8_1(d.f(16), d.f(17), 640, columns,
+            d.f(18), d.q8.get<Q8_1>(), d.flag(), d.stream));
         if (columns <= 3)
             hip(launch_quantized_linear({down_type, base + bytes[0] + bytes[1], 640, H}, d.q8.get<Q8_1>(), columns, d.f(19), d.stream));
         else if (columns <= linear_device_short_max_columns)
