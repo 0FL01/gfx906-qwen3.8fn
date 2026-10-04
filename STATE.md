@@ -1,38 +1,38 @@
 # Текущее состояние
 
-## Активная задача (2026-10-04 18:42 UTC)
+## Активная задача (2026-10-04 19:26 UTC)
 
 Цель: завершить ВЕСЬ план и превзойти llama.cpp на сопоставимых измерениях.
 Лично, без subagents; document+commit+push каждый законченный срез.
 
-MtpRunner/API/CLI PUSHED ec8ab033de32a800912aa081f0b31274c0232770.
-Full strict build+CTest39/39 PASS1150.55s, job146 exit0. Bounded32 teacher oracle
-and rollback/window gates passed; full long-reference/HF/modelEOS still open.
+PUSHED: MTP/API ec8ab03; matched own series8f93b1d; profile tooling7df1c74.
+Journal57 now copied and verified: own off/on/off showed no stable full-request
+win; fresh donor4K57.011/57.151s and16K144.334/144.125s (all512 outputs).
+Donor job257 COMPLETE exit0/16m05s. Earlier249 truncated at511 and is EXCLUDED.
+Donor capacity n+1024; previous own n+512. Future own paired performance must
+use n+1024. See README for timer numerators/QSA/precision/cache limits.
+Never append accepted journals/artifacts again. Prior byte prefixes preserved.
 
-Matched own off/on/off job1791136455435-163 COMPLETE exit0/44m34s.
-4K off167.087/164.721s vs on167.007s;16K off562.657/562.862s vs on563.277s.
-All six produced512 outputs; off repeats have identical full IDs. No stable
-end-to-end gain. MTP acceptance[26,31,141]/[24,35,139]; expensive verify remains.
-Compiled f59c8de/dirtytrue unchanged. Canonical journal55; old54 bytes preserved;
-controller actual raw/source/footer/IDs match and strict four off collectors PASS.
-Raw ROOT/runs/r6-matched-ec8-20261004; never append these accepted logs again.
+CURRENT candidate: ONLY two QK-dot loop pragmas changed from full unroll to1
+in src/hip/attention.hip; exact arithmetic/finite checks/precision unchanged.
+Optional --capture/--compare added to model-free attention fixture. CPU snapshot
+roundtrip+6 corruption/path rejects PASS. Old-kernel baseline268 exit0/33s captured
+52 cases/3745280 values including padding. Candidate272 exit0/33s: all saved
+values bit-identical; both GPUs CPU gates and23device/180host/6sticky checks PASS.
+Metadata: batched VGPR256/Scratch4380 ->VGPR52/Scratch0, LDS15872 unchanged.
+Component traced batched sum77.458 ->17.019ms (diagnostic only, no full-model win).
+Raw ROOT/runs/r4-attention-roll-{reference,candidate}.jsonl/.err/-trace,
+reference.bin and component-summary.json. Compiled7df1c74/dirtytrue.
 
-Diagnostic job1791139209698-232 COMPLETE exit0/9m19s: strict separate
-core-profile-prefill/core-mtp-profile builds, annotation32 exact trajectory,
-7 input rejections, PP4K and MTP4K+128 completed traces. Analyzer245 exit0/1m02s.
-Journal56 copied; exact old55 prefix and actual summary match. Source ec8ab03/dirty.
-PP dominant attention40.92% summedGPU, Q4 N8 24.43%, denseN8 10.38%.
-MTP verify attention31.90% summedGPU. Attention metadata:VGPR256/Scratch4380.
-Hypothesis next: disable full32-iteration QK-dot unroll, keep exact arithmetic;
-inspect metadata/component/full-model gates before any speed promotion.
-
-ACTIVE pinned donor comparison job1791140015374-249: four fresh isolated
-MTP2 requests4K/16K x2, exact same fixtures and explicit recovered launch args.
-Driver ROOT/runs/r6-llama-matched-host.py; private container loopback/no published
-port. Do not run another GPU workload or heavy compile until it finishes.
-Production models.ini now names another model, so it is deliberately not used.
-Matched own measurement PUSHED8f93b1dd20a5aad20e32c446cc74aecdb21ba342.
-Profiling slice is being committed separately; default measured binaries intact.
+ACTIVE native job1791141889741-275: preserve current f59 MTP executable as
+/core/build/core-mtp-run-baseline, strict full build+CTest, then actual all-layer
+core-prefill-attention-test MODEL. Original core-session-baseline is untouched.
+One baseline runtime now has separate off/on entrypoints, not model copies.
+Raw r4-attention-roll-full-regression.log, r4-attention-roll-model.jsonl/.err.
+Do not run another GPU workload/heavy compile until this gate job finishes.
+Kernel/test changes are UNCOMMITTED until full gates and measured slice close.
+Next: verify job275, then trace-off MTP baseline/candidate at4K/16K+512 with
+capacity5120/17408 and unchanged sampling, measure full requests before promotion.
 
 R0–R3 closed. R4 speed, R5 measured dispatch, full R6, R7 occupied128K/tokenizer/API
 and R8 safetensors/runtime-pack remain OPEN. Frozen correctness gates unchanged.

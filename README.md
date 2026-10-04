@@ -2255,3 +2255,49 @@ ROOT/runs/r4-profile-ec8-{driver,analyze}.py. Journal56 includes actual source,
 completion records, preflight, phase summary and metadata sample; old55 bytes
 are preserved and the copied controller summary matches exactly. Do not append
 these artifacts again. Frozen correctness gates and full-plan scope are unchanged.
+
+## Fresh pinned llama.cpp MTP2 baseline (2026-10-04)
+
+Native job1791140372565-257 completed with exit0 in16m05s. Each of four requests
+uses a fresh server process in the existing pinned image
+`llama.cpp-gfx906:pp-stream-dcd685463d`, verified revision
+`dcd685463d597d31f5ca759d32c94592a2740fa4`. HTTP is loopback inside a network-none
+container, with no published port. Explicit historical launch arguments replace
+the mutable production preset, which now selects another model.
+
+Same actual4096/16384 token-ID fixtures, target GGUF/Q8 sidecar, requested
+seed12345/temp1/top-p.95/top-k20/min-p0/repeat1/presence0,512 output tokens,
+ignore-EOS, Q4 target/draft KV,112 MoE slots,1024 batch/ubatch,16 CPU threads,
+layer split1,1 and MTP2. Every response passes the existing baseline validator,
+reports no truncation and retains actual512 output IDs. No prefix reuse; cache
+warmth is unknown. Server sampling serialization exposes top-p as FP32
+0.949999988079071; this is preserved rather than rewritten as exact double.
+
+| Request | PP tok/s | Donor TG tok/s | HTTP request s | Load-to-ready s, separate |
+| --- | ---: | ---: | ---: | ---: |
+| 4k-1 | 181.882351 | 14.848663 | 57.010654 | 125.923855 |
+| 4k-2 | 181.652874 | 14.800414 | 57.151201 | 128.996698 |
+| 16k-1 | 175.086729 | 10.093087 | 144.333988 | 136.127030 |
+| 16k-2 | 173.935029 | 10.259562 | 144.124976 | 129.095101 |
+
+Important headroom correction: the first attempt, job249, used capacity
+4096+512 and the donor server truncated at511 outputs. The strict collector
+rejected it; its raw response/logs remain in r6-llama-matched-20261004/4k-1,
+not in the accepted512 series. The corrected series uses capacity prompt+1024:
+5120/17408. Final occupied tokens_cached is4607/16895, not prefix reuse.
+Previous own off/on/off used prompt+512 allocation, so do NOT call the allocated
+capacities identical or present this as the final paired engine comparison.
+All subsequent own baseline/candidate performance runs must use prompt+1024.
+
+Donor TG divides512 by its predicted interval; own incremental TG divides511
+by its post-first-output interval. Compare completed request wall times with
+these timing boundaries disclosed. Structured0/1/2 acceptance is unavailable,
+so no histogram is reconstructed from text totals. The donor's historical QSA
+semantics are not an independent correctness oracle for the corrected core.
+
+Accepted raw directory ROOT/runs/r6-llama-matched-headroom-20261004, including
+image identity, launch/outer Docker argv, native exits, exact requests/responses
+and summaries. Reproduction driver/client are ROOT/runs/r6-llama-matched-{host,client}.py.
+Canonical journal57 preserves all56 previous records byte-for-byte; controller
+copied the actual response set and reran all four strict validations. No final
+speed win is claimed. The next own optimization remains under correctness gates.

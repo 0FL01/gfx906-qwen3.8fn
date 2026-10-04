@@ -308,3 +308,11 @@ before changing attention math. Keep all FP checks/order/precision and gates;
 check compiled metadata, component parity, full-model continuation and paired
 trace-off requests before promotion. Q4 N8 and dense N8 are next measured PP
 costs; head skipping is only2.91% of summed PP GPU duration here.
+
+### 2026-10-04 pinned donor baseline and headroom
+
+Fresh pinned llama.cpp MTP2 completed4K/16K x2 with512 actual outputs (journal57).
+4K HTTP57.011/57.151s,16K144.334/144.125s. An initial511-output truncated run was
+rejected and preserved separately. Use capacity prompt+1024 for all future own
+baseline/candidate comparisons; previous own series used prompt+512. Preserve
+TG numerator/timing-boundary differences and donor QSA semantic limitations.
