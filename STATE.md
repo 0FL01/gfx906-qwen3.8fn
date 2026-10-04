@@ -66,8 +66,12 @@ restore0.091s. No boundary-crossing trace events; diagnostic not speed result.
 Q4 tiled physicalN8 row reuse2->4 REJECTED, source reverted. Native component
 A/B/A jobs403/407/413 all exit0; exact values/CPU gates unchanged, but most
 eligible shapes slower (roughly0.71–0.97x first-A/B). Journal64 retains paired
-timings. Current runtime binaries untouched. Next bounded row1 occupancy
-experiment on the same component fixture; no full-model promotion from timings.
+timings. Current runtime binaries untouched. Row1 experiment jobs413/419/426 also
+passed all component gates but hurts dominantQ4_0 (~0.66–0.89x); Q4_1-only
+1.05–1.09x is not integrated. Source restored; journal65.
+Next: isolate expert-only wideMMQ from dense/PLE/GDN/projection changes in the
+historical failed-wide candidate; current canonical graph and correctedQ8 stay.
+Build/run only model fixture targets until qualified; current runtime preserved.
 Further candidates require fresh measured priority: PP launch density/selection,
 per-column dense reductions, two-GPU chunk overlap, grouped short MoE. Do not
 mix another optimization into this still-unqualified integration slice.
