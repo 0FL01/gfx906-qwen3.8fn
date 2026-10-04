@@ -2104,3 +2104,50 @@ All timings include diagnostic work/load; they are NOT MTP throughput evidence.
 Next: extract this tested orchestration into an opt-in reusable serving/CLI path,
 add real token-ID EOS fixtures/longer histories, then trace-off matched MTP-off/on
 requests. FullR6 and performance targets remain OPEN.
+
+### Opt-in MTP runner and token-ID CLI (2026-10-04)
+
+`MtpRunner` owns one target and its borrowing sidecar, preallocates sampler
+workspaces, warms target/teacher history, and emits terminal-aware speculative
+windows without resetting or replaying the full history. Invalid begin requests
+are rejected before reset/RNG mutation; execution failure requires a fresh begin.
+`core-mtp-run` exposes this path separately, leaving core-session unchanged:
+
+```
+core-mtp-run TARGET SIDECAR --sample --seed 12345 --generate 512 \
+  --capacity 1024 --prefill-chunk 8 --attention-query-tile 8 --ignore-eos \
+  248044 100 101 102 103 104 105 106
+```
+
+This is token-ID I/O only. GPU-only mode, explicit sampling seed and positive
+output budget are required. CPU hybrid, tracing and full-logit export are rejected
+before model load. Target verification reserves at least3 rows even if PPchunk1.
+The prompt can use chunks up to1024; MTP teacher updates consume these taps in
+N<=3 windows, retaining the previous target carry across chunk boundaries.
+Target and sidecar cache/state/pending cursors are checked after every emission.
+Structured output reports actual tokens, acceptance, RNG counts and completed
+host-wall timings. PP includes target+teacher warmup; model load is separate.
+Timing diagnostics are NOT automatically performance qualification.
+
+Source f59c8dee226225fd743b14ec525116d7a6e40382/dirtytrue:
+- Strict standalone CLI/API builds PASS. Help and7 malformed requests reject
+  before model loading (including missing seed, CPU/trace-family unsupported
+  mode, capacity/token/output overflow and unknown option).
+- CLI32: native job1791133953326-136 exit0; outputs32/consumed39,
+  acceptance[10,6,3], RNG38/46 match the checked coordinator.
+- API job1791134154542-142 exit0: full32 output IDs identical for PPchunk1/8;
+  repeated reset, active-state/RNG preservation after invalid begin, capacity48,
+  initial/replacement custom stop-token handling and EOS-vs-budget precedence PASS.
+  Those two stop-token tests use configured IDs; actual modelEOS248046 was NOT observed.
+- Full strict build and CTest39/39 PASS1150.55s; job1791134454670-146
+  nativeexit0/22m11s, including actual512 output smoke, consumed519, pending353.
+  Windows213/acceptance[44,40,129], RNG426/594. Load77836.55ms excluded;
+  completed request41560.08ms, PP957.607ms, decode40600.53ms/TG12.5860.
+  The prompt is only8 generated tokens: NOT a4K/16K PP result or a speedup claim.
+
+Raw prefix ROOT/runs/r6-run-f59: smoke32, api, preflight, full-regression and
+smoke512 artifacts. Canonical journal54 records full actual output ID arrays,
+source/completion data, API/preflight results and limits; previous53-record bytes
+are preserved exactly on remote and controller. No independent long-model/HF,
+actual modelEOS, tokenizer/HTTP or matched MTP-off/on speed claim. Next: matched
+4K/16K full requests with512 outputs; retain the existing qualified baseline.

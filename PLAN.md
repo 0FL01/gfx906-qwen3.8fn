@@ -4,6 +4,8 @@
 
 ## Что считается результатом
 
+**User reaffirmed2026-10-04:** finish the ENTIRE development plan, personally without subagents; document and commit/push every completed slice. Goal is to beat llama.cpp on comparable end-to-end measurements, not just own microbenchmarks. No correctness-gate waiver or guaranteed speed claim.
+
 Самостоятельный C++20/HIP runtime действительно выполняет модель на выделенной машине, а не вызывает llama_decode внутри новой оболочки. Он поддерживает текст, обе gfx906, RAM-experts с GPU-кешем, Q4_0 для обоих K/V-кешей target и MTP, полноценный prefill, корректный MTP2, append-history reuse и проверенный занятый контекст около 128K. Конвертер из оригинальных safetensors является отдельным обязательным результатом. Новый низкобитный квант является исследованием после рабочего pack, а не условием для первого запуска.
 
 Сначала функциональный результат на существующих весах. Затем выигрыш полного запроса. API-обвязка не должна задерживать inference core.
@@ -212,8 +214,7 @@ The test-only trained coordinator now couples SpeculativeSampler to target verif
 teacher rebuild and restore. Seven native cases pass, including55 replay-checked
 windows with actual0/1/2 acceptance[33,10,12], restored target/draft continuation
 and an uninterrupted32-output equivalence check. EOS-enabled case emitted no EOS.
-Next: reusable opt-in serving/CLI path, actual EOS and longer-history fixtures,
-then matched MTP-off/on performance; no speed promotion from diagnostic runs.
+Opt-in reusable MtpRunner and core-mtp-run now pass strict build/39CTest, API request/reset/rejection/stop fixtures and generated8+512 output smoke. Journal54. Actual modelEOS and longer-reference qualification remain open. Next: matched4K/16K MTP-off/on, external llama.cpp baseline and measured optimization; no speed promotion from smoke runs.
 
 
 **Bounded R6 prerequisite slice ACCEPTED/CLOSED, correctness ONLY; R6_complete_claim=false.** Actual run831 DONE/native exit0. Snapshot строго `ba446f9266ab2dc4c0aa4e73d8930a5534c4b2a2`/dirtytrue, не futurecommit. MCP job `1791103589280-831` получил `state_lost/background_channel_closed_without_exit_status` после14m15s; READONLY Docker daemon die event ORIGINAL контейнера `core-r6-prerequisites-check` установил nativeexit0/2772s46m12s без повторного run. ContainerID `35ed6fbda1d6c386cb1d84819addcaf4650460044619ba658867de52e73a0644`, time1791106362/timeNano1791106362809343377; downloadedignored proof `runs/r6-prerequisites-ba-a-exit-proof.json`719B. Strictfull CXX20/HIP20 Release gfx906/allwarnings/ffp-contractoff PASS, CTest39/39 actual1145.49s. MtpModel666checks/451rejects и Specpuremath35963782checks/715rejects/5522274hotcalls zeroheap PASS; это НЕ trainedMTP.

@@ -1,6 +1,21 @@
 # Текущее состояние
 
-## Активная задача (2026-10-04 16:34 UTC)
+## Активная задача (2026-10-04 17:21 UTC)
+
+Цель пользователя2026-10-04: завершить ВЕСЬ план и превзойти llama.cpp на
+сопоставимых измерениях. Лично, без subagents; document+commit+push каждый срез.
+
+Opt-in MtpRunner/core-mtp-run/API tests готовы к commit поверх f59c8de (PUSHED).
+Файлы src/mtp_runner.{hpp,cpp},mtp_run.cpp,mtp_runner_test.cpp +CMake.
+Full job1791134454670-146 nativeexit0/22m11s, strict build+CTest39/39 1150.55s.
+CLI512:8prompt/512outputs/consumed519,213windows/accept[44,40,129],RNG426/594;
+request41560.08ms/load77836.55ms separate/TG12.586. Smoke only, not4K/16K evidence.
+API native142:PPchunk8 vs CLIchunk1 full32IDs equal;repeat/reset,invalidrequest
+preservation,capacity48,2 custom stop-token branches PASS; actualEOS248046 unseen.
+Help+7 CLI negative cases PASS. Canonical journal54/old53byteprefix preserved.
+Raw prefix ROOT/runs/r6-run-f59. No active GPU process after146.
+Next: commit/push this runner slice, then paired own MTP-off/on4K/16K+512;
+external llama.cpp comparison and PP optimization. No 400–600PP/30–40TG claim.
 
 R0–R3 закрыты. Bounded trained MTP forward/teacher diagnostic slice реализован
 и проверен; полный R6/MTP2 ещё OPEN. Test-only stochastic coordinator уже
