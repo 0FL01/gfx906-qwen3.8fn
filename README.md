@@ -2060,3 +2060,47 @@ library revision and a NEW output named mtp-teacher-oracle. Its mandatory
 --dense-short-canonical`; add `--capture-intermediates` only for diagnosis.
 Never reuse an existing output directory. Use explicit /bin/sh for multi-step
 commands reached through ssh: amude's login shell is not a POSIX-sh guarantee.
+
+### R6 trained stochastic-window coordinator fixture (2026-10-04)
+
+`core-mtp-window-test TARGET SIDECAR` is a runnable test-only coordinator, not
+an enabled production CLI mode. It couples real MtpSession proposals to the
+existing filtered SpeculativeSampler, target verify windows, teacher-history
+rebuild and independent target(relative)/draft(absolute) prefix restoration.
+The last emitted token remains pending and is excluded from both consumed
+histories. The trained block is recursively reused for the second proposal.
+No weights, precision, top-k, sampler formula or numerical gate was changed.
+
+Actual source961150d3bc155025ec7e1dfa78eb4db47405fbf5/dirtytrue; strict target
+build and job1791132994108-105 nativeexit0 in180s. Raw artifacts:
+ROOT/runs/r6-window-961-live-build.log, -live.jsonl, -live.err.
+Six replay-checked cases use generated8-token prompt BOS248044,100..106,
+capacity48/cache112, temp1/top-p.95/top-k20 and explicit seeds. Budgets1/2/3
+exercise the initial pending draw and reduced horizons; budgets32/41 exercise
+many stochastic windows and the actual capacity boundary48; budget16 enables
+EOS handling but no actual EOS occurred. No model-level EOS coverage is claimed.
+
+Across55 replay-checked windows, acceptance histogram[0,1,2]=[33,10,12].
+22,100,480 retained target logits,13,409,280 draft continuation logits and
+13,409,280 ACTUAL restored-target continuation logits match independent
+same-runtime sequential replay with maxabs0. The continuation check runs
+BEFORE resetting owners, so it exercises the restored GDN/PLE/QSA state rather
+than only comparing cached pre-restore verify output. Invisible suffixes are
+subsequently overwritten by normal processing. This is state self-consistency,
+not another independent model-reference qualification.
+
+A seventh case executes32 outputs without any intermediate reset/replay.
+Its entire output ID vector, acceptance histogram[10,6,3] and RNG draw counts
+(proposal38,decision46) match the corresponding checked case exactly. The file
+serializes the equality assertion/result and counters, not all output vectors.
+The speculative proposal/initial stream uses seed12345; correction stream uses
+seed XOR0x9e3779b97f4a7c15. No baseline-RNG-stream or throughput equality is claimed.
+
+The initial simpler run97(nativeexit0) is retained as journal52. Strengthened
+continuation/live run105 is journal53; the prior51-record byte-prefix history was
+preserved and both records copied back to the controller. Intermediate
+restore-only job102(nativeexit0) is raw diagnosis, not a duplicate journal append.
+All timings include diagnostic work/load; they are NOT MTP throughput evidence.
+Next: extract this tested orchestration into an opt-in reusable serving/CLI path,
+add real token-ID EOS fixtures/longer histories, then trace-off matched MTP-off/on
+requests. FullR6 and performance targets remain OPEN.

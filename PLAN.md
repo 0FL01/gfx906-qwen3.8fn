@@ -208,9 +208,12 @@ Raw donor/direct-division and batched-donor N2/N3 are NOT qualified: retain thei
 numerical failures and the documented batch-sensitive FFN/head witness.
 Canonical journal51 includes successes AND failed controls. No wholeR6,
 HF equivalence, longer-history or MTP throughput claim. See README R6 trained forward.
-Next implementation: connect trained proposals to existing SpeculativeSampler,
-verify/teacher-rebuild/restore and terminal-aware pending token handling; measure
-real0/1/2 acceptance windows before performance promotion.
+The test-only trained coordinator now couples SpeculativeSampler to target verify,
+teacher rebuild and restore. Seven native cases pass, including55 replay-checked
+windows with actual0/1/2 acceptance[33,10,12], restored target/draft continuation
+and an uninterrupted32-output equivalence check. EOS-enabled case emitted no EOS.
+Next: reusable opt-in serving/CLI path, actual EOS and longer-history fixtures,
+then matched MTP-off/on performance; no speed promotion from diagnostic runs.
 
 
 **Bounded R6 prerequisite slice ACCEPTED/CLOSED, correctness ONLY; R6_complete_claim=false.** Actual run831 DONE/native exit0. Snapshot строго `ba446f9266ab2dc4c0aa4e73d8930a5534c4b2a2`/dirtytrue, не futurecommit. MCP job `1791103589280-831` получил `state_lost/background_channel_closed_without_exit_status` после14m15s; READONLY Docker daemon die event ORIGINAL контейнера `core-r6-prerequisites-check` установил nativeexit0/2772s46m12s без повторного run. ContainerID `35ed6fbda1d6c386cb1d84819addcaf4650460044619ba658867de52e73a0644`, time1791106362/timeNano1791106362809343377; downloadedignored proof `runs/r6-prerequisites-ba-a-exit-proof.json`719B. Strictfull CXX20/HIP20 Release gfx906/allwarnings/ffp-contractoff PASS, CTest39/39 actual1145.49s. MtpModel666checks/451rejects и Specpuremath35963782checks/715rejects/5522274hotcalls zeroheap PASS; это НЕ trainedMTP.

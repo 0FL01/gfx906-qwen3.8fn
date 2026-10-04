@@ -3,14 +3,30 @@
 ## Активная задача (2026-10-04 16:34 UTC)
 
 R0–R3 закрыты. Bounded trained MTP forward/teacher diagnostic slice реализован
-и проверен; полный R6/MTP2 ещё OPEN. Следующий код: coordinator вокруг
-MtpSession + Session::verify_window + SpeculativeSampler, teacher rebuild,
-restore и pending/EOS/output-budget. Не менять frozen tolerances.
+и проверен; полный R6/MTP2 ещё OPEN. Test-only stochastic coordinator уже
+проверен; следующий код — reusable opt-in serving/CLI плюс реальный EOS
+и длинная история. Не менять frozen tolerances.
 R4 PP speed, R5 measured dispatch, R7 occupied32K/64K/128K+tokenizer/API,
 R8 safetensors/runtime-pack также OPEN. Цели400–600PP/30–40TG не достигнуты.
 Работать лично, без subagents; завершённые срезы документировать, commit/push.
 
 ## Текущий результат
+
+### Новый window-срез 2026-10-04 17:01 UTC
+
+core-mtp-window-test — test-only coordinator real proposals/SpeculativeSampler/
+verify/teacher-rebuild/restore. Source961150d/dirtytrue; strict target build,
+job1791132994108-105 nativeexit0/180s, ROOT/runs/r6-window-961-live.{jsonl,err}.
+Six checked cases+uninterrupted32:55 checkedwindows/accept[33,10,12],
+22100480target+13409280draft+13409280restored-target-continuation compares,
+maxabs0. Live32 exactsame fullIDs/accept[10,6,3]/RNG38+46 as replayed32.
+Capacity48 boundary reached; actual EOS NOT observed. No throughput evidence.
+Canonical journal53, previous51byteprefix preserved; records52basic/53strengthened.
+First boundedforward commit961150d PUSHED+remoteHEAD verified. GitHub key user
+specified ~/.ssh/nc-lab; use per-command GIT_SSH_COMMAND with StrictHostKeyChecking.
+No GPU job running after105. Next: production opt-in coordinator/CLI, realEOS
+and longer-history tests, matched performance. FullR6 stillOPEN.
+
 
 Compiled source d2f948ae44f5172dd2395fdbf1723e0b1ddd6237/dirtytrue, не closurecommit.
 Job1791130233817-73 nativeexit0/20m51s: strict C++20/HIP20 Release gfx906,
