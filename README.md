@@ -2467,3 +2467,15 @@ qualify speed. Run python3 ROOT/runs/r4-tiled-session-ab.py for trace-off A/B/A
 4K/16K+512, baseline core-mtp-run-baseline7df1c74/dirtytrue and candidate
 core-mtp-run60d341e/dirtytrue, headroom1024, slots112, chunk1024, attention tile8,
 seed12345, temperature1/top-p.95/top-k20, ignoreEOS. No competing GPU work/build.
+
+Selective tiled Session speed qualification: native job1791150716560-382
+finished exit0/34m10. Trace-off fresh-process A/B/A, capacity prompt+1024:
+4K A126.127/127.737s vs B111.971s (meanA/B1.133616), PP58.510/TG12.177;
+16K A397.990/397.574s vs B338.686s (1.174487), PP55.161/TG12.266.
+All512 output IDs, acceptance histogram, sampler draws and pending state match
+within each triplet. Allsix actual raw sources/footers/manifests were copied and
+revalidated; canonical journal62. Raw ROOT/runs/r4-tiled-session-ab-20261004.
+This accepts the selective dispatch for these workloads only. Pinned llama
+full requests remain faster (~57/~144s); no final speed target is met.
+A is rolled7df1c74/dirtytrue, B tiled60d341e/dirtytrue. Baseline executable still
+contains A; no subsequent build/profiling should relabel these historical runs.

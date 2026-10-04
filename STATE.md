@@ -1,6 +1,6 @@
 # Текущее состояние
 
-## Активная задача (2026-10-04 21:50 UTC)
+## Активная задача (2026-10-04 22:28 UTC)
 
 Цель: завершить ВЕСЬ план и превзойти llama.cpp на сопоставимых измерениях.
 Лично, без subagents; document+commit+push каждый законченный срез.
@@ -46,10 +46,21 @@ Raw ROOT/runs/r4-tiled-session-60d-probe4k.{jsonl,err,manifest.json}.
 Full strict build job1791149284220-364 COMPLETE nativeexit0/20m14s:
 39/39 CTest passed1156.03s. Actual raw gates/probe copied to controller, collectors
 rerun; canonical journal61 copied with old60-byteprefix unchanged.
-Correctness integration ready for commit; trace-off MTP A/B/A4K/16K+512 next,
-against preserved rolled7df baseline, capacities5120/17408, identical sampling.
-Driver ROOT/runs/r4-tiled-session-ab.py. Candidate binary60d341e/dirtytrue;
-do not retag compiled provenance to the closure commit. No speed promotion yet.
+Correctness integration PUSHED7f54d409f1e01c556aad5122efc8c9dc1545cc1c.
+Matched trace-off job1791150716560-382 COMPLETE nativeexit0/34m10.
+4K A126.127/127.737s -> B111.971s,1.133616x,PP58.51046/TG12.17687.
+16K A397.990/397.574s -> B338.686s,1.174487x,PP55.16066/TG12.26576.
+All512 output IDs/acceptance/RNG/pending identical inside both triplets.
+Actual six raw runs/manifests copied and validated; journal62 old61 prefix exact.
+A=rolled7df1c74/dirtytrue; B=tiled60d341e/dirtytrue; capacities5120/17408.
+Selective dispatch accepted for measured workloads, not full-plan/llama win.
+Baseline executable remains7df: attempted overwrite with accepted candidate was
+blocked by action review; no overwrite happened. Do not circumvent the block.
+Candidate core-mtp-run remains60d. Original core-session-baseline untouched.
+ACTIVE diagnostic job1791152862637-393: separate traced PP4K/MTP4K+128, raw
+ROOT/runs/r4-profile-tiled-20261004. No other GPU workload or heavy build.
+Next: inspect completed phase summaries, select next measured bottleneck and
+continue full plan. Closure commits do not retag compiled binary provenance.
 Further candidates require fresh measured priority: PP launch density/selection,
 per-column dense reductions, two-GPU chunk overlap, grouped short MoE. Do not
 mix another optimization into this still-unqualified integration slice.
