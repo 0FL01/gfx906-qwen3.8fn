@@ -427,15 +427,21 @@ struct Matrix {
     int input = 0, output = 0;
     Buffer data;
     void apply(Device& d, const float* x, float* y, int columns) const {
-        // KEEP canonical Columns1..8 arithmetic for every projection, including decoded BF16.
-        // Only launch geometry is sliced; logical columns and token strides stay intact.
-        const int limit = 8;
-        for (int first = 0; first < columns; first += limit) {
-            const int count = std::min(limit, columns - first);
+        // KEEP canonical physical N<=8 arithmetic. Component A/B/A supports
+        // tiled quantized projections and small-output dense; large dense stays
+        // on the original N8 launches (its tiled-grid case regressed).
+        const bool dense = type == TensorType::F32 || type == TensorType::BF16 || type == TensorType::F16;
+        for (int first = 0; first < columns;) {
+            const int remaining = columns - first;
+            const bool tiled = remaining >= 16 && (!dense || output <= 512);
+            const int count = std::min(tiled ? linear_device_tiled_max_columns : 8, remaining);
             const auto* source = x + first * input;
             auto* destination = y + first * output;
-            if (type == TensorType::F32 || type == TensorType::BF16 || type == TensorType::F16) {
-                blas(launch_dense_linear(d.handle, {data.get(), input, output}, source, count, destination, d.stream));
+            if (dense) {
+                if (tiled)
+                    blas(launch_dense_linear_tiled(d.handle, {data.get(), input, output}, source, count, destination, d.stream));
+                else
+                    blas(launch_dense_linear(d.handle, {data.get(), input, output}, source, count, destination, d.stream));
             } else {
                 hip(launch_quantize_q8_1(source, d.q8.get<Q8_1>(), input, count, d.flag(), d.stream));
                 if (count <= 3)
@@ -443,10 +449,11 @@ struct Matrix {
                 else if (count <= linear_device_short_max_columns)
                     hip(launch_quantized_linear_short({type, data.get<void>(), input, output}, d.q8.get<Q8_1>(), count, destination, d.stream));
                 else {
-                    hip(launch_q8_1_to_mmq(d.q8.get<Q8_1>(), input, count, d.ds4.get<Q8MmqBlock>(), d.stream));
-                    hip(launch_mmq_linear({type, data.get<void>(), input, output}, d.ds4.get<Q8MmqBlock>(), count, destination, d.stream));
+                    hip(launch_quantized_linear_tiled({type, data.get<void>(), input, output},
+                        d.q8.get<Q8_1>(), count, destination, d.stream));
                 }
             }
+            first += count;
         }
     }
 };
@@ -818,9 +825,8 @@ struct Experts {
             hip(launch_quantized_linear_short({TensorType::Q4_0, base, H, 640}, input, columns, d.f(16), d.stream));
             hip(launch_quantized_linear_short({TensorType::Q4_0, base + bytes[0], H, 640}, input, columns, d.f(17), d.stream));
         } else {
-            hip(launch_q8_1_to_mmq(input, H, columns, d.ds4.get<Q8MmqBlock>(), d.stream));
-            hip(launch_mmq_linear({TensorType::Q4_0, base, H, 640}, d.ds4.get<Q8MmqBlock>(), columns, d.f(16), d.stream));
-            hip(launch_mmq_linear({TensorType::Q4_0, base + bytes[0], H, 640}, d.ds4.get<Q8MmqBlock>(), columns, d.f(17), d.stream));
+            hip(launch_quantized_linear_tiled({TensorType::Q4_0, base, H, 640}, input, columns, d.f(16), d.stream));
+            hip(launch_quantized_linear_tiled({TensorType::Q4_0, base + bytes[0], H, 640}, input, columns, d.f(17), d.stream));
         }
         hip(launch_silu_up(d.f(16), d.f(17), columns * 640, d.f(18), d.flag(), d.stream));
         hip(launch_quantize_q8_1(d.f(18), d.q8.get<Q8_1>(), 640, columns, d.flag(), d.stream));
@@ -829,8 +835,8 @@ struct Experts {
         else if (columns <= linear_device_short_max_columns)
             hip(launch_quantized_linear_short({down_type, base + bytes[0] + bytes[1], 640, H}, d.q8.get<Q8_1>(), columns, d.f(19), d.stream));
         else {
-            hip(launch_q8_1_to_mmq(d.q8.get<Q8_1>(), 640, columns, d.ds4.get<Q8MmqBlock>(), d.stream));
-            hip(launch_mmq_linear({down_type, base + bytes[0] + bytes[1], 640, H}, d.ds4.get<Q8MmqBlock>(), columns, d.f(19), d.stream));
+            hip(launch_quantized_linear_tiled({down_type, base + bytes[0] + bytes[1], 640, H},
+                d.q8.get<Q8_1>(), columns, d.f(19), d.stream));
         }
     }
     void run(Device& d, int id, const Q8_1* input, float weight, SessionStats& stats) {
@@ -876,6 +882,7 @@ struct Experts {
         hip(hipStreamWaitEvent(d.stream, stage.copy_ready, 0));
     }
     void run_chunk(Device& d, const Q8_1* original, SessionStats& stats) {
+        static_assert(microtile_tokens == linear_device_tiled_max_columns);
         std::array<int, 512> active{};
         int count = 0;
         for (int expert = 0; expert < 512; ++expert) if (!d.routes->group(expert).empty()) active[count++] = expert;
@@ -886,11 +893,13 @@ struct Experts {
             stage_band(d, stage, std::span(active).subspan(first, length), stats);
             for (int i = 0; i < length; ++i) {
                 const auto group = d.routes->group(active[first + i]);
-                for (int begin = 0; begin < static_cast<int>(group.size()); begin += linear_device_short_max_columns) {
-                    const int columns = std::min(linear_device_short_max_columns, static_cast<int>(group.size()) - begin);
+                for (int begin = 0; begin < static_cast<int>(group.size());) {
+                    const int remaining = static_cast<int>(group.size()) - begin;
+                    const int columns = std::min(remaining >= 16 ? microtile_tokens : linear_device_short_max_columns, remaining);
                     d.gather_routes(original, group, begin, columns);
                     project(d, stage.data.get<std::byte>() + i * total(), gathered, columns);
                     d.scatter_routes(group, begin, columns);
+                    begin += columns;
                 }
             }
             hip(hipEventRecord(stage.consumer_done, d.stream));

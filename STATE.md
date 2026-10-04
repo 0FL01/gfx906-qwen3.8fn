@@ -1,6 +1,6 @@
 # Текущее состояние
 
-## Активная задача (2026-10-04 20:48 UTC)
+## Активная задача (2026-10-04 21:50 UTC)
 
 Цель: завершить ВЕСЬ план и превзойти llama.cpp на сопоставимых измерениях.
 Лично, без subagents; document+commit+push каждый законченный срез.
@@ -26,10 +26,33 @@ Legacy short/dense regressions pass; source296ea56/dirtytrue. Component APIs
 support logicalN<=128 with physicalN8 grid tiles and original tails, no new math.
 Measured candidate policy: only remainingN>=16; quantized or dense output<=512.
 Large F32 output2560 is slower (~0.76x atN128) and must keep original N8 dispatch.
-Primitive slice is being committed; Session STILL UNCHANGED. No GPU job active.
-Next: minimal selective Matrix/project/group integration, short+wide full-model
-correctness, then complete regression and matched requests. Keep rolled7df MTP
-baseline unchanged during integration. Overall speed goals remain open.
+Primitive slice PUSHED60d341ebbacbbe6fecd5fbea00dadf9376bc2474.
+Session integration is now a41-line diff: Matrix uses logical<=128 only for
+remaining>=16 and quantized/small-output dense; expert gather/project groups
+use<=128 with legacy<16 tails. All dot arithmetic remains physicalN<=8; no new
+allocation or policy knob. Bounded full-model correctness passed; speed qualification pending.
+
+Integration model job1791147708773-356 COMPLETE exit0/12m21s. Strict selected
+build, short32 and full2088-row attention/continuation gates PASS; both remote
+collectors pass. Short29798400 and wide1036984320 compared logits have zero
+violations and diagnostic bit mismatches. Source60d341e/dirtytrue; not HF proof.
+
+Single diagnostic probe1791148740791-363 COMPLETE exit0/3m22s:4K+512,
+capacity5120. PP57.87835/TG11.66061/request114.59362s/load79.97922s separate.
+All512 IDs/acceptance/RNG/pending match the prior rolled request. This is ONE
+probe, not paired speed promotion; TG variation must be checked in the series.
+Raw ROOT/runs/r4-tiled-session-60d-probe4k.{jsonl,err,manifest.json}.
+
+Full strict build job1791149284220-364 COMPLETE nativeexit0/20m14s:
+39/39 CTest passed1156.03s. Actual raw gates/probe copied to controller, collectors
+rerun; canonical journal61 copied with old60-byteprefix unchanged.
+Correctness integration ready for commit; trace-off MTP A/B/A4K/16K+512 next,
+against preserved rolled7df baseline, capacities5120/17408, identical sampling.
+Driver ROOT/runs/r4-tiled-session-ab.py. Candidate binary60d341e/dirtytrue;
+do not retag compiled provenance to the closure commit. No speed promotion yet.
+Further candidates require fresh measured priority: PP launch density/selection,
+per-column dense reductions, two-GPU chunk overlap, grouped short MoE. Do not
+mix another optimization into this still-unqualified integration slice.
 
 R0–R3 closed. R4 speed, R5 measured dispatch, full R6, R7 occupied128K/tokenizer/API
 and R8 safetensors/runtime-pack remain OPEN. Frozen correctness gates unchanged.

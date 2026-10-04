@@ -2439,3 +2439,31 @@ includes all expanded timings, both device results and old-path regressions.
 Controller copied the actual expanded stream and matched it to the journal.
 The APIs are not yet wired into Session at this closure. Full-model state/
 continuation and trace-off request measurements are mandatory after integration.
+
+### Selective canonical tiled Session integration (2026-10-04)
+
+Matrix dispatch now joins physical N8 tiles for logical remaining N>=16,
+up to128, only for quantized projections or dense output<=512. Larger dense
+retains the measured original N8 path. Expert gather/project/scatter similarly
+uses bounded groups up to128 with the same physical arithmetic and original-rank
+fold. No weights, workspace allocation, precision or QSA budget changes.
+
+Source60d341ebbacbbe6fecd5fbea00dadf9376bc2474/dirtytrue:
+selected build and both model fixtures (job356), then full strict build/39CTest
+(job364,nativeexit0,1156.03s tests) pass. Short29,798,400 and wide1,036,984,320
+logit comparisons have zero violations and diagnostic bit mismatches. These
+are same-build N1 references, not independent HF proof; cross-build component
+bit parity is recorded in the preceding primitive slice.
+
+Actual reproduction uses tools/build.sh, core-prefill-test and
+core-prefill-attention-test with the unchanged target GGUF. Raw logs are
+ROOT/runs/r4-tiled-session-60d-{short,attention}.jsonl and
+ROOT/runs/r4-tiled-session-60d-full-regression.log; ROOT means
+/home/radneon/gfx906-core. Canonical results.jsonl record61 contains provenance.
+
+One diagnostic4K+512 MTP request gave114.5936s, PP57.878/TG11.661, with every
+output ID/acceptance/RNG/pending matching the rolled predecessor. This does not
+qualify speed. Run python3 ROOT/runs/r4-tiled-session-ab.py for trace-off A/B/A
+4K/16K+512, baseline core-mtp-run-baseline7df1c74/dirtytrue and candidate
+core-mtp-run60d341e/dirtytrue, headroom1024, slots112, chunk1024, attention tile8,
+seed12345, temperature1/top-p.95/top-k20, ignoreEOS. No competing GPU work/build.
