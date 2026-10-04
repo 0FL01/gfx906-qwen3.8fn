@@ -2151,3 +2151,55 @@ source/completion data, API/preflight results and limits; previous53-record byte
 are preserved exactly on remote and controller. No independent long-model/HF,
 actual modelEOS, tokenizer/HTTP or matched MTP-off/on speed claim. Next: matched
 4K/16K full requests with512 outputs; retain the existing qualified baseline.
+
+## Matched MTP off/on/off requests (2026-10-04)
+
+Native series job `1791136455435-163` completed with exit 0 in 44m34s.
+The already-built source remained `f59c8dee226225fd743b14ec525116d7a6e40382`,
+dirty=true, for all six requests; it was not rebuilt or retagged for closure.
+The target GGUF, exact saved 4096/16384 token-ID fixtures, seed 12345,
+temperature 1, top-p .95, top-k 20, ignore-EOS, 512 actual outputs, chunk 1024,
+112 expert slots per layer, attention tile 8 and CPU-off mode are matched.
+Each process starts fresh with no prefix reuse; expert-cache warmth is unknown.
+MTP owns its additional Q8 sidecar and workspace, so equal target slots do not
+mean identical total VRAM. The original qualified core-session-baseline is intact.
+
+| Request | MTP | PP tok/s | TG tok/s | Full request s | Load s, separate |
+| --- | --- | ---: | ---: | ---: | ---: |
+| 4k-A1 | off | 35.458543 | 9.908767 | 167.087150 | 74.851181 |
+| 4k-B | on | 35.055268 | 10.187122 | 167.007184 | 75.681456 |
+| 4k-A2 | off | 35.921420 | 10.080275 | 164.721197 | 80.333066 |
+| 16k-A1 | off | 32.149104 | 9.635982 | 562.657292 | 72.282550 |
+| 16k-B | on | 31.877007 | 10.365109 | 563.277182 | 75.490743 |
+| 16k-A2 | off | 32.131512 | 9.649570 | 562.861627 | 76.878152 |
+
+No stable end-to-end speedup is promoted. MTP request time is 167.007 s at 4K
+against off repeats 167.087/164.721 s; at 16K it is 563.277 s against
+562.657/562.862 s. Mean-off/on request ratios are 0.993395 and 0.999081.
+MTP accepts 0/1/2 drafts in [26,31,141] and [24,35,139] windows respectively.
+Both off repeats reproduce all 512 output IDs exactly within each length.
+On/off output equality is not required: speculative sampling consumes different
+random streams. Counts, pending/consumed contracts, finite timings and all six
+native exits passed. This is performance accounting, not new long-logit or HF
+parity qualification. Actual model-EOS handling is not qualified by ignore-EOS.
+
+Both TG rates use 511 post-first-output tokens. MTP PP includes target and
+teacher warmup plus first-output sampling; off PP excludes first-output sampling.
+Full request is completed host wall including sampling/output IO, with load
+separate. MTP verify_ms includes CPU distribution filtering and decisions, not
+just GPU execution. These distinctions are retained in the journal.
+
+Raw artifacts: `ROOT/runs/r6-matched-ec8-20261004/{4k,16k}-{A1,B,A2}`
+with `.jsonl`, `.err`, `.manifest.json`, `.summary.json`; manifests retain full
+actual Docker argv and native status. Fixtures are in the same directory.
+Driver/validator: `ROOT/runs/r6-matched-ec8-{driver,collect}.py`. Do not blindly
+rerun the append: canonical `ROOT/results.jsonl` now has 55 records, with the
+previous 54-record byte prefix unchanged. The controller copied all six actual
+raws, matched source/footer/output arrays to the journal, and reran the strict
+existing collector on all four off requests. No duplicate historical append.
+
+Next: phase-separated PP and MTP verification profiling, followed by targeted
+optimization and a fresh pinned llama.cpp comparison. R4–R8 and the overall
+performance goal remain open. The mutable production models.ini now names a
+different model; matched donor runs must use explicit recovered launch arguments,
+not that preset. No model or precision change is authorized by this measurement.

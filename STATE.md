@@ -1,29 +1,35 @@
 # Текущее состояние
 
-## Активная задача (2026-10-04 17:21 UTC)
+## Активная задача (2026-10-04 18:42 UTC)
 
-Цель пользователя2026-10-04: завершить ВЕСЬ план и превзойти llama.cpp на
-сопоставимых измерениях. Лично, без subagents; document+commit+push каждый срез.
+Цель: завершить ВЕСЬ план и превзойти llama.cpp на сопоставимых измерениях.
+Лично, без subagents; document+commit+push каждый законченный срез.
 
-Opt-in MtpRunner/core-mtp-run/API tests готовы к commit поверх f59c8de (PUSHED).
-Файлы src/mtp_runner.{hpp,cpp},mtp_run.cpp,mtp_runner_test.cpp +CMake.
-Full job1791134454670-146 nativeexit0/22m11s, strict build+CTest39/39 1150.55s.
-CLI512:8prompt/512outputs/consumed519,213windows/accept[44,40,129],RNG426/594;
-request41560.08ms/load77836.55ms separate/TG12.586. Smoke only, not4K/16K evidence.
-API native142:PPchunk8 vs CLIchunk1 full32IDs equal;repeat/reset,invalidrequest
-preservation,capacity48,2 custom stop-token branches PASS; actualEOS248046 unseen.
-Help+7 CLI negative cases PASS. Canonical journal54/old53byteprefix preserved.
-Raw prefix ROOT/runs/r6-run-f59. No active GPU process after146.
-Next: commit/push this runner slice, then paired own MTP-off/on4K/16K+512;
-external llama.cpp comparison and PP optimization. No 400–600PP/30–40TG claim.
+MtpRunner/API/CLI PUSHED ec8ab033de32a800912aa081f0b31274c0232770.
+Full strict build+CTest39/39 PASS1150.55s, job146 exit0. Bounded32 teacher oracle
+and rollback/window gates passed; full long-reference/HF/modelEOS still open.
 
-R0–R3 закрыты. Bounded trained MTP forward/teacher diagnostic slice реализован
-и проверен; полный R6/MTP2 ещё OPEN. Test-only stochastic coordinator уже
-проверен; следующий код — reusable opt-in serving/CLI плюс реальный EOS
-и длинная история. Не менять frozen tolerances.
-R4 PP speed, R5 measured dispatch, R7 occupied32K/64K/128K+tokenizer/API,
-R8 safetensors/runtime-pack также OPEN. Цели400–600PP/30–40TG не достигнуты.
-Работать лично, без subagents; завершённые срезы документировать, commit/push.
+Matched own off/on/off job1791136455435-163 COMPLETE exit0/44m34s.
+4K off167.087/164.721s vs on167.007s;16K off562.657/562.862s vs on563.277s.
+All six produced512 outputs; off repeats have identical full IDs. No stable
+end-to-end gain. MTP acceptance[26,31,141]/[24,35,139]; expensive verify remains.
+Compiled f59c8de/dirtytrue unchanged. Canonical journal55; old54 bytes preserved;
+controller actual raw/source/footer/IDs match and strict four off collectors PASS.
+Raw ROOT/runs/r6-matched-ec8-20261004; never append these accepted logs again.
+
+ACTIVE diagnostic job1791139209698-232: strict optional core-profile-prefill and
+core-mtp-profile builds PASS, then annotation32 parity and separate ROCTX PP4K /
+MTP4K+128 traces. Source ec8ab03/dirtytrue. Diagnostic targets are SEPARATE;
+core-session, core-mtp-run and the saved core-session-baseline are not replaced.
+New local profile files/CMake/annotations remain uncommitted until validated.
+Do not launch another GPU workload or heavy compile during the diagnostic.
+Next: inspect phase timelines, choose measured optimization, run fresh pinned
+llama.cpp MTP2 with matching fixtures. Production models.ini CHANGED to another
+model: use explicit recovered historical args, not the mutable preset.
+
+R0–R3 closed. R4 speed, R5 measured dispatch, full R6, R7 occupied128K/tokenizer/API
+and R8 safetensors/runtime-pack remain OPEN. Frozen correctness gates unchanged.
+No 400–600PP/30–40TG or llama.cpp win claim.
 
 ## Текущий результат
 

@@ -288,3 +288,13 @@ Verify использует grouped N=2/3 expert path R5, а не несколь
 Кандидат отклоняется при необъяснённой correctness-регрессии, подтверждённом ухудшении полного запроса или выигрыше только на игрушечной форме. Недостаточный выигрыш означает следующую гипотезу, а не создание универсального autotuner.
 
 В STATE.md оставлять следующую физически выполнимую команду или изменение. Не заканчивать запись словами «продолжить оптимизацию» без указания конкретного участка.
+
+### 2026-10-04 matched MTP measurement checkpoint
+
+Own off/on/off 4K and 16K, 512 outputs each, completed natively (job163 exit0).
+Canonical journal55 preserves old54 bytes and actual compiled f59c8de/dirty provenance.
+No full-request gain: mean-off/on ratios0.993395/0.999081. Draft acceptance is high
+([26,31,141]/[24,35,139]); target verification plus CPU filtering/decision dominates
+the MTP decode timer. Do not promote smoke TG12.59 or this non-winning result.
+Next is phase-separated current profiling, targeted measured optimization, and
+matched pinned llama.cpp baseline. The entire plan remains active and unfinished.
