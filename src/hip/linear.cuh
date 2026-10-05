@@ -81,6 +81,8 @@ struct QuantizedDeviceMatrix {
 // Logical N1..128, exact canonical <=8-column microtiles. Full N8 tiles share
 // one grid with an independent y dimension; a final N1..7 tail uses the original
 // short kernel. No wider dot, DS4 conversion, workspace or arithmetic change.
+// For Q4_0/Q4_1 K640,M<=2560,N>=16, three output rows share a packed128-thread
+// CTA; original40 active partials,+0wave merge and sum64 publication are exact.
 // Full logical ranges/aliases are validated before ANY enqueue. Existing N<=3
 // and N<=8 entrypoints keep their limits. Same stream/lifetime contract above.
 [[nodiscard]] hipError_t launch_quantized_linear_tiled(QuantizedDeviceMatrix matrix,

@@ -2739,3 +2739,39 @@ loop. Pack six40-lane output rows in256threads, store original64-lane partials
 with explicit old wave1+0, then use the same sum64 and original output lane.
 This preserves per-output arithmetic but changes occupancy/reuse. Unimplemented
 and unqualified at this checkpoint; measure both-GPU exact gates and A/B/A first.
+
+
+The packed K640 Q4 component passes exact old-short parity on both GPUs:
+530cases/device,530126594 exact GPU values,172996 CPU samples,21host rejects,
+528graph checks. PhysicalN8/tails and all public bounds remain unchanged.
+K640 uses exactly40 original fragments per output row; three rows fit120 of
+128 threads. Original partial indices,+0wave1 merge,sum64 and globalrow%2
+publication are preserved; only CTA ownership changes. Static LDS is6KiB,
+no extra persistent workspace. Candidate only Q4_0/Q4_1,K640,M<=2560,N>=16.
+
+Five-phase A1/B6/A2/B3/A3 native772/776/778/781/783 all exit0,source40cb728/
+dirtytrue. Both 6row/256thread and3row/128thread versions beat both neighboring
+controls at all36 resident down coordinates. Three-row meanA/B1.10007–1.52507,
+median1.21848; main N128 Q4_0~1.22 and Q4_1~1.52. Three rows selected for
+measured shapes; not a universal tuning claim. Journal85 and raw r4-packed640-*.
+The separate K2560 row-owned variant failed timing: native790/792 exit0,
+all correctness gates pass,0/18 beats controls,median0.77683,range.66454–.94614.
+Only this extra K2560 change was removed. Patch retained, journal86.
+Ordinary runtime was not rebuilt during component timing.
+
+Selected three-row kernel is now under full-model regression, not yet a
+full-request speed promotion. Detached gates PID1402124, prefix
+ROOT/runs/r4-packed640-gates-40c: strict full build,short/attention-wide model,
+layerwise128,MTP API and39CTest. Actual source remains40cb728/dirtytrue.
+
+
+Packed K640 three-row full-model qualification completed native0 at06:53:52UTC,
+source40cb728/dirtytrue, detachedPID1402124. Strict full build and39/39CTest
+(1145.90s) pass. Strict collectors accept short29,798,400 and attention-wide
+1,036,984,320 full-vocabulary comparisons, zero violations/diagnostic bit
+differences, unchanged gates. Layerwise128 and original32-ID MTP API cap16,
+RNG/reset/reject/custom-stop/cap48 fixtures pass. Journal87, actual raw
+r4-packed640-gates-40c-* copied and independently re-collected on controller.
+This qualifies correctness only. Next same-config layerwise4096 full-request
+A/B/A switches only actual old/packed linear.hip snapshots between builds.
+Saved baseline stays untouched. Source metadata remains the actual build base.

@@ -127,10 +127,32 @@ dirtytrue.512cases and530056502GPU values/device exact,136600CPU samples,
 21rejects/510graph checks. Only1/42 wins,median0.82095,range.72506–1.02792.
 Code/fixture restored; patch preserved, journal84. No model runtime rebuild.
 
-NEXT Q4 K640 packed-six-row experiment:40 active canonical fragments/row,
-6rows in256threads; identical original partial indices,+0wave merge,sum64 and
-output lane. Need exact both-GPU tests and A/B/A; no promotion by theory.
-Maintain physicalN8 and old tails; at most2launches. No extra long-lived VRAM.
+Selected Q4 K640 packed3rows/128threads component passes both GPUs530cases,
+530126594exactvalues,172996CPU samples,21rejects/528graphs. Both rows6 and
+rows3 win all36 A/B/A down coordinates; rows3 range1.10007–1.52507,median1.21848.
+Native772/776/778/781/783 all0,source40cb728/dirtytrue,journal85. OriginalN8/
+tails/math order preserved; staticLDS6KiB,no new long-lived VRAM. Candidate
+active onlyQ4_0/Q4_1,K640,M<=2560,N>=16. K2560 extra row-owned variant
+REJECTED0/18wins,median.77683 (jobs790/792),patch preserved,journal86.
+Actual raws copied/verified; ordinary runtime was not rebuilt during timings.
+
+Packed640 full-model gates COMPLETE native0 at06:53:52UTC,source40cb728/
+dirtytrue, journal87. Strict fullbuild/39CTest1145.90s pass. Short29.8M/
+wide1.03698B vocabulary comparisons zeroerrors/bits, layerwise128 and MTPAPI
+pass. Actual raws copied and strictshort/wide collectors rechecked on controller.
+
+NEXT full-request A/B/A driver runs/r4-packed640-ab.py (prepared,not launched).
+Both A/B explicitlayerwise4096,slot112,frame1024,4K/16K+512. Switch ONLY
+linear.hip using r4-packed640-{off,on}.hip snapshots. Driver revision file
+runs/r4-packed640-ab.revision must contain actual qualified commit before build.
+Saved baseline7df untouched. Build outside timing and restore candidate at end.
+No new full-request speed claim yet; prior best remains91.233/267.236s.
+After measuring, next hypothesis from source/profile is batched-attention
+checked() on every multiply/add. Pure additive nonfinite chains cannot recover
+finite values; deferring detection to dot/PV end MAY preserve public sticky/
+no-publication contract and valid arithmetic. UNIMPLEMENTED/UNQUALIFIED:
+must retain strict noFMA order, expand overflow/cancellation tests, compare old
+snapshot bits/CPU and model gates before use. Do not weaken numerical gates.
 
 ## Принятые границы / не повторять
 

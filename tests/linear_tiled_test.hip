@@ -342,10 +342,13 @@ int main() {
                     f.quant(type, 256, 7, n, false);
                 for (int k : {32, 64, 640, 2560, 16384}) {
                     if (k % qwen::type_layout(type).block_elements) continue;
-                    for (int n : {9, 17, 128}) f.quant(type, k, 3, n, false);
+                    for (int n : {9, 16, 17, 24, 31, 32, 127, 128}) f.quant(type, k, 3, n, false);
                 }
             }
-            for (int n : {9, 16, 32, 128}) {
+            for (auto type : {qwen::TensorType::Q4_0, qwen::TensorType::Q4_1})
+                for (int m : {1, 5, 6, 7, 11, 12, 13})
+                    for (int n : {16, 17, 31, 32, 127, 128}) f.quant(type, 640, m, n, false);
+            for (int n : {9, 16, 20, 24, 28, 32, 36, 64, 124, 128}) {
                 f.quant(qwen::TensorType::Q4_0, 2560, 640, n, true);
                 f.quant(qwen::TensorType::Q4_0, 640, 2560, n, true);
                 f.quant(qwen::TensorType::Q4_1, 640, 2560, n, true);
