@@ -2521,3 +2521,22 @@ full-request win.16K+512: separate335.692/335.591s, fused331.419s
 This is a small16K benefit only; do not extrapolate component1.35–1.58x to the
 runtime. Six actual raws/manifests revalidated, journal69; raw directory
 ROOT/runs/r5-fused-session-ab-6c2. Saved baseline binary unchanged.
+
+### Exact-zero sparse sampling path
+
+The probability validator skips only exact signed zeros, which are already
+valid mass. Residual positive-difference skips zero-support divisions while
+preserving signed-zero output bits; its compensated mass loops ignore exact
+zeros only. Every nonzero value, including the smallest FP32 subnormal, still
+uses the original arithmetic, normalization checks and RNG. Generic Neumaier
+Sum and distribution filtering are unchanged.
+
+core-sampling-probe LOGITS --capture FRESH.bin or --compare EXISTING.bin uses
+the first8 saved actual full-vocabulary logit rows and32 cases across primary,
+unfiltered,greedy andtop-k1 configurations. Source2535cbf/dirtytrue:95,389,224
+snapshot bytes match across builds (probabilities,residuals,acceptance,draws,RNG).
+Sampling/speculative tests and explicit signed-zero/subnormal tests pass.
+CPU0 finalA2/B3/A3 averages: distribution~.578ms unchanged,draw.623->.165ms,
+acceptance1.176->.258ms,residual5.023->1.776ms. All timings are CPU components
+at primarytop-k20, not MTP runtime gains. Native jobs511/515/524/525/529/530
+exit0; journal70, raw ROOT/runs/r5-sampling-zero-*; snapshot footer is required.

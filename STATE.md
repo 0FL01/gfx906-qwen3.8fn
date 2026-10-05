@@ -103,10 +103,18 @@ Ordinary runtime rebuilt between measurements; no compile overlapped inference.
 Both source6c26e2a/dirtytrue with explicit variant snapshots/manifests.
 Protected core-mtp-run-baseline7df remained unchanged; permission not inferred.
 Current core-mtp-run restored to fused6c2dirty at successful series completion.
-Next measured-host-path hypothesis: sampler Neumaier scans currently add zeros
-across the full248320 vocabulary after top-k20. Benchmark exact zero skipping
-on actual saved logits, preserving all probability validation, normalization,
-residual arithmetic, RNG and output bytes. CPU-only gates before runtime change.
+Sparse CPU sampling primitive PASS, source2535cbf/dirtytrue. Exact-zero skips
+only probability validation's known-valid zeros and residual mass; nonzero
+probabilities, signed-zero output bits, all validation/tolerances/RNG unchanged.
+Six native component jobs511/515/524/525/529/530 exit0; finalA2/B3/A3:
+distribution~.578ms unchanged, draw.623->.165ms, acceptance1.176->.258ms,
+residual5.023->1.776ms. Intermediate generic Sum guard slowed distribution,
+so final source keeps original generic Sum and targets sparse loops only.
+95,389,224 snapshot bytes exact across32 cases/four filter configs using first8
+actual saved target logit rows. Existing sampling/speculative tests plus explicit
+signed-zero/subnormal-residual tests pass. Journal70 old69 prefix preserved.
+Next candidate MTP API gate, then matched4K/16K+512 sampler-off/on/off rebuilding
+ordinary executable only. Keep saved baseline7df untouched. No runtime win yet.
 Further candidates require fresh measured priority: PP launch density/selection,
 per-column dense reductions, two-GPU chunk overlap, grouped short MoE. Do not
 mix another optimization into this still-unqualified integration slice.

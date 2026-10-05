@@ -621,12 +621,28 @@ void speculative_empirical_tests() {
 
 } // namespace
 
+void sparse_zero_bits_test() {
+    const std::array<float,6> p{0.0f,-0.0f,0.0f,-0.0f,0.75f,0.25f};
+    const std::array<float,6> q{0.0f,0.0f,-0.0f,-0.0f,0.25f,0.75f};
+    std::array<float,6> out{};
+    check(qwen::residual_distribution(p,q,out)==qwen::ResidualStatus::ready,"signed-zero residual status");
+    const std::array<std::uint32_t,6> expected{0,0x80000000U,0,0,0x3f800000U,0};
+    for(std::size_t i=0;i<out.size();++i)
+        check(std::bit_cast<std::uint32_t>(out[i])==expected[i],"signed-zero residual bits");
+    const auto tiny=std::numeric_limits<float>::denorm_min();
+    const std::array<float,3> a{1.0f,tiny,0.0f},b{1.0f,0.0f,tiny};
+    std::array<float,3> residual{};
+    check(qwen::residual_distribution(a,b,residual)==qwen::ResidualStatus::ready,"subnormal residual retained");
+    check(residual[1]==1.0f && residual[0]==0.0f && residual[2]==0.0f,"no epsilon cutoff in sparse residual");
+}
+
 int main() {
     try {
         allocation_probe_test();
         filter_tests();
         large_workspace_tests();
         primitive_tests();
+        sparse_zero_bits_test();
         seed_tests();
         invalid_tests();
         speculative_empirical_tests();

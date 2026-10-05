@@ -52,6 +52,7 @@ void validate_pair(std::span<const float> p, std::span<const float> q) {
 double probability_sum(std::span<const float> probabilities) {
     Sum sum;
     for (const float probability : probabilities) {
+        if (probability == 0.0f) continue; // Both signed zeros are valid exact mass.
         if (!std::isfinite(probability) || probability < 0.0f || probability > 1.0f)
             invalid("sampling: probability must be finite and in [0,1]");
         sum.add(static_cast<double>(probability));
@@ -63,6 +64,10 @@ double probability_sum(std::span<const float> probabilities) {
 }
 
 double positive_difference(float p, float q, double p_sum, double q_sum) noexcept {
+    // Validated nonnegative inputs and positive finite denominators. Avoid two
+    // divisions for sparse zero support, retaining std::max's signed-zero bits
+    // when both operands are zero. No nonzero probability is discarded.
+    if (p == 0.0f) return q == 0.0f ? static_cast<double>(p - q) : 0.0;
     return std::max(static_cast<double>(p) / p_sum - static_cast<double>(q) / q_sum, 0.0);
 }
 
@@ -97,14 +102,18 @@ ResidualStatus residual_distribution(std::span<const float> p, std::span<const f
     const double p_sum = probability_sum(p);
     const double q_sum = probability_sum(q);
     Sum mass;
-    for (std::size_t i = 0; i < p.size(); ++i)
-        mass.add(positive_difference(p[i], q[i], p_sum, q_sum));
+    for (std::size_t i = 0; i < p.size(); ++i) {
+        const double value = positive_difference(p[i], q[i], p_sum, q_sum);
+        if (value != 0.0) mass.add(value); // Exact zero only; retain every tiny tail.
+    }
     const double total = mass.value();
     if (total == 0.0) return ResidualStatus::no_residual;
 
     Sum emitted;
-    for (std::size_t i = 0; i < p.size(); ++i)
-        emitted.add(static_cast<float>(positive_difference(p[i], q[i], p_sum, q_sum) / total));
+    for (std::size_t i = 0; i < p.size(); ++i) {
+        const float value = static_cast<float>(positive_difference(p[i], q[i], p_sum, q_sum) / total);
+        if (value != 0.0f) emitted.add(value);
+    }
     check_emitted_sum(emitted.value());
     for (std::size_t i = 0; i < p.size(); ++i)
         probabilities[i] = static_cast<float>(positive_difference(p[i], q[i], p_sum, q_sum) / total);
