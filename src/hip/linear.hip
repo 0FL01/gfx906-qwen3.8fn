@@ -280,52 +280,6 @@ void matrix32(const std::uint8_t* weights, const Q8_1* input,
     }
 }
 
-// Bounded K640 hypothesis: the old Q4 topology has exactly40 active fragments
-// (20blocks*2), with the second wave entirely zero. Pack three output rows into
-// 128threads without changing ANY per-output fragment, FMA or sum64 ordering.
-// KEEP load32/accumulate32 and the original row%2 publication lane. Unlike the
-// rejected one-wave experiment this fills unused lanes with other output rows.
-template<TensorType Type>
-__global__ __launch_bounds__(128, 1)
-void matrix32_packed640(const std::uint8_t* weights, const Q8_1* input,
-                        float* output, int rows) {
-    constexpr int Columns = 8, Rows = 3, Blocks = 20;
-    constexpr int Bytes = Type == TensorType::Q4_0 ? 18 : 20;
-    static_assert(Type == TensorType::Q4_0 || Type == TensorType::Q4_1);
-    const int tid = threadIdx.x, lane = tid % 64, wave = tid / 64;
-    const int row0 = blockIdx.x * Rows;
-    input += std::size_t(blockIdx.y) * Columns * Blocks;
-    output += std::size_t(blockIdx.y) * Columns * rows;
-    __shared__ float partial[Rows][Columns][64];
-    // Zero only the original inactive lanes; compute stores below are disjoint.
-    for (int r = wave; r < Rows; r += 2)
-        if (lane >= 40) for (int c = 0; c < Columns; ++c) partial[r][c][lane] = 0.0f;
-    if (tid < Rows * 40) {
-        const int r = tid / 40, original_lane = tid % 40;
-        const int k = original_lane / 2, iqs = 2 * (original_lane % 2);
-        Tile32 tile{};
-        if (row0 + r < rows)
-            tile = load32<Type>(weights + (std::size_t(row0 + r) * Blocks + k) * Bytes, iqs);
-        for (int c = 0; c < Columns; ++c) {
-            const auto& x = input[c * Blocks + k];
-            const auto* q8 = reinterpret_cast<const int*>(x.qs);
-            int codes[4];
-            for (int j = 0; j < 2; ++j) {
-                codes[2 * j] = q8[iqs + j]; codes[2 * j + 1] = q8[iqs + j + 4];
-            }
-            const float acc = row0 + r < rows ?
-                accumulate32<Type>(tile, codes, from_half(x.d), from_half(x.s), 0.0f) : 0.0f;
-            partial[r][c][original_lane] = acc + 0.0f; // Exact old wave1 merge.
-        }
-    }
-    __syncthreads();
-    for (int r = wave; r < Rows; r += 2) for (int c = 0; c < Columns; ++c) {
-        const float value = sum64(partial[r][c][lane]);
-        if (lane == ((row0 + r) % 2) && row0 + r < rows)
-            output[std::size_t(c) * rows + row0 + r] = value;
-    }
-}
-
 struct Tile6 {
     std::uint32_t codes[2];
     int scales[2];
@@ -521,22 +475,6 @@ hipError_t launch_quantized_linear_tiled(QuantizedDeviceMatrix matrix, const Q8_
         return launch_quantized_linear_short(matrix, input, columns, output, stream);
     const auto status = validate_linear(matrix, input, columns, linear_device_tiled_max_columns, output);
     if (status != hipSuccess) return status;
-    if (columns >= 16 && matrix.input == 640 && matrix.output <= 2560 &&
-        (matrix.type == TensorType::Q4_0 || matrix.type == TensorType::Q4_1)) {
-        const int tiles = columns / 8;
-        const dim3 grid((matrix.output + 2) / 3, tiles);
-        const auto* weights = static_cast<const std::uint8_t*>(matrix.weights);
-        if (matrix.type == TensorType::Q4_0)
-            matrix32_packed640<TensorType::Q4_0><<<grid, 128, 0, stream>>>(weights, input, output, matrix.output);
-        else
-            matrix32_packed640<TensorType::Q4_1><<<grid, 128, 0, stream>>>(weights, input, output, matrix.output);
-        const auto launched = hipGetLastError();
-        if (launched != hipSuccess) return launched;
-        const int first = tiles * 8, tail = columns - first;
-        if (tail == 0) return hipSuccess;
-        return launch_quantized_linear_short(matrix, input + std::size_t(first) * 20,
-            tail, output + std::size_t(first) * matrix.output, stream);
-    }
     // KEEP qualified MMVQ arithmetic and its N8 register reuse. ADAPT launch
     // geometry only: each y tile owns disjoint contiguous activation/output rows.
     const int tiles = columns / linear_device_short_max_columns;

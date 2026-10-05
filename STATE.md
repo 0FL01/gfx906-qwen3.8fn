@@ -141,18 +141,29 @@ dirtytrue, journal87. Strict fullbuild/39CTest1145.90s pass. Short29.8M/
 wide1.03698B vocabulary comparisons zeroerrors/bits, layerwise128 and MTPAPI
 pass. Actual raws copied and strictshort/wide collectors rechecked on controller.
 
-NEXT full-request A/B/A driver runs/r4-packed640-ab.py (prepared,not launched).
-Both A/B explicitlayerwise4096,slot112,frame1024,4K/16K+512. Switch ONLY
-linear.hip using r4-packed640-{off,on}.hip snapshots. Driver revision file
-runs/r4-packed640-ab.revision must contain actual qualified commit before build.
-Saved baseline7df untouched. Build outside timing and restore candidate at end.
-No new full-request speed claim yet; prior best remains91.233/267.236s.
-After measuring, next hypothesis from source/profile is batched-attention
-checked() on every multiply/add. Pure additive nonfinite chains cannot recover
-finite values; deferring detection to dot/PV end MAY preserve public sticky/
-no-publication contract and valid arithmetic. UNIMPLEMENTED/UNQUALIFIED:
-must retain strict noFMA order, expand overflow/cancellation tests, compare old
-snapshot bits/CPU and model gates before use. Do not weaken numerical gates.
+Packed correctness pushed52d7b62; fullrequest series COMPLETE native0 at07:27:18,
+source52d7b62/dirtytrue,journal88.4K B93.489s versus93.631/91.215;16K B267.740s
+versus268.791/267.035. PP ratios.999198/.999419, no stable improvement.
+All512IDs/RNG exact. Production packed kernel REVERTED in source, expanded
+tests retained; reproducible implementation Git52d7b62 and runs artifacts.
+Ordinary executable still needs rebuild after this source commit (last build
+was packed-on restoration). Protected baseline7df stays untouched.
+Best qualified fullrequest improvement remains layerwise b201:91.233/267.236s.
+
+Existing trace Q4_0 N8 split by grid-inferred output M:10240=5.338s,
+2560=4.292s,640=3.874s,6144=1.384s,320=.670s,12288=.465s. M alone does NOT
+identify K, so don't attribute allM2560 to down. Analysis saved/copied.
+LargeM N16 remains untested; earlier negative candidate restrictedM<=2560.
+
+NEXT attention deferred-check component A/B/A. Prepared ONLY under runs:
+attention-deferred-{off,on}.hip and attention-deferred-test.hip. Production
+attention source untouched. Fixture adds two overflow cases, optional
+--benchmark after --capture/--compare,12resident coordinates/GPU and old bits.
+First sync strengthened fixture, build restored core-mtp-run +core-attention-
+batch with actual newHEAD/dirtytrue, capture fresh A1 snapshot. Then swap ONLY
+attention.hip candidate for B(compare same snapshot), restoreold for A2.
+Must preserve nonfinite detection/publication and exact valid operation order.
+No new GPU work running after paired completion. FullPLAN/llama win open.
 
 ## Принятые границы / не повторять
 

@@ -2775,3 +2775,28 @@ r4-packed640-gates-40c-* copied and independently re-collected on controller.
 This qualifies correctness only. Next same-config layerwise4096 full-request
 A/B/A switches only actual old/packed linear.hip snapshots between builds.
 Saved baseline stays untouched. Source metadata remains the actual build base.
+
+
+### 2026-10-05 packed640 full-request result: no promotion
+Paired source52d7b62/dirtytrue, native0 at07:27:18UTC, all512IDs/RNG/acceptance
+exact.4K A93.631/91.215s versusB93.489s,meanA/B0.988601;16K A268.791/267.035s
+versusB267.740s,meanA/B1.000648. PP mean-A-time/B-time0.999198/0.999419:
+the component gain does NOT establish a real PP or full-request gain.
+Packed dispatch/kernel reverted from production; strengthened tests retained,
+implementation remains reproducible in Git52d7b62 and exact runs artifacts.
+Journal88, actual copied six raws/manifests/IDs under r4-packed640-ab-20261005.
+The saved baseline stayed unchanged. Ordinary executable rebuild to restored
+canonical kernel follows this source commit; no code-performance claim retained.
+
+A deeper read of the existing layerwise trace separates the broad Q4 N8 label
+by output rows inferred from grid shape: M10240 sums5.338s, M2560 4.292s,
+M640 3.874s, M6144 1.384s, M320 .670s, M12288 .465s (Q4_0).
+The label aggregates different projections; M2560 cannot isolate K640 from
+other input widths. No causal cache/occupancy explanation is proven for the
+flat result. Raw analysis r4-profile-layerwise-q4-grid-breakdown.json.
+A later large-output N16 experiment must benchmark actual M6144/10240/12288,
+not generalize the earlier small-matrix N16 rejection to those untested shapes.
+Immediate next bounded experiment: defer checks only within pure attention
+multiply/add chains, retaining end-of-chain sticky error and output publication.
+No fastmath/FMA/order/tolerance changes; strengthened overflow and old-bit gates
+are mandatory. Candidate/test artifacts are prepared but not active yet.
