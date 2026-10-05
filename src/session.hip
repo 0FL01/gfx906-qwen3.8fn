@@ -78,10 +78,12 @@ SessionConfig checked_config(SessionConfig config) {
         (config.layerwise_prefill_capacity &&
          (config.max_batch_tokens < 4 || !config.trace_directory.empty())))
         throw std::invalid_argument("Session layerwise capacity/resources/trace");
-    if (config.prefill_pipeline_tokens < 0 ||
+    if (config.prefill_pipeline_tokens < 0 || config.prefill_pipeline_tokens > 4096 ||
         (config.prefill_pipeline_tokens &&
-         (config.layerwise_prefill_capacity < 1 || config.layerwise_prefill_capacity > 4096 ||
-          config.prefill_pipeline_tokens > config.layerwise_prefill_capacity || config.cpu_workers)))
+         (config.layerwise_prefill_capacity < 1 ||
+          config.prefill_pipeline_tokens > config.layerwise_prefill_capacity || config.cpu_workers ||
+          (config.layerwise_prefill_capacity + config.prefill_pipeline_tokens - 1) /
+              config.prefill_pipeline_tokens > PrefillPipeline::max_windows)))
         throw std::invalid_argument("Session prefill pipeline resources/window");
     const bool fault = config.prefill_pipeline_fail_stage != -1 || config.prefill_pipeline_fail_window != -1;
     if (fault && (!config.prefill_pipeline_tokens ||
@@ -512,6 +514,7 @@ struct LayerwiseHost {
 };
 
 struct LayerwisePrefill : LayerwiseHost {
+    const int stage_capacity;
     std::array<Device*, 2> owners;
     std::array<std::unique_ptr<LayerwiseDevice>, 2> gpu;
     std::unique_ptr<LayerwiseHost> stage1;
@@ -525,7 +528,7 @@ struct LayerwisePrefill : LayerwiseHost {
         hip(hipHostMalloc(&stage1_transfer, stage1_transfer_bytes, hipHostMallocDefault));
     }
     explicit LayerwisePrefill(std::array<Device*, 2> devices, int capacity)
-        : LayerwiseHost(capacity), owners(devices) {
+        : LayerwiseHost(capacity), stage_capacity(capacity), owners(devices) {
         try {
             for (int id = 0; id < 2; ++id) gpu[id] = std::make_unique<LayerwiseDevice>(*owners[id], capacity);
         } catch (...) { drain(); throw; }
@@ -1768,9 +1771,10 @@ struct Session::Impl {
                 std::max(config.max_batch_tokens, config.layerwise_prefill_capacity));
         if (config.layerwise_prefill_capacity)
             layerwise = std::make_unique<LayerwisePrefill>(
-                std::array<Device*, 2>{devices[0].get(), devices[1].get()}, config.layerwise_prefill_capacity);
+                std::array<Device*, 2>{devices[0].get(), devices[1].get()},
+                config.prefill_pipeline_tokens ? config.prefill_pipeline_tokens : config.layerwise_prefill_capacity);
         if (config.prefill_pipeline_tokens)
-            layerwise->enable_pipeline(config.layerwise_prefill_capacity, config.max_batch_tokens);
+            layerwise->enable_pipeline(layerwise->stage_capacity, config.max_batch_tokens);
         reset();
         if (config.prefill_pipeline_tokens)
             prefill_pipeline = std::make_unique<PrefillPipeline>(this, [](void* self, int window, int slot) {
@@ -1853,6 +1857,7 @@ struct Session::Impl {
         if (layerwise) {
             const auto& p = *layerwise;
             result.layerwise_prefill_capacity = config.layerwise_prefill_capacity;
+            result.layerwise_stage_capacity = p.stage_capacity;
             result.host_layerwise_owner = sizeof(LayerwisePrefill) + 2 * sizeof(LayerwiseDevice);
             for (const auto& a : p.activations) result.host_layerwise_activations += a.capacity() * sizeof(float);
             result.host_layerwise_ffn_input = p.mixed.capacity() * sizeof(float);
@@ -1860,7 +1865,7 @@ struct Session::Impl {
             result.host_layerwise_probabilities = p.probabilities.capacity() * sizeof(float);
             result.host_layerwise_routes = p.weights.capacity() * sizeof(float) + p.ids.capacity() * sizeof(std::int32_t);
             // Inline RouteGroups metadata is included in host_layerwise_owner.
-            result.host_layerwise_groups = static_cast<std::size_t>(config.layerwise_prefill_capacity) * 10 * sizeof(RouteAssignment);
+            result.host_layerwise_groups = static_cast<std::size_t>(p.stage_capacity) * 10 * sizeof(RouteAssignment);
             result.pinned_layerwise_metadata = p.dto_bytes;
             if (p.stage1) {
                 const auto& h = *p.stage1;
@@ -1873,7 +1878,7 @@ struct Session::Impl {
                 result.host_pipeline_payload += (h.mixed.capacity() + h.injection.capacity() +
                     h.probabilities.capacity() + h.weights.capacity()) * sizeof(float) +
                     h.ids.capacity() * sizeof(std::int32_t) +
-                    static_cast<std::size_t>(config.layerwise_prefill_capacity) * 10 * sizeof(RouteAssignment);
+                    static_cast<std::size_t>(p.stage_capacity) * 10 * sizeof(RouteAssignment);
                 result.pinned_pipeline_metadata = h.dto_bytes;
                 result.pinned_pipeline_handoff = p.stage1_transfer_bytes;
             }

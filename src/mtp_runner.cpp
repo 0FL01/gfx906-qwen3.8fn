@@ -1,6 +1,7 @@
 #include "mtp_runner.hpp"
 #include "mtp_session.hpp"
 #include "profile_range.hpp"
+#include "prefill_pipeline.hpp"
 #include <algorithm>
 #include <chrono>
 #include <vector>
@@ -15,10 +16,14 @@ SessionConfig checked(SessionConfig c) {
        c.max_batch_tokens>1024 || c.expert_slots<1 || c.expert_slots>512 ||
        c.cpu_workers || c.hybrid_probe || !c.trace_directory.empty())
         throw std::invalid_argument("MTP runner requires valid GPU-only untraced SessionConfig");
-    if(c.layerwise_prefill_capacity<0 || c.layerwise_prefill_capacity>4096 ||
+    if(c.layerwise_prefill_capacity<0 || c.layerwise_prefill_capacity>16384 ||
        (c.layerwise_prefill_capacity && c.max_batch_tokens<4))
-        throw std::invalid_argument("MTP layerwise capacity requires 0..4096 and frame>=4");
-    if(c.prefill_pipeline_tokens<0 || c.prefill_pipeline_tokens>c.layerwise_prefill_capacity ||
+        throw std::invalid_argument("MTP layerwise capacity requires 0..16384 and frame>=4");
+    if(c.prefill_pipeline_tokens<0 || c.prefill_pipeline_tokens>4096 ||
+       c.prefill_pipeline_tokens>c.layerwise_prefill_capacity ||
+       (c.layerwise_prefill_capacity>4096 && !c.prefill_pipeline_tokens) ||
+       (c.prefill_pipeline_tokens && (c.layerwise_prefill_capacity+c.prefill_pipeline_tokens-1)/
+          c.prefill_pipeline_tokens>PrefillPipeline::max_windows) ||
        c.prefill_pipeline_fail_stage!=-1 || c.prefill_pipeline_fail_window!=-1)
         throw std::invalid_argument("MTP pipeline requires layerwise resources and no diagnostic fault");
     c.speculative_checkpoints=true;c.max_batch_tokens=std::max(3,c.max_batch_tokens);

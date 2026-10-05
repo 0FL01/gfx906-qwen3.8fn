@@ -139,7 +139,10 @@ void routes_gate() {
     std::cout << "{\"kind\":\"layerwise_routes_host_gate\",\"rows\":16384,\"group_assignments\":16384,\"passed\":true}\n";
 }
 void resources(qwen::Session& s, int n) {
-    const auto m = s.memory(); const auto N = static_cast<std::uint64_t>(n);
+    const auto m = s.memory();
+    const auto logical = static_cast<std::uint64_t>(n);
+    const auto N = m.prefill_pipeline_tokens ? static_cast<std::uint64_t>(m.prefill_pipeline_tokens) : logical;
+    require(m.layerwise_stage_capacity == static_cast<int>(N), "physical stage row capacity");
     require(m.ownership_verified && m.layerwise_prefill_capacity == n, "independent buffer ownership ledger");
     require(m.host_layerwise_activations == 2 * N * W * 4 && m.host_layerwise_ffn_input == N * 2560 * 4 &&
         m.host_layerwise_injection == N * 4 * 4 && m.host_layerwise_probabilities == N * 512 * 4 &&
@@ -157,17 +160,17 @@ void resources(qwen::Session& s, int n) {
         require(m.layerwise_original_q8_bytes[id] == N * 80 * 36 &&
             m.layerwise_contribution_bytes[id] == N * 10 * 2560 * 4 &&
             m.layerwise_metadata_bytes[id] == N * 10 * 8, "global GPU extents");
-        require(m.target_tap_bytes[id] == (m.speculative_checkpoints && id == 1 ? std::max<std::uint64_t>(N, 1024) * W * 4 : 0) &&
+        require(m.target_tap_bytes[id] == (m.speculative_checkpoints && id == 1 ? std::max<std::uint64_t>(logical, 1024) * W * 4 : 0) &&
             m.target_tap_staging_bytes[id] == m.target_tap_bytes[id], "separate full teacher-history tap capacity");
     }
-    std::cout << "{\"kind\":\"layerwise_resources\",\"rows\":" << n << ",\"activations_each_bytes\":" << N * W * 4
+    std::cout << "{\"kind\":\"layerwise_resources\",\"rows\":" << n << ",\"stage_rows\":" << N << ",\"activations_each_bytes\":" << N * W * 4
         << ",\"original_q8_each_bytes\":" << N * 80 * 36 << ",\"contrib_each_bytes\":" << N * 10 * 2560 * 4
         << ",\"dto_each_bytes\":" << N * 10 * 8 << ",\"router_host_bytes\":" << m.host_layerwise_probabilities
         << ",\"host_logits_capacity_bytes\":" << m.host_logit_capacity << ",\"root_tap_each_bytes\":" << m.target_tap_bytes[1]
         << ",\"free_vram0\":" << m.devices[0].free_vram << ",\"free_vram1\":" << m.devices[1].free_vram
         << ",\"head_logits_bytes_per_device\":" << m.devices[0].head_logits_bytes
         << ",\"pipeline_tokens\":" << m.prefill_pipeline_tokens << ",\"pipeline_host_payload\":" << m.host_pipeline_payload
-        << ",\"pipeline_pinned_handoff\":" << m.pinned_pipeline_handoff << ",\"ownership_verified\":true}\n";
+        << ",\"pipeline_pinned_handoff\":" << m.pinned_pipeline_handoff << ",\"ownership_verified\":true}\n" << std::flush;
 }
 void record(qwen::Session& s, std::string_view phase, int rows, std::size_t compared, double wall_ms,
             qwen::SessionStats before = {}) {
@@ -180,22 +183,25 @@ void record(qwen::Session& s, std::string_view phase, int rows, std::size_t comp
         << ",\"max_actual_group\":" << s.route_stats().last_max_expert_group_assignments
         << ",\"groups_gt128\":" << s.route_stats().expert_groups_gt128 << ",\"wall_ms\":" << wall_ms
         << ",\"last_call_completed_ms\":" << a.last_completed_ms << ",\"wall_includes_fixture_comparison\":true"
-        << ",\"warm_cache_retained_by_reset\":true,\"passed\":true}\n";
+        << ",\"warm_cache_retained_by_reset\":true,\"passed\":true}\n" << std::flush;
 }
 void run(const std::string& model, int n, int pipeline_tokens = 0) {
     qwen::SessionConfig config; config.capacity = n + 8; config.max_batch_tokens = 1024;
     config.attention_query_tile = 8; config.layerwise_prefill_capacity = n;
     config.prefill_pipeline_tokens = pipeline_tokens;
-    config.speculative_checkpoints = n <= 4096; // 16k all-rows avoids two 16.27GB publication owners.
+    config.speculative_checkpoints = n <= 4096 || pipeline_tokens > 0;
+    // Keep every N1 vocabulary row, but do not retain a redundant second 16 GB
+    // reference at logical16K. The old1024 path is still checked against N1.
+    const bool retain_second_reference = n <= 4096;
     qwen::Session s(model, config); s.set_attention_batch(true); resources(s, n);
     const auto gpu_loaded = s.memory();
     std::vector<std::int32_t> ids(n + 8 + 2, -123456789);
     auto tokens = std::span(ids).subspan(1, n + 8); tokens[0] = 248044;
     for (int t = 1; t < n + 8; ++t) tokens[t] = 99 + t;
     Guarded reference(static_cast<std::size_t>(n + 8) * V);
-    Guarded old_reference(static_cast<std::size_t>(n + 8) * V);
-    // Fixture-only independent retained oracles, NOT runtime allocations. At
-    // optional N16384 these two guarded refs add ~32.56GB beyond Session RAM.
+    Guarded old_reference(retain_second_reference ? static_cast<std::size_t>(n + 8) * V : 0);
+    // Fixture-only retained reference, NOT a runtime allocation. The large
+    // case keeps one complete full-vocabulary reference plus every hidden tap.
     Guarded teacher(config.speculative_checkpoints ? static_cast<std::size_t>(n) * W : 0);
     // Independent N1 hot path, FULL V for EVERY row, including continuation.
     for (int t = 0; t < n + 8; ++t) {
@@ -206,11 +212,15 @@ void run(const std::string& model, int n, int pipeline_tokens = 0) {
             const auto tap = tap_copy(s.target_tap()); require(tap.size() == W, "N1 tap shape");
             std::copy(tap.begin(), tap.end(), teacher.data() + static_cast<std::size_t>(t) * W);
         }
+        if ((t + 1) % 4096 == 0) {
+            std::cout << "{\"kind\":\"layerwise_reference_progress\",\"completed_rows\":" << t + 1
+                << ",\"total_rows\":" << n + 8 << "}\n" << std::flush;
+        }
     }
     auto expected = [&](int first, int count) { return reference.values().subspan(static_cast<std::size_t>(first) * V, static_cast<std::size_t>(count) * V); };
     auto compare_all = [&](std::span<const float> out, int first, int count) {
         compare(out, expected(first, count));
-        compare(out, old_reference.values().subspan(static_cast<std::size_t>(first) * V, static_cast<std::size_t>(count) * V));
+        if (retain_second_reference) compare(out, old_reference.values().subspan(static_cast<std::size_t>(first) * V, static_cast<std::size_t>(count) * V));
     };
     auto continuation = [&] {
         for (int t = n; t < n + 8; ++t) compare_all(s.step(tokens[t]), t, 1);
@@ -225,13 +235,13 @@ void run(const std::string& model, int n, int pipeline_tokens = 0) {
     for (int first = 0; first < n; first += 1024) {
         const int count = std::min(1024, n - first);
         const auto out = s.step_batch(tokens.subspan(first, count)); compare(out, expected(first, count));
-        std::copy(out.begin(), out.end(), old_reference.data() + static_cast<std::size_t>(first) * V);
+        if (retain_second_reference) std::copy(out.begin(), out.end(), old_reference.data() + static_cast<std::size_t>(first) * V);
     }
     record(s, "old_C1024_all_rows", n, static_cast<std::size_t>(n) * V,
         std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - old_begin).count());
     for (int t = n; t < n + 8; ++t) {
         const auto out = s.step(tokens[t]); compare(out, expected(t, 1));
-        std::copy(out.begin(), out.end(), old_reference.data() + static_cast<std::size_t>(t) * V);
+        if (retain_second_reference) std::copy(out.begin(), out.end(), old_reference.data() + static_cast<std::size_t>(t) * V);
     }
     for (int repeat = 0; repeat < 2; ++repeat) {
         s.reset(); const auto begin = std::chrono::steady_clock::now();
@@ -305,7 +315,8 @@ void run(const std::string& model, int n, int pipeline_tokens = 0) {
     std::cout << "{\"kind\":\"layerwise_fixture_complete\",\"rows\":" << n << ",\"model\":" << std::quoted(model)
         << ",\"revision\":\"" << CORE_REVISION << "\",\"dirty\":" << CORE_DIRTY
         << ",\"frozen_abs_gate\":0.02,\"frozen_rel_gate\":0.002,\"checkpoint_tap_enabled\":" << std::boolalpha << config.speculative_checkpoints
-        << ",\"pipeline_tokens\":" << pipeline_tokens << ",\"compared_values_cumulative\":" << compared_values
+        << ",\"pipeline_tokens\":" << pipeline_tokens << ",\"retained_full_references\":" << (retain_second_reference ? 2 : 1)
+        << ",\"compared_values_cumulative\":" << compared_values
         << ",\"diagnostic_bit_mismatches_cumulative\":" << diagnostic_bit_mismatches
         << ",\"max_abs_error\":" << max_abs_error << ",\"max_gate_ratio\":" << max_gate_ratio
         << ",\"short_tg_speed_qualified\":false,\"r4_target_speed_qualified\":false,\"passed\":true}\n";
@@ -353,22 +364,24 @@ void disabled_gate(const std::string& model) {
       invalid([&] { qwen::Session rejected(model, bad); }); }
     { qwen::SessionConfig bad; bad.max_batch_tokens = 32; bad.layerwise_prefill_capacity = 32; bad.trace_directory = "reject-before-trace-create";
       invalid([&] { qwen::Session rejected(model, bad); }); }
-    for (int scenario = 0; scenario < 8; ++scenario) {
+    for (int scenario = 0; scenario < 10; ++scenario) {
         qwen::SessionConfig bad; bad.max_batch_tokens = 32; bad.layerwise_prefill_capacity = 32;
         bad.prefill_pipeline_tokens = 8;
         if (scenario == 0) bad.prefill_pipeline_tokens = -1;
         if (scenario == 1) bad.prefill_pipeline_tokens = 33;
         if (scenario == 2) bad.layerwise_prefill_capacity = 0;
-        if (scenario == 3) bad.layerwise_prefill_capacity = 8192;
+        if (scenario == 3) { bad.layerwise_prefill_capacity = 16384; bad.prefill_pipeline_tokens = 1; }
         if (scenario == 4) bad.cpu_workers = 1;
         if (scenario == 5) bad.prefill_pipeline_fail_stage = 2;
         if (scenario == 6) bad.prefill_pipeline_fail_window = 4096;
         if (scenario == 7) { bad.prefill_pipeline_tokens = 0; bad.prefill_pipeline_fail_stage = 0; bad.prefill_pipeline_fail_window = 0; }
+        if (scenario == 8) { bad.layerwise_prefill_capacity = 8192; bad.prefill_pipeline_tokens = 4097; }
+        if (scenario == 9) { bad.layerwise_prefill_capacity = 16384; bad.prefill_pipeline_tokens = 3; }
         invalid([&] { qwen::Session rejected(model, bad); });
     }
     qwen::SessionConfig config; config.capacity = 4;
     qwen::Session s(model, config); const auto m = s.memory();
-    require(m.layerwise_prefill_capacity == 0 && !m.host_layerwise_owner && !m.host_layerwise_activations &&
+    require(m.layerwise_prefill_capacity == 0 && m.layerwise_stage_capacity == 0 && !m.host_layerwise_owner && !m.host_layerwise_activations &&
         !m.host_layerwise_ffn_input && !m.host_layerwise_injection && !m.host_layerwise_probabilities && !m.host_layerwise_routes &&
         !m.host_layerwise_groups && !m.pinned_layerwise_metadata && m.layerwise_original_q8_bytes == std::array<std::uint64_t, 2>{} &&
         m.layerwise_contribution_bytes == std::array<std::uint64_t, 2>{} && m.layerwise_metadata_bytes == std::array<std::uint64_t, 2>{}, "default no R4 payload allocation");
@@ -397,7 +410,7 @@ int main(int argc, char** argv) {
             if (argc == 4) {
                 const std::string_view arg(argv[3]); const auto parsed_pipe = std::from_chars(arg.data(), arg.data() + arg.size(), pipe);
                 require(parsed_pipe.ec == std::errc{} && parsed_pipe.ptr == arg.data() + arg.size() &&
-                    pipe >= 1 && pipe <= n && n <= 4096, "pipeline fixture bound");
+                    pipe >= 1 && pipe <= std::min(n, 4096) && n <= 16384, "pipeline fixture bound");
             }
             run(argv[1], n, pipe);
         }

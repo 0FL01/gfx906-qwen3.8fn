@@ -29,8 +29,9 @@ struct MtpRunStats {
 // ordinary PP chunk size; target verification internally reserves at least3.
 // Optional prefill_pipeline_tokens subdivides each target layerwise window;
 // warmup still consumes all actual tap rows after both GPU stages finish.
-// Optional layerwise_prefill_capacity (1..4096, frame>=4) sets a larger prompt
-// window, retaining every teacher tap. Zero preserves the default chunk path.
+// Optional layerwise_prefill_capacity (1..16384, frame>=4) sets a larger prompt
+// window, retaining every teacher tap; above 4096 requires the bounded pipeline.
+// Zero preserves the default chunk path.
 class MtpRunner {
 public:
     MtpRunner(const std::string& target,const std::string& sidecar,

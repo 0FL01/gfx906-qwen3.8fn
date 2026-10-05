@@ -41,9 +41,10 @@ struct SessionConfig {
     // this is NOT an extension of step_batch/verify_window. No payload at zero.
     // Checkpoint taps, when enabled, reserve max(max_batch_tokens,this) rows.
     int layerwise_prefill_capacity = 0;
-    // Opt-in chronological GPU0/GPU1 pipeline subwindow, 1..layerwise capacity.
-    // Initial scope requires layerwise capacity <=4096, cpu_workers==0 and
-    // trace off. Extra HOST owners only; reuses existing per-GPU buffers.
+    // Opt-in chronological GPU0/GPU1 pipeline stage, 1..min(4096,logical capacity).
+    // Logical capacity may reach16384, with <=4096 stage windows per call,
+    // cpu_workers==0 and trace off. Stage host/GPU payload is bounded by this
+    // value; checkpoint taps separately retain the full logical capacity.
     // Zero preserves serial layerwise scheduling and owns no worker/payload.
     int prefill_pipeline_tokens = 0;
     // One-shot diagnostic failure after a completed stage window. Both -1 off;
@@ -297,6 +298,8 @@ struct SessionMemory {
     // Extra explicit full-prompt capacities (not RSS), all zero when disabled.
     // GPU buffers are ALSO included in workspace/the independent Buffer ledger.
     int layerwise_prefill_capacity = 0;
+    // Actual physical row capacity: pipeline stage size, otherwise logical size.
+    int layerwise_stage_capacity = 0;
     std::uint64_t host_layerwise_owner = 0, host_layerwise_activations = 0;
     std::uint64_t host_layerwise_ffn_input = 0, host_layerwise_injection = 0;
     std::uint64_t host_layerwise_probabilities = 0, host_layerwise_routes = 0;

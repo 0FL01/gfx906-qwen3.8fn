@@ -42,8 +42,8 @@ int main(int argc,char** argv) {
                 if(seen_layerwise || ++i==argc)throw std::invalid_argument("one layerwise capacity required");
                 seen_layerwise=true;const std::string_view value(argv[i]);
                 const auto parsed=std::from_chars(value.data(),value.data()+value.size(),layerwise);
-                if(parsed.ec!=std::errc{} || parsed.ptr!=value.data()+value.size() || layerwise<0 || layerwise>4096)
-                    throw std::invalid_argument("layerwise capacity must be 0..4096");
+                if(parsed.ec!=std::errc{} || parsed.ptr!=value.data()+value.size() || layerwise<0 || layerwise>16384)
+                    throw std::invalid_argument("layerwise capacity must be 0..16384");
             } else if(std::string_view(argv[i])=="--prefill-pipeline") {
                 if(seen_pipeline || ++i==argc)throw std::invalid_argument("one pipeline subwindow required");
                 seen_pipeline=true;const std::string_view value(argv[i]);

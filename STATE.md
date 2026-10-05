@@ -91,7 +91,17 @@ Estimated root free after stage shrink and16K taps867450880B, NOT fit proof.
 Native long fixture should retain one full N1 reference (validate old1024 path
 against it) rather than two redundant16GB arrays; preserve full tap evidence.
 Then actual MTP long carry and full41CTest, followed matched full requests.
-No GPU work active. Latest qualified speed84.422/229.376s remains dc60e0f;
+Stage-sized logical16K/2048 correctness COMPLETE, journal100.
+Detached1504300 native0 at2026-10-05 15:06:07 UTC, d544b6e dirty.
+Full41/41CTest1156.08s; full16K29,497,640,960 cumulative comparisons,
+zero absolute error/bit differences; small256x129862,512,640 exact.
+MTP long resources, two last-window faults and16387 carry32IDs/RNG pass.
+Actual copied logs/manifests and old99 byte prefix verified. Large correctness
+fixture used host swap, no speed claim; one full reference and all taps retained.
+Next run prepared: runs/r4-pipeline16k-ab.py, NOT launched yet.
+After commit rebuild ordinary runtime with committed40hash/dirtytrue, create
+runs/r4-pipeline16k-ab.revision, then launch paired4096vs16384/stage2048.
+Latest qualified speed84.422/229.376s remains dc60e0f;
 full PLAN and llama.cpp victory are still open.
 
 ## Не повторять

@@ -17,6 +17,28 @@ std::vector<std::int32_t> finish(qwen::MtpRunner& r,qwen::MtpEmission e){
 int main(int argc,char** argv){
  try {
     static_assert(std::endian::native==std::endian::little);
+    if(argc==4 && std::string_view(argv[3])=="--pipeline-16k-carry") {
+        constexpr int prompt_tokens=16387;
+        std::vector<std::int32_t> prompt(prompt_tokens);prompt[0]=248044;
+        for(int i=1;i<prompt_tokens;++i)prompt[i]=99+i;
+        std::vector<std::int32_t> reference;qwen::MtpRunStats baseline{};
+        for(int cap:{4096,16384}) {
+            qwen::SessionConfig c;c.capacity=17472;c.expert_slots=112;
+            c.max_batch_tokens=1024;c.attention_query_tile=8;
+            c.layerwise_prefill_capacity=cap;c.prefill_pipeline_tokens=2048;
+            qwen::MtpRunner r(argv[1],argv[2],c,qwen::SamplingConfig(12345));
+            const auto out=finish(r,r.begin(prompt,32,true));const auto stats=r.stats();
+            need(out.size()==32 && stats.consumed==prompt_tokens+31,"16K carry output/prefix");
+            if(cap==4096){reference=out;baseline=stats;}
+            else need(out==reference && stats.accepted==baseline.accepted &&
+                stats.proposal_draws==baseline.proposal_draws && stats.decision_draws==baseline.decision_draws,
+                "16K carry IDs/RNG/acceptance");
+        }
+        std::cout<<"{\"kind\":\"mtp_pipeline_long_carry_test\",\"prompt_tokens\":16387,"
+            "\"logical_capacities\":[4096,16384],\"stage_tokens\":2048,\"outputs\":32,"
+            "\"ids_rng_acceptance_equal\":true,\"passed\":true}\n";
+        return 0;
+    }
     if(argc==4 && std::string_view(argv[3])=="--large-carry") {
         std::vector<std::int32_t> prompt(2051);prompt[0]=248044;
         for(int i=1;i<2051;++i)prompt[i]=99+i;
@@ -36,7 +58,7 @@ int main(int argc,char** argv){
         std::cout<<"{\"kind\":\"mtp_large_carry_test\",\"prompt_tokens\":2051,\"layerwise_windows\":[1025,1025,1],\"pipeline_subwindow\":512,\"outputs\":32,\"ids_rng_acceptance_equal\":true,\"passed\":true}\n";
         return 0;
     }
-    need(argc==4 || (argc==5 && (std::string_view(argv[4])=="--layerwise" || std::string_view(argv[4])=="--pipeline")),"usage: core-mtp-runner-test TARGET SIDECAR CLI32_IDS [--layerwise|--pipeline], or TARGET SIDECAR --large-carry");
+    need(argc==4 || (argc==5 && (std::string_view(argv[4])=="--layerwise" || std::string_view(argv[4])=="--pipeline" || std::string_view(argv[4])=="--pipeline-long-resources")),"usage: core-mtp-runner-test TARGET SIDECAR CLI32_IDS [--layerwise|--pipeline|--pipeline-long-resources], or TARGET SIDECAR --large-carry|--pipeline-16k-carry");
     std::vector<std::int32_t> expected(32);
     std::ifstream f(argv[3],std::ios::binary);
     need(bool(f.read(reinterpret_cast<char*>(expected.data()),128)) && f.peek()==std::char_traits<char>::eof(),"exact32 IDs required");
@@ -44,6 +66,10 @@ int main(int argc,char** argv){
     qwen::SessionConfig c;c.capacity=48;c.expert_slots=112;c.max_batch_tokens=8;
     if(argc==5)c.layerwise_prefill_capacity=16;
     if(argc==5 && std::string_view(argv[4])=="--pipeline")c.prefill_pipeline_tokens=3;
+    if(argc==5 && std::string_view(argv[4])=="--pipeline-long-resources") {
+        c.layerwise_prefill_capacity=16384;c.prefill_pipeline_tokens=2048;
+        c.max_batch_tokens=1024;c.attention_query_tile=8;
+    }
     qwen::MtpRunner r(argv[1],argv[2],c,qwen::SamplingConfig(12345));
     const std::array<std::int32_t,8> prompt{248044,100,101,102,103,104,105,106};
     need(r.requires_begin(),"new state");reject([&]{(void)r.next();});

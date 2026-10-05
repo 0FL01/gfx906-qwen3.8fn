@@ -3068,3 +3068,37 @@ constructor/ownership, full-logit/tap/continuation/MTP gates and observed fit.
 The longer fixture must avoid keeping two redundant full-vocabulary reference
 arrays at16384 rows; retain one full N1 reference and validate the old1024 path
 against it before comparing the candidate. Numerical gates remain unchanged.
+
+### 2026-10-05: stage-sized pipeline and logical16K correctness
+The opt-in pipeline now accepts logical windows up to16384 with stage tokens
+up to4096, bounded by the coordinator's4096-window limit. Physical host/GPU
+routing, activation, DTO and contribution owners use the stage row capacity;
+published target taps retain every logical row. Serial allocations are unchanged.
+MTP capacities above4096 require the pipeline. No arithmetic, precision, weights,
+QSA budget, sampling or numerical gate changed. Default remains off.
+
+Detached PID1504300, source d544b6ee45158f0bc92c2500da409899224a25f7/dirtytrue,
+completed native0 at2026-10-05 15:06:07 UTC. Full strict build and41/41 CTests
+passed (1156.08s). Seven CLI rejects, physical256x129 ownership, both last-window
+stage failure/publication/reset cases and long-capacity MTP API passed.
+Full16K/2048 compared29,497,640,960 values cumulatively, including repeated
+full-vocabulary rows and hidden taps, with zero absolute error and bit mismatches.
+The small256x129 fixture compared862,512,640 values with the same zero result.
+This is same-engine N1 parity, not an independent HF reference.
+Actual16387-token MTP carry compared logical4096 and16384 at stage2048:
+all32 outputs, acceptance and RNG agree. Capacity boundaries, custom stop,
+invalid-owner/reset/continuation tests retain their existing scope.
+
+Native16K resource ledgers show stage_rows2048, contribution209715200B/device,
+originalQ8 5898240B/device and root taps671088640B each. Logical rows are not
+confused with physical stage extent. The fixture retains one full N1 vocabulary
+reference rather than a duplicate second16GB array, while checking the old1024
+path against it and preserving every hidden tap. Host swap was observed during
+the large correctness fixture; no swap settings changed. Its timings are NOT
+performance evidence. Normal512-output MTP runs are measured separately.
+
+Actual raws/manifests: runs/r4-pipeline16k-gates-d544/. Journal100 and its old99
+byte prefix were verified after copy to the controller. Protected baseline intact.
+Next: same-binary A/B/A logical4096 versus16384, fixedstage2048 at4K/16K+512,
+then driver VRAM observation. Current best qualified speed remains dc60e0f
+84.422/229.376s; this correctness slice alone claims no speed or llama.cpp win.
