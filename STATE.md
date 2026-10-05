@@ -1,108 +1,95 @@
 # Current state
 
 ## Goal and constraints
-Finish ALL PLAN.md, beat pinned llama.cpp on matched complete requests.
-User requires personal work through SSH nc-lab, no engineering subagents.
+Complete ALL of PLAN.md and beat pinned llama.cpp on comparable full requests.
+Work personally through SSH nc-lab, without engineering subagents.
 Document, commit and push each completed slice; verify remote master.
-R0–R3 closed; fullR4–R8 OPEN.400–600PP/30–40TG and llama.cpp victory not achieved.
-Never relax numeric gates, weights, precision, QSA/top-k budgets or sampling.
+R0–R3 are closed; full R4–R8 and the 400–600 PP / 30–40 TG goals remain OPEN.
+Do not relax numerical gates, weights, precision, QSA/top-k budgets or sampling.
 Same-engine parity is not independent HF; capacity128K is not occupied128K;
-custom stop is not natural EOS. R7 practical API/tokenizer/long context andR8
-original safetensors streaming pack remain open.
+custom stop is not natural EOS. R7 practical API/tokenizer/long context and
+R8 original-safetensors streaming pack are still open.
 
-## Latest results
-Canonical journal106, controller actual logs/manifests and old105 prefix verified.
-Latest sourcec3d7625129f1a3c50bf32d96180d0859d6c81064/dirtytrue.
-Stage4096 withinlogical16384:16K+512182.044469s,PP113.318528/TG13.641648.
-Controlsstage2048:186.827339/185.103706s,PP110.805481/111.225462.
-Meanrequest1.021539x,PP1.020749x; all512 IDs/RNG/acceptance/pending equal.
-Extra215,777,280B/device owned stage memory; actual MTP fits, driverpeak notsampled.
-Lower-memorystage2048 previous paired result183.372317s,PP112.303156/TG13.634030
-vs234.193/231.932 logical4096controls; journal101, sourceeaa778cdirty.
-4K B83.416036s vs86.192/85.047 but same2stages, notstructuralgain.
-Pinned llama.cpp~57/~144s stillfaster. Defaultordinary1024 unchanged.
-Full history/negative results/provenance: README.md/results.jsonl.
+## Latest completed slice
+Batched QSA selector component was pushed as54a4dbf3792145e3483ef2f61a2840897c17843f.
+Session integration now passed all gates, journal107; compiled source54a4dbf dirty.
+Final native PID1608246 completed0 at2026-10-05 21:35:28UTC.
+Full strict build and41/41 CTests passed in1154.97s.
+Wide786,677,760 and attention1,036,984,320 comparisons have zero violations/bits.
+Full16K has29,497,640,960 cumulative exact logits/tap comparisons.
+Serial/pipeline256, attention tiles16/128, faults/reset, MTP API,2051/16387 carry,
+default memory and actual strict collectors also passed.
+Controller copied/validated actual logs and old106 journal byte prefix.
+Raw directory: ROOT/runs/r4-qsa-batch-model-54a.
+Original PID1575377 and resume1602356 stopped between phases on external
+Telegram-build/low-RAM guards. Final resume2 preserved all completed phases.
+The two earlier exit1 records are resource interruptions, not numeric failures.
 
-## Completed current slice
-PID1529544 ROOT/runs/r4-stage4096-gates-c3d endednative0 at16:57:54UTC.
-Strict selectedbuild+2targetedCTest; no runtime source changes.
-Full16384x4096 fixture29,497,640,960 cumulative logits/taps compared,
-zeroerrors/bits; repeated/reset/continuation/invalidowner gates pass.
-16387+32CLI carry2048vs4096 exactlyequal. Then samebinary16K+512 A/B/A.
-Latest full41CTest is journal100,1156.08s, same runtime source, not rerun here.
-SSH outage16:12..16:32 recovered; SAME PID observed, no duplicate run.
-Initial4097 fixture planned but corrected to allowed16384 BEFORE any native run.
+Selector subgroups are bounded to8, while attention tiles through128 remain valid.
+Score arithmetic is unchanged. Scalar tails retain the old selector entry point.
+Histogram/state/candidate rows are private; final output publication follows checks.
+At frame1024 existing f(16) already fits the score rows. Native ownership delta
+is exactly258,944B/device; full attention ID/count storage is retained.
+No model speed claim from this correctness slice.
 
-## Latest negative slice and next physical step
-Stage1024 for4K completed native0 at17:33:27UTC, PID1541061,
-ROOT/runs/r4-stage1024-gates-3cb; journal104 actual copied artifacts verified.
-Full4096x1024 13,494,576,640 exact comparisons;4099+32carry exact;
-two targeted CTests. Full41CTest remains journal100, no runtime code changes.
-A/B/A request85.297698/85.556014/86.214582s; PP89.052903/85.555633/88.090998.
-B slower PP than both controls, no stable request win: NOT promoted.
-Profile PID1551076 completed native0 at17:54:17UTC; journal105 copied evidence verified.
-ROOT/runs/r4-profile-logical16k-20261005, source9f6f2bedirty, ordinary3cb unchanged.
-16K+128 untraced155.972s/traced213.622s, exact trajectories; no512-output claim.
-Target trace197.308s,6,045,736kernels, summed183.679s; unions92.147/91.473,
-simultaneous23.385s. Q4N8 63.651s, attention40.209s.
-Radix histogram/select EACH1,375,968 launches, total11.880s kernel sum.
-Bounded QSA batch component now COMPLETE, journal106; source94579b9dirty.
-Native1570573 and repeat1196 pass:525cases/GPU,43,812,608 total ID/count/padding
-comparisons,23host rejects/24nonfinite/3sticky/12graphreplays perGPU.
-Existing62-rowcore-qsa and collector,3targetedCTest pass. NOTfullmodel/full41CTest.
-28/28 resident timingcoordinates beatbothcontrols;8query median6.2456x,
-2query1.6719x. Not inference speed. Actual controllerlogs/old105prefixverified.
-Next Session integration(count>1): serial score computation to perqueryf16 rows,
-batch selector to existing ID/count slots. f16 max(existing,tile*32768) floats;
-hist/state/candidates allocated perattentiontile. N1/tile1 unchanged semantics.
-Report actual backing allocations, preserve finite/error publication contract.
-Native fullmodel attention/layerwise/taps/MTP tests,full41CTest andthenmatched
-4K/16K+512 A/B/A required beforepromoting. No model code edited yet.
-No GPU workload active. Read src/session.hip Device allocation/memory ledger and
-Layer::attention_queries; src/session.hpp SessionMemory. Newcomponent API in
-src/hip/qsa_select.cuh, fixturetests/qsa_select_batch_test.hip.
+## Next physical step
+After committing/pushing this integration:
+1. Save current session.hip as runs/qsa-batch-session-on.hip.
+2. Copy it, runs/qsa-batch-session-off-54a.hip and r4-qsa-batch-ab.py to GPU runs.
+3. Write the committed40-character source hash to r4-qsa-batch-ab.revision.
+4. Launch the prepared driver with a fresh detached prefix r4-qsa-batch-ab-20261005.
+The driver builds A/B/A variants outside timing, runs4K/16K+512 with primary
+sampling, logical4096/16384 and stage2048, verifies full trajectories, then restores
+the candidate. Do not overwrite protected baseline binaries.
+No GPU workload is active after the completed qualification.
 
-## Memory
-Head128 owned allocation saved889,978,880B/device; full41CTest journal98.
-Stage-sized physicalscratch preserves full logical teacher taps.
-Journal102 observerPID1525727 ended15:43:58UTC: logical16K/stage2048,
-sameeaa binary/512trajectory,2710samples at0.1s:
-minfree5,566,386,176/868,737,024B, maxused11,596,705,792/16,294,354,944B.
-Global sampled extrema, not exactpeak. Source extra4096stage budget216MB/device
-suggests~653MBroot free, not measurement. Full reference fixtures mayuseswap;
-no system settingschanged, no speedclaimfromcorrectness runs.
-Protected saved binaries MUST NOT be overwritten:
-ROOT/build/core-mtp-run-baseline7df digest
-e1dd8b84a434ea72611c5cd67ccedb53d64a94705dbbd0e94741912545962a32
-ROOT/build/core-session-baseline775, source77fdirty.
-Ordinary core-mtp-run currently3cbdirty, digest
-0a4d2833c877a7616e20751ca2ae7375c900a471b177e65ea6f56d0bc28c33f4.
+## Latest qualified performance before this candidate
+Current best16K+512 is182.044469s, PP113.318528/TG13.641648, using stage4096
+within logical16384 (sourcec3d7625 dirty, journal103). Controls at stage2048
+were186.827339/185.103706s; a modest~2% gain costs215,777,280B more per GPU.
+Lower-memory stage2048 previously measured183.372317s, PP112.303156/TG13.634030
+(journal101, sourceeaa778c dirty). Its sampled root free VRAM was868,737,024B.
+Pinned llama.cpp remains around57s at4K and144s at16K, hence still faster overall.
+Stage1024 for4K was rejected: PP85.56 versus89.05/88.09, no stable request win.
+Default ordinary1024 configuration has not changed.
 
-## Avoid repeated failed work
-Packed640, small/largeN16, row-owned2560 and row1/row4 Q4 geometry did notyield
-stable model wins; production canonical8x2. Expert-wideMMQ failed frozenmodel
-gate: do notenable orrelax bounds. Attention rolleddot/deferredchecks accepted.
-Pipelineprofile journal97 has GPUkernel overlap3.199s and envelope21.508s
-includingidle, NOT21.5s actual simultaneouscompute. Q4N8~38%,attention~21%
-summedkernel durations, notwallbreakdown. No copybytes inCSV. TSan didnotstart
-becauseASLRlayout; no securitysettingschanged, noTSanpassclaim.
+## Evidence and avoided repeats
+Full numerical history and negative experiments: README.md/results.jsonl.
+QSA component journal106:525 cases/GPU,43,812,608 ID/count/padding comparisons,
+23 host rejects,24 nonfinite cases,3 sticky cases and12 graph replays/GPU.
+28/28 resident A/B/A coordinates win; eight-query median6.2456x is NOT model speed.
+Current16K profile journal105 found2,751,936 radix histogram/select launches,
+motivating this candidate. Tracing materially perturbs latency.
+Packed640, small/large N16, row-owned2560 and row1/row4 Q4 geometry did not give
+stable model wins. Expert-wide MMQ failed frozen full-model gates; do not revive
+it or relax bounds. Production Q4 dispatch remains canonical8x2.
+Tiled attention rolled-dot/deferred checks are qualified. TSan could not start
+due ASLR layout; no security settings changed and no TSan pass is claimed.
 
-## Machines and execution
-Controller /home/opencode/ai/gfx906-qwen3.8fn, master,
-origin git@github.com:0FL01/gfx906-qwen3.8fn.git, suppliedgitkey~/.ssh/nc-lab.
-GPUamude/radneon, ROOT=/home/radneon/gfx906-core; srcROOT/src,
-buildROOT/build,runsROOT/runs, canonicaljournalROOT/results.jsonl.
-Loginfish: explicit /bin/sh or python3 forremote commands.
-Models read-only /home/radneon/models-nvme/qwen38-keep1-Q4_0.gguf and
-mtp-Qwen3.8-Flash-Next-shared-Q8_0.gguf; do notduplicate/hash models.
-Docker llama.cpp-gfx906:cmake-4.4.3, ROOT:/core,models:/models:ro,
---device /dev/kfd --device /dev/dri --group-add video --ipc host.
-Release HIP /opt/rocm/llvm/bin/clang++, prefix/opt/rocm,
-CORE_REVISION=actual40 CORE_DIRTY=ON; fullbuildsh/core/src/tools/build.sh.
+## Machines and safe execution
+Controller: /home/opencode/ai/gfx906-qwen3.8fn, master,
+origin git@github.com:0FL01/gfx906-qwen3.8fn.git; supplied Git key~/.ssh/nc-lab.
+GPU amude/radneon: ROOT=/home/radneon/gfx906-core.
+Source ROOT/src, build ROOT/build, runs ROOT/runs.
+Canonical journal is ROOT/results.jsonl, NOT ROOT/src/results.jsonl.
+Login shell is fish: use explicit /bin/sh or python3.
+Read-only models: /home/radneon/models-nvme/qwen38-keep1-Q4_0.gguf
+and mtp-Qwen3.8-Flash-Next-shared-Q8_0.gguf. Do not duplicate/hash models.
+Image llama.cpp-gfx906:cmake-4.4.3; bind ROOT:/core and models:/models:ro.
+GPU flags: --device /dev/kfd --device /dev/dri --group-add video --ipc host.
+Release HIP compiler /opt/rocm/llvm/bin/clang++, prefix/opt/rocm,
+CORE_REVISION=actual40 and CORE_DIRTY=ON. Full build: sh /core/src/tools/build.sh.
 Detached wrapper runs/run-detached-series.py writes prefix.exit.json.
-One GPUworkload; builds outside timing. Poll samePID/log afterSSHdrop.
-Backoff1/2/4/8/10min; no duplicateheavyload ornetworksettingschanges.
-Donorpin dcd685463d597d31f5ca759d32c94592a2740fa4, isolatedloopback/noexposedports.
-512actualoutputs, capacityprompt+1024,primarysampling1/.95/20/seed12345.
-DonorTG512 numerator vsown511; comparefullrequestscope. DonorQSAsemantics
-differ fromHF blockselection; donor is performance reference, notHF oracle.
+One GPU workload; no heavy compilation during final performance requests.
+After SSH interruption inspect the SAME PID/log; backoff1/2/4/8/10min.
+Do not change transport settings or blindly repeat heavyweight runs.
+
+Protected files MUST remain unchanged:
+- ROOT/build/core-mtp-run-baseline, source7df, SHA256
+  e1dd8b84a434ea72611c5cd67ccedb53d64a94705dbbd0e94741912545962a32
+- ROOT/build/core-session-baseline, source77f dirty, original775 binary
+
+Donor pin dcd685463d597d31f5ca759d32c94592a2740fa4.
+Use isolated loopback/no-public-port runs,512 actual outputs, capacityprompt+1024,
+temperature1/top-p.95/top-k20/seed12345. Donor TG numerator512 differs from own511.
+Donor QSA differs from HF whole-block semantics; it is a speed reference, not oracle.

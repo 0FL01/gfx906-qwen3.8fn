@@ -3263,3 +3263,45 @@ already has enough. Histogram/state/candidates scale by attention_tile; tile1
 keeps original capacities. Add explicit backing allocation evidence and full-model
 N1/batched/logit/tap/MTP/failure regressions, then trace-off A/B/A full requests.
 No model integration or inference-speed promotion is claimed by this component.
+
+### 2026-10-05: batched QSA selection integrated and numerically qualified
+Session::Layer::attention_queries now computes unchanged causal scores into
+private rows of existing f(16), then selects up to eight queries per radix
+grid. Attention tiles through128 remain supported using selector subgroups;
+the final singleton uses the scalar entry point. Public ID/count storage still
+covers the full attention tile. Per-query score, histogram, state and candidate
+scratch is constructor-owned and reused in stream order. No hot allocation,
+score arithmetic, selected rank order, precision, budget or tolerance changed.
+
+At frame1024 the existing50,331,648-byte score backing already fits eight
+32768-float rows, so it does not grow. Histograms/state/candidates become
+262144/1024/32768 bytes each per device for tile8. Matching native old/new
+attention ledgers prove exactly258,944 more owned/workspace bytes per GPU,
+with all other categories and Buffer counts unchanged. Larger attention tiles
+do not grow this selector prefix beyond eight rows. This is owned allocation
+evidence, not a new sampled driver-peak measurement.
+
+Compiled source54a4dbf3792145e3483ef2f61a2840897c17843f/dirtytrue.
+Native qualification completed0 at21:35:28UTC, final resume PID1608246.
+Two earlier attempts stopped BETWEEN phases due an external Telegram build
+and a later RAM preflight while its linker was running. Completed phases were
+retained; no numerical failure, relaxed memory guard or duplicated heavy run.
+Full strict build and41/41 CTests pass in1154.97 seconds.
+Native evidence includes:
+- wide786,677,760 and attention1,036,984,320 compared values, zero violations/bits
+- serial256 and pipeline256x129 each862,512,640 exact cumulative comparisons
+- attention tiles16 and128:125,642,240 and441,443,840 exact comparisons
+- full16384x2048:29,497,640,960 cumulative logits/tap comparisons, zero errors/bits
+- both pipeline failure/publication/reset cases and actual16387-token MTP carry
+- MTP API/long resource configuration,2051 carry and default capacity131072 memory
+- actual strict wide/attention/default-memory collectors on GPU host and controller
+
+Same-engine N1 parity is not an independent HF oracle; default capacity131072
+is not occupied128K, and custom stop is not observed natural EOS. Large reference
+fixture timing includes comparisons and host memory pressure, not speed evidence.
+Journal107, actual copied manifests/raw footers and old106 byte prefix verified.
+Artifacts: runs/r4-qsa-batch-model-54a/, with original/resume/resume2 terminal records.
+Next: trace-off source-switched A/B/A4K and16K+512, same primary sampling,
+stage2048 and logical4096/16384. Build only outside timing, preserve saved binaries.
+Source-off snapshot runs/qsa-batch-session-off-54a.hip; driver r4-qsa-batch-ab.py.
+No inference-speed promotion is claimed until those complete requests pass.

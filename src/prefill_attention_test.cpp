@@ -234,6 +234,12 @@ void check_memory(const qwen::SessionMemory& m) {
             d.ple_state == (i == 0 ? 92160ULL * sizeof(float) : 0), "unchanged cache/index/GDN/PLE geometry");
         std::uint64_t sum = 0;
         require(d.head_logits_bytes == 128ULL * 248320 * sizeof(float), "actual bounded head logits");
+        require(m.selection_score_buffer_bytes[i] == max_tokens * 12288ULL * sizeof(float) &&
+            m.selection_histogram_bytes[i] == 8ULL * 8192 * sizeof(int) &&
+            m.selection_state_bytes[i] == 8ULL * 16 * sizeof(std::uint64_t) &&
+            m.selection_candidate_bytes[i] == 8ULL * 512 * sizeof(std::uint64_t),
+            "actual B8 selector backing capacities");
+
         for (auto n : {d.weights, d.expert_slots, d.qsa_kv, d.qsa_index, d.gdn_state, d.ple_state, d.workspace}) {
             require(n <= std::numeric_limits<std::uint64_t>::max() - sum, "owned byte sum overflow"); sum += n;
         }

@@ -425,3 +425,5 @@ Driver peak observation and larger-window PP remain the next steps.
 **2026-10-05 next R4 candidate:** current16K profile journal105 exposes2,751,936 radix histogram/select launches. Implement bounded up-to8-query selection on the existing integer rank contract; component qualification first, then full-model integration. Traced197.3s is diagnostic, not a speed measurement.
 
 **2026-10-05 R4 primitive complete:** boundedQSA batch selector passes both-GPU CPU/serial parity, invalid/sticky/graph/guard tests and legacyQSA gates;28/28 resident coordinates beat controls (8-query median6.25x). Journal106. Component only; Session integration and full-model/performance gates next.
+
+**2026-10-05 R4 integration checkpoint:** batched QSA selection passes full16K logits/taps, attention tiles16/128, MTP state/carry and full41/41CTest. Exact owned increase258944B/device at tile8. Journal107. Matched full-request A/B/A remains the performance gate; the whole plan and llama.cpp win stay open.

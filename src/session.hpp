@@ -281,6 +281,11 @@ struct SessionMemory {
         hybrid_middle_q8_bytes{}, hybrid_middle_error_bytes{};
     int attention_query_tile = 1;
     std::array<SessionAttentionMemory, 2> attention{};
+    // Actual backing buffers, already counted in workspace/owned bytes.
+    // Score f(16) is shared scratch; only tile*32768 floats form the selector
+    // prefix, so do not add this whole buffer again as private workspace.
+    std::array<std::uint64_t, 2> selection_score_buffer_bytes{},
+        selection_histogram_bytes{}, selection_state_bytes{}, selection_candidate_bytes{};
     // Snapshot/tap GPU capacities also included in workspace and independent
     // live-Buffer traversal. Exactly FOUR prefix slots per mutable state.
     bool speculative_checkpoints = false;

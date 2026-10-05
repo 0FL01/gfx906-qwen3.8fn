@@ -319,7 +319,8 @@ struct Device {
                 // f(17) dies before attention output. Only these prefixes grow
                 // if tile exceeds the existing logical chunk scratch capacity.
                 const auto n = (i == 15 || i == 17) ?
-                    std::max(elements, checked_size(attention_tile, attention_query_elements)) : elements;
+                    std::max(elements, checked_size(attention_tile, attention_query_elements)) :
+                    (i == 16 ? std::max(elements, checked_size(std::min(attention_tile, 8), 32768)) : elements);
                 scratch.emplace_back(checked_size(n, sizeof(float)));
             }
             q8 = Buffer(checked_size(std::max<std::size_t>(512, checked_size(max_tokens, W / 32)), sizeof(Q8_1)));
@@ -332,8 +333,9 @@ struct Device {
             gathered_v = Buffer(checked_size(checked_size(attention_tile, attention_gather_elements), sizeof(std::uint16_t)));
             partial_o = Buffer(checked_size(checked_size(attention_tile, attention_partial_elements), sizeof(float)));
             partial_ms = Buffer(checked_size(checked_size(attention_tile, attention_partial_ml_elements), sizeof(float2)));
-            histogram = Buffer(8192 * sizeof(int)); select_state = Buffer(16 * sizeof(std::uint64_t));
-            candidates = Buffer(512 * sizeof(std::uint64_t));
+            histogram = Buffer(checked_size(checked_size(std::min(attention_tile, 8), 8192), sizeof(int)));
+            select_state = Buffer(checked_size(checked_size(std::min(attention_tile, 8), 16), sizeof(std::uint64_t)));
+            candidates = Buffer(checked_size(checked_size(std::min(attention_tile, 8), 512), sizeof(std::uint64_t)));
             ids = Buffer(checked_size(checked_size(attention_tile, attention_max_selected), sizeof(std::int32_t)));
             block_ids = Buffer(checked_size(checked_size(attention_tile, 512), sizeof(std::int32_t)));
             counts = Buffer(checked_size(checked_size(attention_tile, 2), sizeof(int)));
@@ -1141,16 +1143,35 @@ struct Layer {
         const int tile = static_cast<int>(d.counts.bytes() / (2 * sizeof(int)));
         for (int first = 0; first < tokens; first += tile) {
             const int count = std::min(tile, tokens - first);
-            // SAME scratch for serial score/radix selection, but separate immutable
-            // result slots. No D2H IDs or per-row copy. Previous batch consumers
-            // and postprocessing precede slot overwrite on this SAME stream.
-            for (int q = 0; q < count; ++q) {
-                const int t = first + q, visible = position + t + 1;
-                hip(launch_qsa_index_score(p, d.f(14) + t * 512, pooled.get(), visible,
-                    d.f(15), d.f(16), d.flag(), d.stream));
-                hip(launch_qsa_select(d.f(16), visible, d.ids.get<std::int32_t>() + q * attention_max_selected,
-                    d.block_ids.get<std::int32_t>() + q * 512, d.counts.get<int>() + q * 2,
-                    {d.histogram.get<int>(), d.select_state.get<std::uint64_t>(), d.candidates.get<std::uint64_t>(), d.flag()}, d.stream));
+            // Keep each score arithmetic/causal prefix; subgroup only the
+            // selector (<=8 rows), without narrowing the attention tile<=128.
+            // Previous subgroup selection completes before f(16) is reused.
+            for (int selected = 0; selected < count; selected += 8) {
+                const int rows = std::min(8, count - selected);
+                for (int q = 0; q < rows; ++q) {
+                    const int t = first + selected + q, visible = position + t + 1;
+                    hip(launch_qsa_index_score(p, d.f(14) + t * 512, pooled.get(), visible,
+                        d.f(15), d.f(16) + static_cast<std::size_t>(q) * 32768, d.flag(), d.stream));
+                }
+                const auto id_offset = static_cast<std::size_t>(selected) * attention_max_selected;
+                const auto block_offset = static_cast<std::size_t>(selected) * 512;
+                const auto count_offset = static_cast<std::size_t>(selected) * 2;
+                if (rows == 1) {
+                    hip(launch_qsa_select(d.f(16), position + first + selected + 1,
+                        d.ids.get<std::int32_t>() + id_offset, d.block_ids.get<std::int32_t>() + block_offset,
+                        d.counts.get<int>() + count_offset,
+                        {d.histogram.get<int>(), d.select_state.get<std::uint64_t>(), d.candidates.get<std::uint64_t>(), d.flag()}, d.stream));
+                } else {
+                    hip(launch_qsa_select_batch(
+                        {d.f(16), d.scratch[16].bytes() / sizeof(float), 32768}, rows, position + first + selected + 1,
+                        {d.ids.get<std::int32_t>() + id_offset, d.ids.bytes() / sizeof(std::int32_t) - id_offset, attention_max_selected},
+                        {d.block_ids.get<std::int32_t>() + block_offset, d.block_ids.bytes() / sizeof(std::int32_t) - block_offset, 512},
+                        {d.counts.get<int>() + count_offset, d.counts.bytes() / sizeof(int) - count_offset, 2},
+                        {{d.histogram.get<int>(), d.histogram.bytes() / sizeof(int), 8192},
+                         {d.select_state.get<std::uint64_t>(), d.select_state.bytes() / sizeof(std::uint64_t), 16},
+                         {d.candidates.get<std::uint64_t>(), d.candidates.bytes() / sizeof(std::uint64_t), 512},
+                         d.flag()}, d.stream));
+                }
             }
             const auto query_offset = static_cast<std::size_t>(first) * attention_query_elements;
             // Borrow the REMAINING query capacity after slicing, never base+offset
@@ -1898,6 +1919,10 @@ struct Session::Impl {
             auto& d = *devices[id];
             d.drain();
             out.head_logits_bytes = d.logits.bytes();
+            result.selection_score_buffer_bytes[id] = d.scratch[16].bytes();
+            result.selection_histogram_bytes[id] = d.histogram.bytes();
+            result.selection_state_bytes[id] = d.select_state.bytes();
+            result.selection_candidate_bytes[id] = d.candidates.bytes();
             result.host_routing_capacity += d.route_probabilities.capacity() * sizeof(float) +
                 d.route_weights.capacity() * sizeof(float) + d.route_ids.capacity() * sizeof(std::int32_t);
             if (d.routes) result.host_route_group_payload += sizeof(RouteGroups) +
