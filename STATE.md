@@ -155,15 +155,34 @@ Existing trace Q4_0 N8 split by grid-inferred output M:10240=5.338s,
 identify K, so don't attribute allM2560 to down. Analysis saved/copied.
 LargeM N16 remains untested; earlier negative candidate restrictedM<=2560.
 
-NEXT attention deferred-check component A/B/A. Prepared ONLY under runs:
-attention-deferred-{off,on}.hip and attention-deferred-test.hip. Production
-attention source untouched. Fixture adds two overflow cases, optional
---benchmark after --capture/--compare,12resident coordinates/GPU and old bits.
-First sync strengthened fixture, build restored core-mtp-run +core-attention-
-batch with actual newHEAD/dirtytrue, capture fresh A1 snapshot. Then swap ONLY
-attention.hip candidate for B(compare same snapshot), restoreold for A2.
-Must preserve nonfinite detection/publication and exact valid operation order.
-No new GPU work running after paired completion. FullPLAN/llama win open.
+Attention deferred checks component842/844/845 COMPLETE0,source22b9f0e/dirtytrue.
+BothGPUs38cases/352queries,2162688 exactN1+CPU elements each,25device/
+180host rejects/6sticky checks. Old snapshot76cases/4336640values exact.
+All24 resident A/B/A coordinates win (1.03170–1.24901,median1.10379);
+B3~1.24,B8long~1.03–1.04. Journal89. Two new overflow cases pass.
+Only QK/PV pure additive-chain checks deferred; end detection, strict noFMA
+and final publication guard retained. No model/fullrequest speed claim yet.
+
+LargeM Q4 N16 native853/857/859 REJECTED0/24wins,median.877386. Kernel
+removed; large6144/10240/12288 tests retained. Initial848oldfixture excluded
+after failed edit; onlya1b used. Legacyrawphysical8field is baseline descriptor,
+actualB selected16 in preservedpatch. Journal90, actual raws copied/verified.
+
+Attention model gates COMPLETE native0 at08:31:46UTC,source22b9f0e/dirtytrue,
+journal91. Short29.8M/wide1.03698B vocabulary comparisons zeroerrors/bits,
+wide maxabs0; layerwise128,MTPAPI pass. Six targeted CTests72.61s, notfull39.
+Actual raws/collectors independently verified on controller. Only attention
+candidate retained; all packed/N16 Q4 variants removed.
+
+NEXT matchedfullrequest A/B/A runs/r4-attention-deferred-ab.py is prepared,
+not launched. Both explicitlayerwise4096,slots112,frame1024,4K/16K+512.
+Switch ONLY attention.hip using attention-deferred-{off,on}.hip. Revision file
+runs/r4-attention-deferred-ab.revision must be actual qualified commit before
+build. Saved baseline7df untouched, rebuild ordinary exe outside timing.
+No fullrequest improvement claimed yet; layerwise91.233/267.236s remains best.
+Next high-leverage PLAN item after this measurement: bounded two-GPU PP
+pipeline preserving per-layer/window causal order and explicit failure/reuse
+ownership. Unimplemented; must budget per-stage host/GPU frames and root taps.
 
 ## Принятые границы / не повторять
 

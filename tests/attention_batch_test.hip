@@ -178,7 +178,15 @@ template<class T> void gaps(const Buffer<T>& buffer, int batch, std::size_t stri
     buffer.guards();
 }
 
+struct Timing { int batch, first; float completed_ms; };
+struct Event {
+    hipEvent_t value = nullptr;
+    Event() { check(hipEventCreate(&value)); }
+    ~Event() { if (value) cleanup(hipEventDestroy(value)); }
+};
+bool measure_performance = false;
 struct Summary {
+    std::vector<Timing> timings;
     int device = -1;
     std::size_t cases = 0, queries = 0, bit_elements = 0, cpu_elements = 0;
     std::size_t device_rejects = 0, host_rejects = 0, sticky_checks = 0;
@@ -413,7 +421,15 @@ void device_failures(Summary& s) {
             std::fill(std::begin(k.qs), std::end(k.qs), std::uint8_t{0xff});
         }
     }
-    failed(f, s, attention_error_arithmetic, false); f.hq = base_q; f.hk = base_k;
+    failed(f, s, attention_error_arithmetic, false);
+    // Overflow followed by opposite-sign products must not escape detection.
+    for (std::size_t d = 0; d < attention_query_elements; ++d)
+        f.hq[last * f.qs + d] = d % 2 ? -std::numeric_limits<float>::max() : std::numeric_limits<float>::max();
+    failed(f, s, attention_error_arithmetic, false);
+    // Each product is finite, but the ascending addition chain overflows.
+    std::fill_n(f.hq.data() + last * f.qs, attention_query_elements, std::numeric_limits<float>::max() / 16.0f);
+    failed(f, s, attention_error_arithmetic, false);
+    f.hq = base_q; f.hk = base_k;
 
     // Valid inputs under sticky 1/2/3/high-bit flags: no implicit clear and NO
     // scratch/output change at all. Reuse after EXPLICIT caller reset succeeds.
@@ -543,6 +559,25 @@ Summary device(int index) {
     for (int b : {5, 7, 127, 128}) { Fixture f(b, 1); f.selection(true); parity(f, s); }
     { Fixture f(3, 65); f.selection(true, true); parity(f, s); }
     { Fixture f(2, 131071, attention_max_capacity); f.selection(true); parity(f, s); }
+    if (measure_performance) for (int batch : {1, 3, 8}) for (int first : {128, 2051, 4096, 16384}) {
+        Fixture f(batch, first); f.selection(); parity(f, s);
+        const auto expected = f.output.get();
+        f.flag(0);
+        for (int i = 0; i < 4; ++i) check(f.call());
+        check(hipStreamSynchronize(f.stream.value));
+        Event begin, end;
+        check(hipEventRecord(begin.value, f.stream.value));
+        for (int i = 0; i < 64; ++i) check(f.call());
+        check(hipEventRecord(end.value, f.stream.value));
+        check(hipEventSynchronize(end.value));
+        float milliseconds = 0;
+        check(hipEventElapsedTime(&milliseconds, begin.value, end.value));
+        require(milliseconds > 0 && std::isfinite(milliseconds) && f.flag() == 0, "completed resident timing");
+        const auto repeated = f.output.get();
+        exact<float>(repeated, expected, "resident timing repeats changed output");
+        f.sources(); f.neighbors();
+        s.timings.push_back({batch, first, milliseconds / 64});
+    }
     device_failures(s); host_failures(s);
     return s; // every fixture/stream/graph/buffer destroyed BEFORE serialization
 }
@@ -564,8 +599,12 @@ int main(int argc, char** argv) {
     try {
         std::unique_ptr<Snapshot> snapshot;
         if (argc != 1) {
-            require(argc == 3 && (std::string_view(argv[1]) == "--capture" ||
-                std::string_view(argv[1]) == "--compare"), "use --capture FRESH or --compare SNAPSHOT");
+            require((argc == 3 || argc == 4) && (std::string_view(argv[1]) == "--capture" ||
+                std::string_view(argv[1]) == "--compare"), "use --capture FRESH or --compare SNAPSHOT [--benchmark]");
+            if (argc == 4) {
+                require(std::string_view(argv[3]) == "--benchmark", "expected --benchmark");
+                measure_performance = true;
+            }
             snapshot = std::make_unique<Snapshot>(std::string_view(argv[1]) == "--compare", argv[2]);
             cross_build = snapshot.get();
         }
@@ -584,6 +623,11 @@ int main(int argc, char** argv) {
                       << ",\"cpu_elements\":" << s.cpu_elements << ",\"max_abs\":" << s.max_abs << ",\"max_bound_ratio\":" << s.max_ratio
                       << ",\"device_rejects\":" << s.device_rejects << ",\"host_rejects\":" << s.host_rejects
                       << ",\"sticky_checks\":" << s.sticky_checks << ",\"passed\":true,\"cleanup_complete\":true}\n";
+        for (const auto& s : results) for (const auto& t : s.timings)
+            std::cout << "{\"kind\":\"attention_batch_timing\",\"device\":" << s.device
+                      << ",\"batch\":" << t.batch << ",\"first_visible\":" << t.first
+                      << ",\"completed_ms\":" << t.completed_ms
+                      << ",\"iterations\":64,\"scope\":\"resident completed stream events; no transfers/model; not full-request speed\"}\n";
         if (snapshot)
             std::cout << "{\"kind\":\"attention_batch_cross_build\",\"mode\":\""
                       << (snapshot->compare ? "compare" : "capture") << "\",\"cases\":" << snapshot->cases

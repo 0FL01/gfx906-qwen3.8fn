@@ -358,6 +358,11 @@ int main() {
                     f.quant(qwen::TensorType::Q8_0, 2560, 10240, n, true);
                 }
             }
+            // Profile-relevant large projections, independently measured from
+            // small expert matrices; no inference from a warm small-matrix win.
+            for (int m : {6144, 10240, 12288})
+                for (int n : {16, 17, 32, 64, 127, 128})
+                    f.quant(qwen::TensorType::Q4_0, 2560, m, n, true);
             for (int k : {2, 64, 128, 130, 320, 2560, 10240, 16384})
                 for (int n : {1, 8, 9, 15, 16, 17, 31, 32, 63, 64, 65, 127, 128}) f.dense(k, 3, n, false);
             for (int n : {9, 16, 32, 128}) {

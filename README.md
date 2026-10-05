@@ -2800,3 +2800,44 @@ Immediate next bounded experiment: defer checks only within pure attention
 multiply/add chains, retaining end-of-chain sticky error and output publication.
 No fastmath/FMA/order/tolerance changes; strengthened overflow and old-bit gates
 are mandatory. Candidate/test artifacts are prepared but not active yet.
+
+
+Deferred attention checking component A/B/A native842/844/845 passes, source22b9f0e/
+dirtytrue.38cases/352queries perGPU,2162688 exact-N1 and CPU elements/device,
+maxCPUabs1.19209e-7/maxratio.00036923;25device rejects,180host rejects and6sticky
+checks/device pass. Cross-build snapshot76cases/4336640values including padding
+matches exactly. Added Inf-plus-opposite-sign and finite-product/sum-overflow
+tests preserve bit2 and unchanged final output. Candidate changes only batch
+QK/PV pure additive chains: nonfinite values cannot become finite under later
+adds; score/PV end checks still report before stream-ordered output publication.
+Failed scratch is provisional; valid arithmetic/order/noFMA remain unchanged.
+All24 resident API coordinates beat both controls,ratio1.03170–1.24901,
+median1.10379; B3 near1.24 at long visibility,B8 long near1.03–1.04.
+Journal89, r4-attention-deferred-*; snapshot remains onGPU host. No model or
+fullrequest speed claim yet. Timings are optional --benchmark after capture/compare.
+
+Large-projection N16 Q4 also regresses: native853/857/859 all0,
+548cases/574166786 exactGPU values/device,184516CPU samples,21rejects/546graphs.
+K2560,M6144/10240/12288,full16 multiples:0/24 beats controls,median.877386,
+range.864493–.902627. Candidate removed, extra large-matrix tests retained.
+Legacy raw source physical_tile_columns8 describes the default baseline; the
+candidate's selected physical16 geometry is documented by its retained patch.
+Raw values were not retagged. Initialjob848 ran the old fixture after a rejected
+edit and is excluded; actual large-shape baseline is a1b. Journal90.
+
+Only attention deferred checking is under model qualification now: detached
+PID1431009,ROOT/runs/r4-attention-deferred-model-22b, selected strict build,
+short/wide/layerwise128/MTPAPI plus six targeted CTests. No new full39 claim;
+the last full39 run belongs to packed-kernel qualification (since reverted).
+
+
+Attention deferred-check model gates completed native0 at08:31:46UTC,
+source22b9f0e/dirtytrue,detachedPID1431009. Strict selected build,short29,798,400
+andwide1,036,984,320 vocabulary comparisons pass with zero violations and
+diagnostic bit differences; wide maxabs/maxratio0. Layerwise128 and original
+MTP32 IDs/RNG/reset/reject/custom-stop/cap48 pass. Six targeted CTests passed
+in72.61s (quant,sampling,speculative,CLI,attention oracle,attention result parser).
+This is NOT a new full39 run, nor independent HF or a model-speed qualification.
+Journal91, actual raw r4-attention-deferred-model-22b-* copied and short/wide
+strict collectors independently rerun on controller. Next matched4K/16K+512
+A/B/A changes only actual attention.hip snapshots, both withlayerwise4096.

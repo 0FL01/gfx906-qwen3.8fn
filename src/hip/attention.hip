@@ -600,6 +600,12 @@ void fattn_dec_chunk_batch(AttentionQ4BatchView<const float> queries,
         for (int h = 0; h < H; ++h) s[h] = 0.0f;
         const auto* kr = w.gathered_keys + static_cast<std::size_t>(cell >= 0 ? cell : 0) * row_values + g * D;
 // Keep the canonical ascending FP32 dot, but bound the live register set.
+        // Only defer arithmetic detection through pure multiply/add chains:
+        // once Inf/NaN occurs it cannot become finite under subsequent adds.
+        // checked(score) below and checked(PV) at publication retain sticky
+        // bit2; final output still waits for the stream-ordered error check.
+        // Failed provisional scratch may differ; valid FP32 order is unchanged.
+        // Strict no-fast-math/no-contraction remains mandatory.
         // The fully unrolled B8 profile used256 VGPR and4380 private scratch.
         // No reassociation, precision, finite-check or reduction change.
 #pragma unroll 1
@@ -616,14 +622,14 @@ void fattn_dec_chunk_batch(AttentionQ4BatchView<const float> queries,
             for (int h = 0; h < H; ++h) {
                 const float4 qa = qs[wave + 4 * h][2 * c];
                 const float4 qb = qs[wave + 4 * h][2 * c + 1];
-                s[h] = checked(s[h] + checked(qa.x * k0, flags), flags);
-                s[h] = checked(s[h] + checked(qa.y * k1, flags), flags);
-                s[h] = checked(s[h] + checked(qa.z * k2, flags), flags);
-                s[h] = checked(s[h] + checked(qa.w * k3, flags), flags);
-                s[h] = checked(s[h] + checked(qb.x * k4, flags), flags);
-                s[h] = checked(s[h] + checked(qb.y * k5, flags), flags);
-                s[h] = checked(s[h] + checked(qb.z * k6, flags), flags);
-                s[h] = checked(s[h] + checked(qb.w * k7, flags), flags);
+                s[h] = s[h] + qa.x * k0;
+                s[h] = s[h] + qa.y * k1;
+                s[h] = s[h] + qa.z * k2;
+                s[h] = s[h] + qa.w * k3;
+                s[h] = s[h] + qb.x * k4;
+                s[h] = s[h] + qb.y * k5;
+                s[h] = s[h] + qb.z * k6;
+                s[h] = s[h] + qb.w * k7;
             }
         }
 #pragma unroll
@@ -658,12 +664,12 @@ void fattn_dec_chunk_batch(AttentionQ4BatchView<const float> queries,
 #pragma unroll
             for (int jj = 0; jj < 16; ++jj)
                 if (j0 + jj < chunk_count)
-                    o[h] = checked(o[h] + checked(ps[h][j0 + jj] * v[jj], flags), flags);
+                    o[h] = o[h] + ps[h][j0 + jj] * v[jj];
         }
     }
 #pragma unroll
     for (int h = 0; h < G; ++h)
-        w.partial_output[((chunk * attention_kv_heads + g) * G + h) * D + tid] = o[h];
+        w.partial_output[((chunk * attention_kv_heads + g) * G + h) * D + tid] = checked(o[h], flags);
     report(flags, w.error);
 }
 
