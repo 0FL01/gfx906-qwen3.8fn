@@ -2540,3 +2540,13 @@ CPU0 finalA2/B3/A3 averages: distribution~.578ms unchanged,draw.623->.165ms,
 acceptance1.176->.258ms,residual5.023->1.776ms. All timings are CPU components
 at primarytop-k20, not MTP runtime gains. Native jobs511/515/524/525/529/530
 exit0; journal70, raw ROOT/runs/r5-sampling-zero-*; snapshot footer is required.
+
+Sparse sampling MTP qualification: API job1791161487780-534 exit0, then
+trace-off paired job1791161686931-537 exit0/31m53.4K+512 separate112.812/110.077s
+vs sparse109.526s (meanA/B1.017521), PP58.322/TG13.005.16K separate334.585/
+333.669s vs sparse330.152s (1.012040), PP56.130/TG13.357. Every512 output ID,
+acceptance histogram, RNG count and pending token match within both triplets.
+Journal71, raw ROOT/runs/r5-sampling-zero-ab-253; source2535cbf/dirtytrue with
+explicit sampler snapshots. The ordinary executable was rebuilt outside
+measurements and restored to the candidate; saved baseline unchanged. These
+are bounded1–2% full-request improvements over the own previous runtime.

@@ -113,8 +113,29 @@ so final source keeps original generic Sum and targets sparse loops only.
 95,389,224 snapshot bytes exact across32 cases/four filter configs using first8
 actual saved target logit rows. Existing sampling/speculative tests plus explicit
 signed-zero/subnormal-residual tests pass. Journal70 old69 prefix preserved.
-Next candidate MTP API gate, then matched4K/16K+512 sampler-off/on/off rebuilding
-ordinary executable only. Keep saved baseline7df untouched. No runtime win yet.
+PUSHED350f8afe3f988af1a79a74f47e5f782f0c7051f7.
+MTP API job1791161487780-534 COMPLETEexit0/1m36: exactCLI32 IDs/RNG, reset,
+invalid request preservation, custom stops/capacity48. Actual modelEOS unproven.
+Sampler paired job1791161686931-537 COMPLETE nativeexit0/31m53.
+4K A112.812/110.077s -> B109.526s (1.017521x),PP58.3219/TG13.0049.
+16K A334.585/333.669s -> B330.152s (1.012040x),PP56.1301/TG13.3572.
+Every512 output ID/acceptance/RNG/pending exact in both triplets. Journal71
+includes prior MTP API gate, old70 prefix plus actual six copied raws/manifests
+verified. Candidate faster than both controls; bounded1–2% full-request gain,
+not llama.cpp win. Protected baseline7df unchanged; ordinary binary restored to
+sparse-sampler2535cbf/dirtytrue. No GPU job active at this checkpoint.
+NEXT: last-row LM-head output for prefill, retaining full target tap/state and
+old all-row APIs. Controller ONLY has uncompiled/uncommitted prefill_last API
+and tests/prefill_last_test.hip/CMake target. MtpRunner not changed yet.
+Sync/build/run this focused fixture before integrating the new API into MTP.
+Do not mistake controller pending code for the sampler benchmark source.
+Then REVIEW/ADAPT existing unqualified runs/r4-layerwise-prefill.patch (not
+blind apply): whole-window expert reuse can reduce repeated1024-chunk uploads.
+Its16K global contributions add1.608GiB/device plus1.26GiB extra root taps,
+before trainedMTP2.67GB; do not assume16K fits. Start opt-in4096 capacity only
+after memory checks, retain current tiled128/fused primitives and frozen gates.
+Patch stages~129GB widened residual traffic/16K plus HC/router copies: include
+all traffic in full-request comparison. No layerwise/pipeline claim yet.
 Further candidates require fresh measured priority: PP launch density/selection,
 per-column dense reductions, two-GPU chunk overlap, grouped short MoE. Do not
 mix another optimization into this still-unqualified integration slice.
