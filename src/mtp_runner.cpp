@@ -18,6 +18,9 @@ SessionConfig checked(SessionConfig c) {
     if(c.layerwise_prefill_capacity<0 || c.layerwise_prefill_capacity>4096 ||
        (c.layerwise_prefill_capacity && c.max_batch_tokens<4))
         throw std::invalid_argument("MTP layerwise capacity requires 0..4096 and frame>=4");
+    if(c.prefill_pipeline_tokens<0 || c.prefill_pipeline_tokens>c.layerwise_prefill_capacity ||
+       c.prefill_pipeline_fail_stage!=-1 || c.prefill_pipeline_fail_window!=-1)
+        throw std::invalid_argument("MTP pipeline requires layerwise resources and no diagnostic fault");
     c.speculative_checkpoints=true;c.max_batch_tokens=std::max(3,c.max_batch_tokens);
     return c;
 }

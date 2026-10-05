@@ -2879,3 +2879,56 @@ cmake --build build --target prefill-pipeline-test; ctest --test-dir build
 -R '^prefill-pipeline$' --output-on-failure --repeat until-fail:20.
 Next integrate per-GPU mutable host frames and chronological two-stage PP,
 then model/state/reuse gates and full requests. Full PLAN remains open.
+
+
+### 2026-10-05: opt-in two-GPU prefill pipeline correctness
+
+The existing 24/24 layer split now supports chronological subwindows with one
+persistent GPU0 producer and the calling GPU1 consumer. Each stage owns its
+mutable routing, pinned DTO and transfer buffers. Two bounded host handoff slots
+transfer completed residual ownership; all six activation vectors have equal
+capacity, so swaps do not allocate. No additional explicit GPU Buffer payload is
+created. Default serial scheduling is unchanged. The initial pipeline limit is
+a logical window of 4096 tokens, with an explicit subwindow size in 1..capacity;
+CPU hybrid and tracing remain disabled for this path.
+
+Absolute GDN/PLE/QSA chronology, original-rank arithmetic, all target tap rows and
+full-window route diagnostics are preserved. Publication happens after both
+stages finish. On failure, the producer and both GPU streams drain before reset
+or owner release. Logits also use transactional staging without checkpoints.
+The worker must never share the original PLE transfer buffer with GPU1.
+
+Qualification used source 48f3d14ca08bb8a1dd7a02fc0e2a381fd60dc12a, dirty=true:
+- Serial stage extraction passed the existing 128-token model fixture
+- Pipeline 32/8 and 128/17 passed 125,642,240 and 441,443,840 comparisons
+- Pipeline 4096/2048 passed 13,494,576,640 comparisons, including full vocabulary,
+  hidden taps and repeated references. All three had zero gate violations,
+  diagnostic bit mismatches, maximum absolute error and gate ratio
+- Eight injected failure/reuse cases passed: first/middle/last windows on both
+  stages, plus last-window failures without checkpoints. Previous published
+  logits/taps/counters survive; execution and the checkpoint getter require reset
+- MTP API original 32 IDs/RNG/acceptance, repeat/reject/custom-stop/capacity gates
+  passed. The 2051-token carry test compared ordinary, serial layerwise and
+  pipelined windows (1025/1025/1, pipeline 512), with 32 identical outputs
+- Six invalid CLI options and help passed before model load
+- Full strict build and 40/40 CTests passed in 1157.10 seconds
+
+The first fault fixture incorrectly called checkpoint_state() on an invalidated
+Session, contrary to its existing contract. That series exited 1 after the two
+small model passes. The fixture was corrected to require the getter rejection
+while independently checking preserved published bytes; no runtime relaxation.
+The expanded series exited 0 at 10:36:56 UTC. Journal94 retains actual manifests,
+footers and source revision; previous 93 records remain byte-identical.
+
+Reproduction inside the established container:
+- core-prefill-layerwise-test MODEL 4096 2048
+- core-prefill-layerwise-test MODEL --pipeline-fault STAGE WINDOW [--no-tap]
+- core-mtp-runner-test TARGET SIDECAR CLI32_IDS --pipeline
+- core-mtp-runner-test TARGET SIDECAR --large-carry
+- core-mtp-run ... --layerwise-prefill 4096 --prefill-pipeline 2048
+
+Artifacts: ROOT/runs/r4-pipeline-expanded-48f/ and r4-pipeline-48f-{32x8,128x17}.
+The latter are the successful portions of the first series. Host-only coordinator
+sanitizers and their TSan runtime limitation remain journal93. This is bounded
+same-engine correctness, not independent HF proof, occupied128K or a speed win.
+Next: one-binary trace-off A/B/A at 4K/16K +512 outputs, pipeline 0 versus 2048.

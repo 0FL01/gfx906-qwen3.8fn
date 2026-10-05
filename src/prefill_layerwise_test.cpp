@@ -53,10 +53,16 @@ struct Guarded {
                 std::bit_cast<std::uint32_t>(storage[guards + extent + i]) == sentinel, "fixture guard overwritten");
     }
 };
+std::uint64_t compared_values = 0, diagnostic_bit_mismatches = 0;
+double max_abs_error = 0, max_gate_ratio = 0;
 void compare(std::span<const float> actual, std::span<const float> reference) {
     require(actual.size() == reference.size(), "honest full-vocabulary shape");
     for (std::size_t i = 0; i < actual.size(); ++i) {
         const double a = actual[i], r = reference[i];
+        ++compared_values;
+        diagnostic_bit_mismatches += std::bit_cast<std::uint32_t>(actual[i]) != std::bit_cast<std::uint32_t>(reference[i]);
+        max_abs_error = std::max(max_abs_error, std::abs(a - r));
+        max_gate_ratio = std::max(max_gate_ratio, std::abs(a - r) / (.02 + .002 * std::abs(r)));
         if (!std::isfinite(a) || !std::isfinite(r) || std::abs(a - r) > .02 + .002 * std::abs(r))
             throw std::runtime_error("frozen .02+.002absref full-V gate index=" + std::to_string(i));
     }
@@ -85,12 +91,19 @@ struct Snapshot {
         : stats(s.stats()), routes(s.route_stats()), attention(s.attention_stats()), hybrid(s.hybrid_stats()), speculative(s.speculative_stats()),
           checkpoint(s.checkpoint_state()), tap(s.target_tap()), memory(s.memory()), borrowed(output.data()),
           logits(output.begin(), output.end()), tap_bytes(tap_copy(tap)) {}
-    void check(qwen::Session& s, std::span<const float> output) const {
+    void check(qwen::Session& s, std::span<const float> output, bool execution_failed = false) const {
         require((words<qwen::SessionStats, 5>(s.stats()) == words<qwen::SessionStats, 5>(stats)), "rejection stats");
         require((words<qwen::SessionRouteStats, 2>(s.route_stats()) == words<qwen::SessionRouteStats, 2>(routes)), "rejection routes");
         require((words<qwen::SessionAttentionStats, 6>(s.attention_stats()) == words<qwen::SessionAttentionStats, 6>(attention)), "rejection attention");
         require((words<qwen::SessionHybridStats, 26>(s.hybrid_stats()) == words<qwen::SessionHybridStats, 26>(hybrid)), "rejection hybrid physical counters");
-        require(s.speculative_stats() == speculative && s.checkpoint_state() == checkpoint && s.target_tap() == tap, "rejection owner/tap");
+        require(s.speculative_stats() == speculative && s.target_tap() == tap, "published owner/tap");
+        if (execution_failed) {
+            // The existing public window getter intentionally rejects an
+            // invalidated Session; it is not a failure-state inspection API.
+            bool rejected = false;
+            try { (void)s.checkpoint_state(); } catch (const std::runtime_error&) { rejected = true; }
+            require(rejected, "failed checkpoint getter must require reset");
+        } else require(s.checkpoint_state() == checkpoint, "rejection checkpoint owner");
         require(output.data() == borrowed && output.size() == logits.size() &&
             std::memcmp(output.data(), logits.data(), logits.size() * sizeof(float)) == 0, "borrowed logits changed");
         const auto bytes = tap_copy(tap);
@@ -132,6 +145,13 @@ void resources(qwen::Session& s, int n) {
         m.host_layerwise_injection == N * 4 * 4 && m.host_layerwise_probabilities == N * 512 * 4 &&
         m.host_layerwise_routes == N * 10 * 8 && m.host_layerwise_groups == N * 10 * 16 &&
         m.pinned_layerwise_metadata == N * 10 * 8 && m.pinned_handoff == 1024ULL * W * 4, "full-N/bounded-frame capacities");
+    if (m.prefill_pipeline_tokens) {
+        require(m.prefill_pipeline_workers == 1 && m.host_pipeline_owner > 0 &&
+            m.pinned_pipeline_handoff == 1024ULL * W * 4 && m.pinned_pipeline_metadata == N * 10 * 8 &&
+            m.host_pipeline_payload == 4 * N * W * 4 + N * (2560 + 4 + 512 + 10) * 4 + N * 10 * 4 + N * 10 * 16,
+            "bounded separate pipeline host/metadata/pinned owners");
+    } else require(!m.prefill_pipeline_workers && !m.host_pipeline_owner && !m.host_pipeline_payload &&
+        !m.pinned_pipeline_handoff && !m.pinned_pipeline_metadata, "serial owns no pipeline payload");
     for (int id = 0; id < 2; ++id) {
         require(m.layerwise_original_q8_bytes[id] == N * 80 * 36 &&
             m.layerwise_contribution_bytes[id] == N * 10 * 2560 * 4 &&
@@ -144,7 +164,8 @@ void resources(qwen::Session& s, int n) {
         << ",\"dto_each_bytes\":" << N * 10 * 8 << ",\"router_host_bytes\":" << m.host_layerwise_probabilities
         << ",\"host_logits_capacity_bytes\":" << m.host_logit_capacity << ",\"root_tap_each_bytes\":" << m.target_tap_bytes[1]
         << ",\"free_vram0\":" << m.devices[0].free_vram << ",\"free_vram1\":" << m.devices[1].free_vram
-        << ",\"ownership_verified\":true}\n";
+        << ",\"pipeline_tokens\":" << m.prefill_pipeline_tokens << ",\"pipeline_host_payload\":" << m.host_pipeline_payload
+        << ",\"pipeline_pinned_handoff\":" << m.pinned_pipeline_handoff << ",\"ownership_verified\":true}\n";
 }
 void record(qwen::Session& s, std::string_view phase, int rows, std::size_t compared, double wall_ms,
             qwen::SessionStats before = {}) {
@@ -159,9 +180,10 @@ void record(qwen::Session& s, std::string_view phase, int rows, std::size_t comp
         << ",\"last_call_completed_ms\":" << a.last_completed_ms << ",\"wall_includes_fixture_comparison\":true"
         << ",\"warm_cache_retained_by_reset\":true,\"passed\":true}\n";
 }
-void run(const std::string& model, int n) {
+void run(const std::string& model, int n, int pipeline_tokens = 0) {
     qwen::SessionConfig config; config.capacity = n + 8; config.max_batch_tokens = 1024;
     config.attention_query_tile = 8; config.layerwise_prefill_capacity = n;
+    config.prefill_pipeline_tokens = pipeline_tokens;
     config.speculative_checkpoints = n <= 4096; // 16k all-rows avoids two 16.27GB publication owners.
     qwen::Session s(model, config); s.set_attention_batch(true); resources(s, n);
     const auto gpu_loaded = s.memory();
@@ -213,7 +235,8 @@ void run(const std::string& model, int n) {
         s.reset(); const auto begin = std::chrono::steady_clock::now();
         const auto out = s.prefill_layerwise(tokens.first(n), qwen::Session::OutputMode::all_rows);
         compare_all(out, 0, n); check_tap(0, n);
-        require(s.stats().expert_upload_bytes <= inventory, "more than one canonical inventory uploaded in one full window");
+        require(s.stats().expert_upload_bytes <= inventory * static_cast<std::uint64_t>(pipeline_tokens ? (n + pipeline_tokens - 1) / pipeline_tokens : 1),
+            "more than one canonical inventory uploaded per stage subwindow");
         if (n >= 4096) require(s.route_stats().last_max_expert_group_assignments > 128 && s.route_stats().expert_groups_gt128 > 0,
             "optional real model window must exercise actual global group >128");
         const auto sp = s.speculative_stats();
@@ -270,13 +293,54 @@ void run(const std::string& model, int n) {
         s.target_tap().rows == 0 && !s.checkpoint_state().pending && s.speculative_stats() == qwen::SessionSpeculativeStats{}, "complete reset");
     compare_all(s.prefill_layerwise(tokens.first(n)), 0, n);
     const auto final = s.memory(); require(final.host_logit_capacity == stable.host_logit_capacity, "steady logit owners");
+    require(final.host_pipeline_payload == stable.host_pipeline_payload &&
+        final.pinned_pipeline_metadata == stable.pinned_pipeline_metadata &&
+        final.pinned_pipeline_handoff == stable.pinned_pipeline_handoff &&
+        final.host_pipeline_owner == stable.host_pipeline_owner, "steady pipeline owners");
     for (int id = 0; id < 2; ++id) require(final.devices[id].owned_bytes == gpu_loaded.devices[id].owned_bytes &&
         final.devices[id].owned_buffers == gpu_loaded.devices[id].owned_buffers, "no per-layer/matmul GPU allocation");
     reference.check(); old_reference.check(); teacher.check(); require(ids.front() == -123456789 && ids.back() == -123456789, "input guards");
     std::cout << "{\"kind\":\"layerwise_fixture_complete\",\"rows\":" << n << ",\"model\":" << std::quoted(model)
         << ",\"revision\":\"" << CORE_REVISION << "\",\"dirty\":" << CORE_DIRTY
         << ",\"frozen_abs_gate\":0.02,\"frozen_rel_gate\":0.002,\"checkpoint_tap_enabled\":" << std::boolalpha << config.speculative_checkpoints
+        << ",\"pipeline_tokens\":" << pipeline_tokens << ",\"compared_values_cumulative\":" << compared_values
+        << ",\"diagnostic_bit_mismatches_cumulative\":" << diagnostic_bit_mismatches
+        << ",\"max_abs_error\":" << max_abs_error << ",\"max_gate_ratio\":" << max_gate_ratio
         << ",\"short_tg_speed_qualified\":false,\"r4_target_speed_qualified\":false,\"passed\":true}\n";
+}
+void run_failure(const std::string& model, int stage, int fault_window, bool checkpoints = true) {
+    qwen::SessionConfig c; c.capacity = 40; c.max_batch_tokens = 32;
+    c.layerwise_prefill_capacity = 32; c.prefill_pipeline_tokens = 8;
+    c.attention_query_tile = 8; c.speculative_checkpoints = checkpoints;
+    c.prefill_pipeline_fail_stage = stage; c.prefill_pipeline_fail_window = fault_window;
+    qwen::Session s(model, c); s.set_attention_batch(true);
+    std::array<std::int32_t, 33> ids{}; ids[0] = 248044;
+    for (int i = 1; i < 33; ++i) ids[i] = 99 + i;
+    Guarded reference(33 * V);
+    for (int i = 0; i < 33; ++i) {
+        const auto out = s.step(ids[i]); std::copy(out.begin(), out.end(), reference.data() + i * V);
+    }
+    s.reset();
+    const auto prior = s.step(ids[0]); Snapshot published(s, prior);
+    bool failed = false;
+    try { (void)s.prefill_layerwise(std::span(ids).subspan(1, 32)); }
+    catch (const std::runtime_error& e) {
+        failed = std::string_view(e.what()) == "injected prefill pipeline stage failure";
+    }
+    require(failed, "missing exact injected stage failure");
+    published.check(s, prior, true);
+    bool invalidated = false;
+    try { (void)s.step(ids[1]); } catch (const std::runtime_error&) { invalidated = true; }
+    require(invalidated, "failed Session was reusable without reset");
+    s.reset();
+    const auto out = s.prefill_layerwise(std::span(ids).first(32));
+    compare(out, reference.values().first(32 * V));
+    compare(s.step(ids[32]), reference.values().subspan(32 * V, V));
+    reference.check();
+    std::cout << "{\"kind\":\"pipeline_failure_reuse\",\"stage\":" << stage
+        << ",\"window\":" << fault_window << ",\"checkpoints\":" << (checkpoints ? "true" : "false")
+        << ",\"prior_publication_preserved\":true,\"reset_reuse\":true"
+        << ",\"revision\":\"" << CORE_REVISION << "\",\"dirty\":" << CORE_DIRTY << ",\"passed\":true}\n";
 }
 void disabled_gate(const std::string& model) {
     for (int c : {-1, 16385}) {
@@ -287,6 +351,19 @@ void disabled_gate(const std::string& model) {
       invalid([&] { qwen::Session rejected(model, bad); }); }
     { qwen::SessionConfig bad; bad.max_batch_tokens = 32; bad.layerwise_prefill_capacity = 32; bad.trace_directory = "reject-before-trace-create";
       invalid([&] { qwen::Session rejected(model, bad); }); }
+    for (int scenario = 0; scenario < 8; ++scenario) {
+        qwen::SessionConfig bad; bad.max_batch_tokens = 32; bad.layerwise_prefill_capacity = 32;
+        bad.prefill_pipeline_tokens = 8;
+        if (scenario == 0) bad.prefill_pipeline_tokens = -1;
+        if (scenario == 1) bad.prefill_pipeline_tokens = 33;
+        if (scenario == 2) bad.layerwise_prefill_capacity = 0;
+        if (scenario == 3) bad.layerwise_prefill_capacity = 8192;
+        if (scenario == 4) bad.cpu_workers = 1;
+        if (scenario == 5) bad.prefill_pipeline_fail_stage = 2;
+        if (scenario == 6) bad.prefill_pipeline_fail_window = 4096;
+        if (scenario == 7) { bad.prefill_pipeline_tokens = 0; bad.prefill_pipeline_fail_stage = 0; bad.prefill_pipeline_fail_window = 0; }
+        invalid([&] { qwen::Session rejected(model, bad); });
+    }
     qwen::SessionConfig config; config.capacity = 4;
     qwen::Session s(model, config); const auto m = s.memory();
     require(m.layerwise_prefill_capacity == 0 && !m.host_layerwise_owner && !m.host_layerwise_activations &&
@@ -302,14 +379,25 @@ int main(int argc, char** argv) {
         std::cout << std::setprecision(std::numeric_limits<double>::max_digits10);
         routes_gate();
         if (argc == 2 && std::string_view(argv[1]) == "--routes-only") return 0;
-        require(argc == 2 || argc == 3, "usage: core-prefill-layerwise-test MODEL [32|128|4096|16384]");
+        if ((argc == 5 || (argc == 6 && std::string_view(argv[5]) == "--no-tap")) && std::string_view(argv[2]) == "--pipeline-fault") {
+            const int stage = std::stoi(argv[3]), window = std::stoi(argv[4]);
+            require(stage >= 0 && stage <= 1 && window >= 0 && window < 4, "fault fixture bounds");
+            run_failure(argv[1], stage, window, argc == 5); return 0;
+        }
+        require(argc == 2 || argc == 3 || argc == 4, "usage: core-prefill-layerwise-test MODEL [32|128|4096|16384] [pipeline_tokens]");
         disabled_gate(argv[1]);
         if (argc == 2) { run(argv[1], 32); run(argv[1], 128); }
         else {
             int n = 0; const std::string_view text(argv[2]); const auto parsed = std::from_chars(text.data(), text.data() + text.size(), n);
             require(parsed.ec == std::errc{} && parsed.ptr == text.data() + text.size() &&
                 (n == 32 || n == 128 || n == 4096 || n == 16384), "explicit fixture row bound");
-            run(argv[1], n);
+            int pipe = 0;
+            if (argc == 4) {
+                const std::string_view arg(argv[3]); const auto parsed_pipe = std::from_chars(arg.data(), arg.data() + arg.size(), pipe);
+                require(parsed_pipe.ec == std::errc{} && parsed_pipe.ptr == arg.data() + arg.size() &&
+                    pipe >= 1 && pipe <= n && n <= 4096, "pipeline fixture bound");
+            }
+            run(argv[1], n, pipe);
         }
         return 0;
     } catch (const std::exception& e) { std::cerr << "layerwise fixture: " << e.what() << '\n'; return 1; }

@@ -27,6 +27,8 @@ struct MtpRunStats {
 // Output is token IDs, not a tokenizer/chat template or a streaming HTTP server.
 // capacity/slots/attention tile come from SessionConfig. max_batch_tokens sets
 // ordinary PP chunk size; target verification internally reserves at least3.
+// Optional prefill_pipeline_tokens subdivides each target layerwise window;
+// warmup still consumes all actual tap rows after both GPU stages finish.
 // Optional layerwise_prefill_capacity (1..4096, frame>=4) sets a larger prompt
 // window, retaining every teacher tap. Zero preserves the default chunk path.
 class MtpRunner {

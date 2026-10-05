@@ -41,6 +41,14 @@ struct SessionConfig {
     // this is NOT an extension of step_batch/verify_window. No payload at zero.
     // Checkpoint taps, when enabled, reserve max(max_batch_tokens,this) rows.
     int layerwise_prefill_capacity = 0;
+    // Opt-in chronological GPU0/GPU1 pipeline subwindow, 1..layerwise capacity.
+    // Initial scope requires layerwise capacity <=4096, cpu_workers==0 and
+    // trace off. Extra HOST owners only; reuses existing per-GPU buffers.
+    // Zero preserves serial layerwise scheduling and owns no worker/payload.
+    int prefill_pipeline_tokens = 0;
+    // One-shot diagnostic failure after a completed stage window. Both -1 off;
+    // stage0/1, window0..4095. Reset permits reuse after the injected failure.
+    int prefill_pipeline_fail_stage = -1, prefill_pipeline_fail_window = -1;
 };
 
 // force_cpu is a source-compatible diagnostic name for CPU LINEAR projections
@@ -292,6 +300,11 @@ struct SessionMemory {
     std::uint64_t host_layerwise_groups = 0, pinned_layerwise_metadata = 0;
     std::array<std::uint64_t, 2> layerwise_original_q8_bytes{},
         layerwise_contribution_bytes{}, layerwise_metadata_bytes{};
+    // Pipeline extras only. Existing layerwise fields count stage0. Thread
+    // stacks/runtime/allocator bookkeeping and process RSS are excluded.
+    int prefill_pipeline_tokens = 0, prefill_pipeline_workers = 0;
+    std::uint64_t host_pipeline_owner = 0, host_pipeline_payload = 0;
+    std::uint64_t pinned_pipeline_handoff = 0, pinned_pipeline_metadata = 0;
 };
 
 // One exclusive interactive session, static 24/24 layer split. Canonical expert
@@ -314,7 +327,8 @@ public:
     // the entire window's IDs/length/capacity before any state/cache mutation.
     std::span<const float> step_batch(std::span<const std::int32_t> tokens);
     // Opt-in GPU-only ordinary PP, N=1..layerwise_prefill_capacity. The whole
-    // window routes once per layer, canonical projections retain qualified selective tiles<=128.
+    // window routes once per layer (per subwindow with the opt-in pipeline);
+    // canonical projections retain qualified selective tiles<=128.
     // all_rows returns [N][248320]; last_row returns ONLY [1][248320], for input
     // start+N-1. Every pre-head residual is computed and checked in BOTH modes.
     // Beyond the existing frame, full-row host logits grow only on an explicit

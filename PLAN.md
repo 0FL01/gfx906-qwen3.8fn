@@ -377,3 +377,9 @@ no precision, routing, QSA or tolerance changes. Full PLAN remains open.
 
 2026-10-05: bounded host pipeline coordinator prerequisite qualified (journal93).
 Session/HIP integration, causal model gates and measured overlap remain OPEN.
+
+2026-10-05: the bounded two-GPU pipeline correctness slice is qualified
+(journal94, source48f3d14 dirty). Logical4096/subwindow2048, short irregular
+windows, eight failure/reset cases, trained MTP carry and full40 CTests pass.
+Keep it opt-in. Full-request A/B/A and observed VRAM remain the promotion gates;
+the full R4 speed target and remaining R5–R8 are still open.

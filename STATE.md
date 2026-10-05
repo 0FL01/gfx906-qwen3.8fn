@@ -21,20 +21,28 @@ core-session-baseline775 НЕ перезаписывать: разрешения
 Полная история, raw provenance и отрицательные результаты: results.jsonl/README.
 
 ## Текущий срез / следующий шаг
-Host PrefillPipeline: один persistent producer + caller consumer, два слота,
-bounded4096 windows, ordered leases, cancellation/failure/drain. Пока НЕ
-интегрирован в Session. Journal93/sourceadcd7f4dirty.
-Target strict Release84cases/363984checks/16rejects,20 CTest repeats pass.
-ASan/UBSan pass, normalhot C++new0; TSan runtime заблокирован ASLR layout,
-seriesexit66 честно сохранён; security settings не менялись. Не race proof.
-Raw ROOT/runs/r4-prefill-pipeline-sanitizers-adc2.log; прежние92 bytes сохранены.
-Следующий шаг: отдельные mutable host/DTO/pinned frames на stageGPU0/GPU1;
-хронологические subwindows в каждой половине24layers, bounded host ring.
-Не добавлять GPU payload без бюджета: measured root free минимум769118208B.
-Тапы MTP всех logicalN строк, absolute positions, transactional publication,
-failure drain/reset и original-rank FP fold обязательны. После CPU-slice
-нужны actual model parity/state/reuse, затем matched4K/16K+512 A/B/A.
-GPU workload сейчас нет; не компилировать во время финальных измерений.
+Двух-GPU pipeline correctness завершён: journal94, source48f3d14 dirty.
+Expanded series PID1453820, ROOT/runs/r4-pipeline-expanded-48f, native0
+2026-10-05 10:36:56 UTC. Full strict build, 40/40 CTests, 1157.10s.
+32/8,128/17,4096/2048:125642240/441443840/13494576640 сравнений,
+ошибок и bit mismatches0; счётчики включают taps и повторные references.
+8 fault/reset cases, MTP32 API, carry2051 с окнами1025/1025/1,
+6 CLI rejects проходят. Предыдущая ошибка только в fixture: запрещённый getter
+checkpoint_state после invalidation; исправлено ожидание rejection, не runtime.
+Actual downloaded raws/manifests и старый93 byte prefix проверены.
+
+Pipeline default off; logical capacity<=4096, отдельные host frames для24/24
+GPU stages и2 ring slots. Дополнительных explicit GPU buffers нет. Все tap rows,
+absolute positions, transactional publication и failure drain сохранены.
+Host-only coordinator push48f3d14, journal93:84cases,20 repeats, ASan/UBSan pass.
+TSan не стартовал из-за ASLR layout; security settings не менялись.
+
+Следующий шаг: commit/push этого среза, затем runs/r4-pipeline-ab.py.
+Скрипт пока НЕ запущен и revision file не создан. Собрать ordinary core-mtp-run
+со stamp нового commit вне timing; одна неизменная binary, pipeline0 vs2048,
+layerwise4096,4K/16K+512, capacity prompt+1024. Сохранённый baseline не трогать.
+После paired result — измерить фактическую VRAM и выбрать следующий bottleneck.
+GPU/CTest работы сейчас нет. Полный PLAN и победа над llama.cpp ещё не закрыты.
 
 ## Не повторять
 Packed640, small/large-output N16, row-owned2560 и row1/row4 Q4 geometry
