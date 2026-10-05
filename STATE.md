@@ -8,17 +8,16 @@
 Численные gates, weights, precision, top-k/QSA budget не ослаблять.
 
 ## Последний runtime / измерения
-Pipeline2048 within layerwise4096, source dc60e0f dirty:
-4K+51284.422057s, PP88.353420/TG13.425791;
-16K+512229.376431s, PP85.327488/TG13.677163.
-Matched A/B/A journal95: controls92.547/92.184s and265.569/260.969s.
-Both PP/request beat both controls; mean request ratios1.094096/1.147759.
-All512 IDs, acceptance, RNG, pending equal. Same binary in all six processes.
-Serial deferred-attention prior result91.140/260.903s is retained in journal92.
-Pinned llama.cpp~57/~144s still faster. Default remains ordinary1024;
-fast configuration is explicit --layerwise-prefill4096 --prefill-pipeline2048.
+Latest opt-in logical16384/stage2048, sourceeaa778c dirty:
+16K+512183.372317s, PP112.303156/TG13.634030.
+A/B/A journal101 controls234.192985/231.931921s, PP84.069081/84.601701.
+Meanrequest1.270979x, PP1.331639x. All512 IDs/RNG/acceptance/pending equal.
+4K B83.416036s vs86.191997/85.046992, PP89.242071/TG13.620598,
+but same two-stage schedule: no structural4K gain claim.
+Previous dc60 pipeline logical4096 speed84.422/229.376s is journal95.
+Pinned llama.cpp~57/~144s still faster. Default remains ordinary1024.
 Saved core-mtp-run-baseline7df and core-session-baseline775 MUST stay untouched.
-Full history, actual provenance and negative experiments: results.jsonl/README.
+Full history and provenance: results.jsonl/README.
 
 ## Текущий срез / следующий шаг
 Двух-GPU pipeline correctness завершён: journal94, source48f3d14 dirty.
@@ -98,11 +97,16 @@ zero absolute error/bit differences; small256x129862,512,640 exact.
 MTP long resources, two last-window faults and16387 carry32IDs/RNG pass.
 Actual copied logs/manifests and old99 byte prefix verified. Large correctness
 fixture used host swap, no speed claim; one full reference and all taps retained.
-Next run prepared: runs/r4-pipeline16k-ab.py, NOT launched yet.
-After commit rebuild ordinary runtime with committed40hash/dirtytrue, create
-runs/r4-pipeline16k-ab.revision, then launch paired4096vs16384/stage2048.
-Latest qualified speed84.422/229.376s remains dc60e0f;
-full PLAN and llama.cpp victory are still open.
+Slice PUSHED eaa778c00133891d3882f83942487da964108114; remote verified.
+Ordinary runtime rebuilt with eaa778c/dirtytrue.
+Paired A/B/A PID1520517 completednative0 at15:37:12UTC.
+ROOT/runs/r4-pipeline16k-ab-20261005; journal101 actualsixlogs verified.
+One unchanged eaa778cdirty binary, logical4096vs16384, fixedstage2048.
+Separate driver VRAM observer launched15:39UTC PID1525727,
+ROOT/runs/r4-pipeline16k-vram. Same eaa binary and16K-B args.
+After observation validate actual512 IDs/RNG, driver mapping/extrema,
+record next journal once. Do not launch another GPU workload.
+Full PLAN and llama.cpp victory are still open.
 
 ## Не повторять
 Packed640, small/large-output N16, row-owned2560 и row1/row4 Q4 geometry

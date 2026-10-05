@@ -3102,3 +3102,31 @@ byte prefix were verified after copy to the controller. Protected baseline intac
 Next: same-binary A/B/A logical4096 versus16384, fixedstage2048 at4K/16K+512,
 then driver VRAM observation. Current best qualified speed remains dc60e0f
 84.422/229.376s; this correctness slice alone claims no speed or llama.cpp win.
+
+### 2026-10-05: logical16K pipeline matched full-request measurements
+Native A/B/A PID1520517 completed0 at15:37:12 UTC. Source
+eaa778c00133891d3882f83942487da964108114/dirtytrue, one unchanged binary.
+Both configurations use physicalstage2048/frame1024/tile8/slots112; logical
+capacity A4096 versus B16384, fresh4K/16K prompts plus512 real output tokens,
+capacityprompt+1024, primary sampling seed12345/temperature1/top-p.95/top-k20.
+Load excluded; no prefix reuse; expert-cache warmness not isolated.
+
+| prompt | A1 request | B request | A2 request | B PP | B TG |
+|---|---:|---:|---:|---:|---:|
+|4K|86.191997s|83.416036s|85.046992s|89.242071|13.620598|
+|16K|234.192985s|183.372317s|231.931921s|112.303156|13.634030|
+
+For16K, mean-control/full-request ratio1.270979 and PP-time ratio1.331639;
+A PP84.069081/84.601701. Both request and PP beat both controls. The larger logical
+window avoids repeating pipeline fill/drain and target/draft call boundaries.
+At4K both capacities execute the same two pipeline subwindows: recorded
+1.026415 request/1.015710 PP ratios are not evidence of a structural4K gain.
+TG variation is not a decode-kernel improvement claim. All512 output IDs,
+acceptance/RNG/pending agree across each triple; protected baseline untouched.
+Pinned llama.cpp still finishes around57/144s, so full speed goal remains OPEN.
+
+Actual six514-row logs/manifests, one executable digest, terminal status and old100
+journal byte prefix verified on the controller; journal101. Raw directory:
+runs/r4-pipeline16k-ab-20261005/. Explicit opt-in fast16K setting:
+--layerwise-prefill16384 --prefill-pipeline2048. Default has not changed.
+Separate driver VRAM observation PID1525727 is running; no new memory peak claim.

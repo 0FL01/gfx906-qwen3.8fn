@@ -415,3 +415,5 @@ Protocol2 reports the head capacity; protocol1 retains its original bounds.
 Driver peak observation and larger-window PP remain the next steps.
 
 **2026-10-05 bounded R4 update:** stage-sized pipeline logical16K/2048 passed full-vocabulary/tap/continuation and trained16387 carry gates, plus41/41CTest; journal100. No speed promotion until paired512-output requests. Full R4–R8 and llama.cpp victory remain open.
+
+**2026-10-05 R4 measured update:** journal101, logical16K/stage2048 gives183.372s for16K+512 versus234.193/231.932s controls, PP112.303, exact512-output trajectories.4K schedule unchanged; no structural4K speed claim. Pinned llama.cpp~144s remains faster; full PLAN remains OPEN.
