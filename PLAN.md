@@ -419,3 +419,5 @@ Driver peak observation and larger-window PP remain the next steps.
 **2026-10-05 R4 measured update:** journal101, logical16K/stage2048 gives183.372s for16K+512 versus234.193/231.932s controls, PP112.303, exact512-output trajectories.4K schedule unchanged; no structural4K speed claim. Pinned llama.cpp~144s remains faster; full PLAN remains OPEN.
 
 **2026-10-05 R4 configuration result:** stage4096/logical16K passes full16K parity and16387carry;16K+512182.044s versus186.827/185.104s controls (~2.15%). Extra216MB/device; no default change or llama.cpp win. Journal103. Next4K stage1024 overlap test; all R4–R8 completion criteria remain open.
+
+**2026-10-05 R4 negative result:** stage1024 for4K passed full parity/carry, but PP85.556 versus89.053/88.091 and request85.556s did not beat both controls. Not promoted; journal104. Next current16K completed-phase profile; full goals stay open.

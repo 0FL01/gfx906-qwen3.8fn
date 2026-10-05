@@ -3174,3 +3174,24 @@ Raw roots runs/r4-stage4096-gates-c3d/ and runs/r4-stage4096-ab-20261005/.
 Next bounded experiment targets4K: stage1024 versus2048 within logical4096,
 to test whether four pipeline subwindows outweigh additional expert staging.
 Qualify full4096 logits/taps and4099-token carry before paired512-output requests.
+
+### 2026-10-05: stage1024 for4K rejected as a performance change
+Existing configuration only, source3cb6749 dirty. NativePID1541061 completed0
+at17:33:27UTC. Full4096x1024 passed13,494,576,640 cumulative logits/tap
+comparisons with zero errors/bits;4099+32carry matches stage2048 exactly.
+Strict selected build and two targeted CTests passed. Latest full41CTest
+remains journal100 on unchanged runtime sources, not a new full regression.
+
+Same-binary4K+512 A/B/A (logical4096, stage2048/1024/2048):
+A1 request85.297698s,PP89.052903,TG13.002401;
+B request85.556014s,PP85.555633,TG13.562085;
+A2 request86.214582s,PP88.090998,TG12.866523.
+All512 IDs/acceptance/RNG/pending match. B does NOT beat both request controls,
+and PP is worse than both: mean-control PP-time ratio0.965973.
+Mean request1.002339 is not a stable win; TG variation masks slower PP.
+Do not promote stage1024 for4K. Existing opt-in support remains correct;
+no runtime code/default changed. Stage2048 remains the measured4K choice.
+Journal104, actual copied logs/manifests and old103 prefix verified.
+Next diagnostic: completed-phase16K profiling at logical16384/stage2048,
+with matching traced/untraced128-output trajectories and ordinary binary intact.
+Use separate profile target/source stamp and fresh artifact paths, no speedclaim.

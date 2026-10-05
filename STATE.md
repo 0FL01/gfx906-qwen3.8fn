@@ -11,7 +11,7 @@ custom stop is not natural EOS. R7 practical API/tokenizer/long context andR8
 original safetensors streaming pack remain open.
 
 ## Latest results
-Canonical journal103, controller copy actualraws/manifests and old102 prefix verified.
+Canonical journal104, controller actual logs/manifests and old103 prefix verified.
 Latest sourcec3d7625129f1a3c50bf32d96180d0859d6c81064/dirtytrue.
 Stage4096 withinlogical16384:16K+512182.044469s,PP113.318528/TG13.641648.
 Controlsstage2048:186.827339/185.103706s,PP110.805481/111.225462.
@@ -33,13 +33,18 @@ Latest full41CTest is journal100,1156.08s, same runtime source, not rerun here.
 SSH outage16:12..16:32 recovered; SAME PID observed, no duplicate run.
 Initial4097 fixture planned but corrected to allowed16384 BEFORE any native run.
 
-## Next physical step
-Prepare existingconfigurationstage1024 withinlogical4096 for4K prompt overlap:
-selected build, full4096x1024 logits/taps,4099+32 carry vsstage2048,
-then samebinary4K+512 A/B/A stage2048/1024/2048. No runtime arithmetic edits.
-Read/build stamp current committed40hash dirtytrue. Unique runs/driver prefix.
-No GPU workload active after1529544. Do not reuse old result paths.
-Stage4096 remains optional; no default promotion, no4K speed claim.
+## Latest negative slice and next physical step
+Stage1024 for4K completed native0 at17:33:27UTC, PID1541061,
+ROOT/runs/r4-stage1024-gates-3cb; journal104 actual copied artifacts verified.
+Full4096x1024 13,494,576,640 exact comparisons;4099+32carry exact;
+two targeted CTests. Full41CTest remains journal100, no runtime code changes.
+A/B/A request85.297698/85.556014/86.214582s; PP89.052903/85.555633/88.090998.
+B slower PP than both controls, no stable request win: NOT promoted.
+No GPU workload active. Next: profile16K logical16384/stage2048 with128 outputs,
+match annotation/traced/untraced trajectories, preserve ordinary runtime.
+Adapt runs/r4-profile-pipeline-{driver,host,analyze}.py with fresh16K paths
+and actual committed source revision. Source3cb ordinary runtime remains intact.
+Then use actual current phase evidence to choose the next bounded change.
 
 ## Memory
 Head128 owned allocation saved889,978,880B/device; full41CTest journal98.
@@ -54,8 +59,8 @@ Protected saved binaries MUST NOT be overwritten:
 ROOT/build/core-mtp-run-baseline7df digest
 e1dd8b84a434ea72611c5cd67ccedb53d64a94705dbbd0e94741912545962a32
 ROOT/build/core-session-baseline775, source77fdirty.
-Ordinary core-mtp-run currentlyc3ddirty, digest
-a3bbf027d3d0fd70a0946c2a71e8f1f6d2dd6efcdcc21c742dc5a7510a89c41f.
+Ordinary core-mtp-run currently3cbdirty, digest
+0a4d2833c877a7616e20751ca2ae7375c900a471b177e65ea6f56d0bc28c33f4.
 
 ## Avoid repeated failed work
 Packed640, small/largeN16, row-owned2560 and row1/row4 Q4 geometry did notyield
