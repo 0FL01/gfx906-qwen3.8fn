@@ -2858,3 +2858,24 @@ on controller. Ordinary runtime restored to candidate. This is a bounded
 self-parity/speed qualification, not independent HF or llama.cpp victory.
 Pinned donor remains faster(~57/~144s). Next: bounded two-GPU PP pipeline;
 no precision, routing, QSA or tolerance changes. Full PLAN remains open.
+
+
+### 2026-10-05 bounded host prefill coordinator prerequisite
+Added one persistent producer plus caller consumer, exactly two borrowed slots,
+ordered1..4096 windows, backpressure, callback failure propagation, cancel/drain
+and destructor join. Callback must drain its own HIP/DMA before returning or
+throwing; this coordinator only owns host metadata. Not integrated into Session.
+Target strict Release:84 cases/363984 checks/16 rejects,20 repeated CTests pass.
+ASan+UBSan with leak detection passes the same suite. Warmed64x17 jobs allocate
+zero C++ new calls across all threads; metadata184B excludes stack/runtime and
+payload. Payload ownership, order, reuse, full-queue cancellation, active callback
+drain and first/middle/last failure are tested. No device or speed qualification.
+TSan linking repaired by disabling test allocation overrides explicitly; runtime
+cannot start due incompatible ASLR layout. No security settings were changed,
+and no race-sanitizer pass is claimed. Series native66 is this limitation,
+not a passing series status. Journal93/sourceadcd7f4dirty, actual log
+runs/r4-prefill-pipeline-sanitizers-adc2.log. Reproduce normal suite:
+cmake --build build --target prefill-pipeline-test; ctest --test-dir build
+-R '^prefill-pipeline$' --output-on-failure --repeat until-fail:20.
+Next integrate per-GPU mutable host frames and chronological two-stage PP,
+then model/state/reuse gates and full requests. Full PLAN remains open.

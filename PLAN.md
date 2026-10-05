@@ -374,3 +374,6 @@ on controller. Ordinary runtime restored to candidate. This is a bounded
 self-parity/speed qualification, not independent HF or llama.cpp victory.
 Pinned donor remains faster(~57/~144s). Next: bounded two-GPU PP pipeline;
 no precision, routing, QSA or tolerance changes. Full PLAN remains open.
+
+2026-10-05: bounded host pipeline coordinator prerequisite qualified (journal93).
+Session/HIP integration, causal model gates and measured overlap remain OPEN.
