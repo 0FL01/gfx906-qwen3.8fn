@@ -2568,3 +2568,11 @@ bytes exact,owned allocations steady. Constructorcapacity40/slots1/max32/tile8;
 this is bounded self-parity, not independent HF or long-context qualification.
 Source daee1efcd6e83c115175284d7ce9512045298b8d/dirtytrue, journal72/73,
 raw ROOT/runs/r4-prefill-last-dae{,-expanded}.jsonl. No speed claim yet.
+
+MtpRunner::begin now uses prefill_last for each prompt chunk while keeping every
+target tap row for trained-MTP teacher warmup. Full strict build/MTP API/39CTest
+job1791164948838-576 passed nativeexit0/22m00; tests1154.97s. Exact32 generation,
+RNG/reset/reject/custom-stop/capacity48 fixture passed. Source48de1ba/dirtytrue,
+journal74; raw ROOT/runs/r4-mtp-last-48d-*. No speed claim before paired requests.
+Driver ROOT/runs/r4-last-head-ab.py toggles only actual MtpRunner source snapshots
+between builds, outside timed inference; saved baseline remains unchanged.

@@ -30,7 +30,8 @@ Original core-session-baseline775/source77f89c3dirty (1750328B) also untouched.
 
 New Session::prefill_last consumes the full window and retains ALL pre-head tap
 rows, but projects/copies only final logits. All-row step_batch/verify unchanged.
-No new allocations; root HC still computes all rows. MtpRunner NOT integrated.
+No new allocations; root HC still computes all rows. API PUSHED48de1ba23172d0d8ddf301e5742099caed1dc7ab.
+MtpRunner one-line begin() integration passes full regression; commit next.
 Strict selected builds/model jobs562(exit0/2m32) and568(exit0/3m19) passed,
 compiled daee1ef/dirtytrue. Checkpoint fixture35,261,440 values,ordinary2,483,200:
 zero bit mismatches/maxabs. Nine checkpoint cases,26 invalids,full tap bits,
@@ -38,13 +39,22 @@ mixed APIs,pending invalidation,restore,continuations,capacity40/slots1/max32.
 Both checkpoint modes keep owned allocations steady; RAII cleanup reported,
 not a separate post-destruction VRAM recovery proof. No independent HF/speed claim.
 Raw ROOT/runs/r4-prefill-last-dae{,-expanded}.jsonl and build/error logs.
-Canonical journal73; controller copied actual raws,old71 byteprefix exact;
+Canonical journal74; latest copied API/CTest raw and old73 byteprefix exact;
 records72 initial and73 strengthened fixture are distinct, do not reappend.
 
-NEXT after API commit: change only MtpRunner::begin target.step_batch(ids) to
-target.prefill_last(ids). Run MTP runner API/full strict regression, then matched
-4K/16K+512 with old/new MtpRunner source snapshots and preserved baseline.
-No GPU job active after568. Do not relabel compiled sources to closure commits.
+Full build/MTP API/39CTest job1791164948838-576 COMPLETEexit0/22m00,
+source48de1ba/dirtytrue;39CTest1154.97s and MTP API pass.
+Raw ROOT/runs/r4-mtp-last-48d-{build.log,api.jsonl,api.err,ctest.log}.
+Next matched
+4K/16K+512 via runs/r4-last-head-ab.py, old/new MtpRunner source snapshots,
+preserved baseline. Both source48de1ba/dirtytrue with explicit variants.
+No other GPU workload/build. Do not relabel compiled sources to closure commits.
+
+Before the larger refactor, test a bounded kernel hypothesis: canonical Q4
+physicalColumns16/Rows2 in the existing tiled wrapper (Q5/Q8/Q6/dense unchanged).
+Per-column K/reduction math can stay identical; compare full bits to serialN8
+and same-coordinate A/B/A, inspect spills/occupancy. Prior row1/row4 experiments
+changed ROW reuse, not this column-weight reuse. No code or win claim yet.
 
 Then REVIEW/ADAPT runs/r4-layerwise-prefill.patch, still UNAPPLIED/UNQUALIFIED:
 whole-window expert reuse may reduce repeated1024-chunk uploads. Its16K

@@ -59,7 +59,7 @@ struct MtpRunner::Impl {
             const auto ids=tokens.subspan(first,count);
             {
                 ProfileRange target_range("MTP_PP_TARGET_CHUNK");
-                last=target.step_batch(ids);
+                last=target.prefill_last(ids);
             }
             const auto tap=target.target_tap();
             if(tap.rows!=int(count) || tap.width!=W || tap.first_position!=first || !tap.pointer)
