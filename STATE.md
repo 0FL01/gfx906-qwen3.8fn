@@ -111,10 +111,21 @@ Raw ROOT/runs/r4-layerwise-mtp-ab-b201 and .exit.json verified and copied.
 Layerwise4096 remains explicit opt-in; both target+MTP requests fit, no new peak
 VRAM evidence yet. Earlier bcd failed series excluded. Fullplan/llama win open.
 
-NEXT separate16K+512 candidate sampled-VRAM observer using same binary/config,
-then rebuild ONLY diagnostic core-mtp-profile and profile4K PP+128output.
-No trace-derived speed claims. Use updated phase profile to choose next change.
-Potential Columns16/Rows2 canonical geometry is UNTRIED; no blind promotion.
+VRAM observer COMPLETE native0, journal82, sourceb201/dirtytrue,3617samples.
+Fresh HIPmapping0=05:00.0/1=08:00.0;16K+512 exactIDs/RNG. Minfree4.461GB/
+0.769GB (global sampled, not exactpeak). Do NOT increase8192window blindly.
+Root observed headroom is only~0.716GiB with target+MTP at current settings.
+
+Fresh profile749 exit0/4m20 and analyzer751 exit0,sourcebd1fa883/dirtytrue,
+journal83. TargetPP55.047s/1.081Mkernels,sum41.739s;Q4tiled16.023s38.39%,
+attention9.302s22.29%,GDN1.683s,dense1.651s. H2Dsum3.008/2.906,D2H.654/.653.
+No crossingevents. Diagnostic only. Original runtimeb201 unchanged; core-mtp-
+profile separately built. No GPU work active after profile.
+
+NEXT bounded physicalCols16/Rows2 Q4 candidate, K640/2560,M<=2560,
+columns>=16 and remainder<=8 so at most two launches. Other shapes unchanged.
+Must compare exact old short outputs, graph counts/tails and A/B/A timings.
+If no material win reject; no new model/default promotion without gates.
 
 ## Принятые границы / не повторять
 

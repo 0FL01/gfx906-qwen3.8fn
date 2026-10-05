@@ -2699,3 +2699,26 @@ yet. These are qualified opt-in own-runtime wins, not default policy promotion,
 llama.cpp win, independent HF or full-plan completion. Pinned donor~57s/~144s
 remains faster. Journal81; actual copied raws/manifest/IDs verified under
 ROOT/runs/r4-layerwise-mtp-ab-b201; failed earlier bcd series remains excluded.
+
+
+### 2026-10-05 layerwise memory and phase diagnostics
+Separate16K+512 observed candidate completed native0, sourceb2014ce/dirtytrue,
+same512IDs/RNG as unobserved B. Fresh HIP query maps device0/1 to0000:05:00.0/
+0000:08:00.0.3617 samples at0.1s over363.58s include load/request/cleanup:
+global driver maxused12701913088/16393973760B, minfree4461178880/769118208B.
+These are sampled global-driver extrema, NOT exact instantaneous or HIP-owned
+peaks. Root/device1 has only~0.716GiB observed headroom. Increasing full-window
+capacity8192 without a new budget is NOT justified. Journal82, actual observer
+and request raws ROOT/runs/r4-layerwise-vram-b201.
+
+Diagnostic-only ROCTX profile job749 exit0/4m20, analyzer751 exit0, sourcebd1fa883/
+dirtytrue. Annotation smoke32 retains checked IDs/RNG.4K+128 profile target-PP
+55.047s,1,081,432 kernels,summed41.739s,agent unions20.928/20.806s. Q4_0 tiled
+matrix32<8,2>16.023s (38.39% of summed target kernels), attention9.302s(22.29%),
+GDN1.683s,dense-tiled1.651s. H2D summed3.008/2.906s,D2H~.654/.653s.
+Entire PP with teacher56.207s; verify128output10.799s/summed4.836s, draft.458s,
+restore.094s. Zero boundary-crossing events. Sums overlap, tracing adds overhead;
+these numbers are NOT paired wall-speed comparisons. Journal83, trace CSVs
+remain ROOT/runs/r4-profile-layerwise-20261005; compact summary copied.
+Next bounded candidate: canonical Q4 physical16columns/2rows, retaining exact
+per-output reduction math; compare component A/B/A before any model promotion.
