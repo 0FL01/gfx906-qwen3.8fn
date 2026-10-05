@@ -11,7 +11,7 @@ custom stop is not natural EOS. R7 practical API/tokenizer/long context andR8
 original safetensors streaming pack remain open.
 
 ## Latest results
-Canonical journal105, controller actual logs/manifests and old104 prefix verified.
+Canonical journal106, controller actual logs/manifests and old105 prefix verified.
 Latest sourcec3d7625129f1a3c50bf32d96180d0859d6c81064/dirtytrue.
 Stage4096 withinlogical16384:16K+512182.044469s,PP113.318528/TG13.641648.
 Controlsstage2048:186.827339/185.103706s,PP110.805481/111.225462.
@@ -46,14 +46,21 @@ ROOT/runs/r4-profile-logical16k-20261005, source9f6f2bedirty, ordinary3cb unchan
 Target trace197.308s,6,045,736kernels, summed183.679s; unions92.147/91.473,
 simultaneous23.385s. Q4N8 63.651s, attention40.209s.
 Radix histogram/select EACH1,375,968 launches, total11.880s kernel sum.
-Next physical change: bounded QSA batch select up to8 chronologicalqueries.
-Reuse existing exact integer radix algorithm and separate output publication
-after all-query validation. Explicit strided views/aliases/guards; N1 unchanged.
-Component CPU/serial parity, graph/sticky/boundary tests and timings BEFORE
-Session integration. Existing attention_queries serializes score/select perquery
-on one scratch; integration requires dedicated bounded scores and selector scratch.
-Read src/hip/qsa_select.cuh/.hip and src/session.hip attention_queries.
-No GPU workload active. No new selector implementation written yet.
+Bounded QSA batch component now COMPLETE, journal106; source94579b9dirty.
+Native1570573 and repeat1196 pass:525cases/GPU,43,812,608 total ID/count/padding
+comparisons,23host rejects/24nonfinite/3sticky/12graphreplays perGPU.
+Existing62-rowcore-qsa and collector,3targetedCTest pass. NOTfullmodel/full41CTest.
+28/28 resident timingcoordinates beatbothcontrols;8query median6.2456x,
+2query1.6719x. Not inference speed. Actual controllerlogs/old105prefixverified.
+Next Session integration(count>1): serial score computation to perqueryf16 rows,
+batch selector to existing ID/count slots. f16 max(existing,tile*32768) floats;
+hist/state/candidates allocated perattentiontile. N1/tile1 unchanged semantics.
+Report actual backing allocations, preserve finite/error publication contract.
+Native fullmodel attention/layerwise/taps/MTP tests,full41CTest andthenmatched
+4K/16K+512 A/B/A required beforepromoting. No model code edited yet.
+No GPU workload active. Read src/session.hip Device allocation/memory ledger and
+Layer::attention_queries; src/session.hpp SessionMemory. Newcomponent API in
+src/hip/qsa_select.cuh, fixturetests/qsa_select_batch_test.hip.
 
 ## Memory
 Head128 owned allocation saved889,978,880B/device; full41CTest journal98.

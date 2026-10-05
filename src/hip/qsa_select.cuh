@@ -2,6 +2,7 @@
 
 #include <hip/hip_runtime.h>
 #include <cstdint>
+#include <cstddef>
 
 namespace qwen {
 
@@ -24,5 +25,30 @@ struct QsaSelectWorkspace {
 hipError_t launch_qsa_select(const float* scores, int visible_tokens,
     std::int32_t* token_ids, std::int32_t* block_ids, int* counts,
     QsaSelectWorkspace workspace, hipStream_t stream) noexcept;
+
+
+// Bounded chronological query batch, first_visible+q, q=0..queries-1.
+// Strides/elements are in units of T. Every declared view is disjoint from
+// every writable view, including padding. Output widths: tokens2051,
+// blocks512, counts2. Score width is max(1,(first_visible+queries-1)/4);
+// only each row's actually completed block prefix is read.
+template<class T> struct QsaSelectView {
+    T* data = nullptr;
+    std::size_t elements = 0;
+    std::size_t stride = 0;
+};
+struct QsaSelectBatchWorkspace {
+    QsaSelectView<int> histogram;             // 8192 integers per query
+    QsaSelectView<std::uint64_t> state;       // 16 words per query
+    QsaSelectView<std::uint64_t> candidates;  // 512 keys per query
+    int* error = nullptr;                    // shared caller-owned sticky flag
+};
+// queries1..8, visibility1..131072. No allocation/query/synchronization.
+// Host rejection enqueues nothing. Device failures leave ALL output IDs/counts
+// unchanged: scratch sorting/validation completes before a separate publication.
+hipError_t launch_qsa_select_batch(QsaSelectView<const float> scores,
+    int queries, int first_visible, QsaSelectView<std::int32_t> token_ids,
+    QsaSelectView<std::int32_t> block_ids, QsaSelectView<int> counts,
+    QsaSelectBatchWorkspace workspace, hipStream_t stream) noexcept;
 
 } // namespace qwen

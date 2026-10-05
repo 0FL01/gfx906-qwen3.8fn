@@ -3226,3 +3226,40 @@ including mixed direct/radix boundary, tails, signed-zero/subnormal/ties,
 NaN/Inf/sticky flags, invalid descriptors, guards, reuse and graph capture.
 Only after component timing/parity integrate into attention_queries, preserving
 all current full-model gates, memory ownership and matched request measurements.
+
+### 2026-10-05: bounded batched QSA selector component
+New launch_qsa_select_batch in hip/qsa_select.{cuh,hip} batches up to8 chronological
+queries using the EXISTING integer radix algorithm, rank bits, signed-zero ties,
+whole-block expansion and actual tail. Typed borrowed views declare extents and
+strides; each query owns histogram/state/candidate rows. Sort/validation writes
+scratch first; a separate kernel publishes ALL outputs only after a clean sticky
+flag. Invalid descriptors enqueue nothing. No allocation, device queries or sync.
+The scalar entry point preserves its semantics through non-batch instantiations.
+
+Strict target build and core-qsa-select-batch pass on both gfx906 devices.
+Each GPU:525 input cases,21,906,304 compared IDs/counts including padding,
+23 host rejection cases (empty captured graphs),24 NaN/Inf cases,3 sticky cases,
+12 graph replays; score-readonly and output/scratch/outer canaries pass.
+Includes direct/radix and partial-grid boundaries, chronological tails,
+random/tied/signed-zero/subnormal/extreme finite scores, reset/reuse.
+Existing62-row core-qsa protocol and strict collector pass; targeted CTests3/3.
+This is NOT a full-model qualification or new full41-test regression.
+
+Source94579b9 dirty. Initial detachedPID1570573 completed native0 at18:11:49UTC.
+Repeat job1791224178680-1196 passed with17-digit metric serialization;
+same correctness and28/28 timing coordinates beat BOTH serial controls.
+Resident20-repeat completed-GPU-event A/B/A ratios:
+2-query min/median/max1.418483/1.671893/1.685357;
+8-query4.348445/6.245553/6.442899.
+These are selection-component timings, including launch gaps, not model speed.
+Actual logs/collector and old105 journal byte prefix verified; journal106.
+Reproduce: build core-qsa-select-batch and run on the two-GPU host; core-qsa MODEL.
+
+Next integrate in Session::Layer::attention_queries only for count>1.
+Keep serial index scoring arithmetic, but write each query into its own fixed32768
+score row in f(16), then batch-select into existing ID/count rows. Grow f(16)
+only when its existing backing storage is smaller than tile*32768; frame1024
+already has enough. Histogram/state/candidates scale by attention_tile; tile1
+keeps original capacities. Add explicit backing allocation evidence and full-model
+N1/batched/logit/tap/MTP/failure regressions, then trace-off A/B/A full requests.
+No model integration or inference-speed promotion is claimed by this component.

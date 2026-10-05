@@ -4,6 +4,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <limits>
+#include <type_traits>
 
 #if defined(__HIP_DEVICE_COMPILE__) && !defined(__gfx906__)
 #error "qsa_select.hip is specialized for gfx906 wave64"
@@ -65,6 +66,28 @@ static_assert(sizeof(float) == 4 && std::numeric_limits<float>::is_iec559);
 static_assert(sizeof(int) == 4 && sizeof(std::int32_t) == 4);
 static_assert(sizeof(std::uint64_t) == 8 && threads == bins);
 
+
+// ADAPT existing qualified integer radix phases across at most eight query
+// rows. Keep the mx/furnace/reinstinct decisions and rank ABI above. Each query
+// has private scratch; a final kernel publishes only after all sorting/checks.
+// Non-batch instantiations carry an empty argument and retain the old algorithm.
+struct NoBatch {};
+struct BatchOffset {
+    int first_visible, first_query;
+    std::size_t scores, tokens, blocks, counts, histogram, state, candidates;
+};
+template<bool Batched> using BatchArgs = std::conditional_t<Batched, BatchOffset, NoBatch>;
+__device__ __forceinline__ int batch_query(BatchOffset b) {
+    return b.first_query + static_cast<int>(blockIdx.y);
+}
+__device__ __forceinline__ QsaSelectWorkspace batch_workspace(
+        QsaSelectWorkspace w, BatchOffset b, int q) {
+    w.histogram += static_cast<std::size_t>(q) * b.histogram;
+    w.state += static_cast<std::size_t>(q) * b.state;
+    w.candidates += static_cast<std::size_t>(q) * b.candidates;
+    return w;
+}
+
 // Native uint64 words, including the atomic counters: no struct/int type punning
 // over the frozen workspace. Other words are reserved and initialized to zero.
 enum StateWord : int {
@@ -123,9 +146,17 @@ __device__ __forceinline__ std::uint64_t rank_key(float score, int id, int& flag
     return (std::uint64_t{ordered} << 32) | ~static_cast<std::uint32_t>(id);
 }
 
-template<bool Direct>
+template<bool Direct, bool Batched = false>
 __global__ __launch_bounds__(threads)
-void initialize(const float* scores, int blocks, int k, QsaSelectWorkspace w) {
+void initialize(const float* scores, int blocks, int k, QsaSelectWorkspace w,
+                BatchArgs<Batched> b = {}) {
+    if constexpr (Batched) {
+        const int q = batch_query(b);
+        blocks = (b.first_visible + q) / ratio;
+        k = blocks < max_candidates ? blocks : max_candidates;
+        scores += static_cast<std::size_t>(q) * b.scores;
+        w = batch_workspace(w, b, q);
+    }
     const int tid = threadIdx.x;
     if (tid < state_words) {
         std::uint64_t value = 0;
@@ -148,9 +179,18 @@ void initialize(const float* scores, int blocks, int k, QsaSelectWorkspace w) {
 
 // ADAPT furnace top_k_radix_histogram: only the exactly visible completed-block
 // prefix is read, in a bounded strided grid (ceil(blocks/1024) <= 32 groups).
+template<bool Batched = false>
 __global__ __launch_bounds__(threads)
 void radix_histogram(const float* scores, int blocks, int partials, int shift,
-                     QsaSelectWorkspace w) {
+                     QsaSelectWorkspace w, BatchArgs<Batched> b = {}) {
+    if constexpr (Batched) {
+        const int q = batch_query(b);
+        blocks = (b.first_visible + q) / ratio;
+        partials = (blocks + 1023) / 1024;
+        if (static_cast<int>(blockIdx.x) >= partials) return;
+        scores += static_cast<std::size_t>(q) * b.scores;
+        w = batch_workspace(w, b, q);
+    }
     const int tid = threadIdx.x;
     const int partial = blockIdx.x;
     __shared__ int histogram[bins];
@@ -172,8 +212,16 @@ void radix_histogram(const float* scores, int blocks, int partials, int shift,
 
 // ADAPT furnace top_k_radix_select: suffix sums find the highest bin reaching
 // the one-based remaining rank. No scores/keys are stored for discarded blocks.
+template<bool Batched = false>
 __global__ __launch_bounds__(threads)
-void radix_select(int blocks, int partials, int shift, QsaSelectWorkspace w) {
+void radix_select(int blocks, int partials, int shift, QsaSelectWorkspace w,
+                  BatchArgs<Batched> b = {}) {
+    if constexpr (Batched) {
+        const int q = batch_query(b);
+        blocks = (b.first_visible + q) / ratio;
+        partials = (blocks + 1023) / 1024;
+        w = batch_workspace(w, b, q);
+    }
     const int tid = threadIdx.x;
     __shared__ int histogram[bins];
     __shared__ int active;
@@ -181,7 +229,7 @@ void radix_select(int blocks, int partials, int shift, QsaSelectWorkspace w) {
     const auto mask = w.state[mask_word];
     const auto rank = w.state[rank_word];
     if (tid == 0) {
-        active = *w.error == 0;
+        active = (Batched ? __atomic_load_n(w.error, __ATOMIC_RELAXED) : *w.error) == 0;
         const auto expected_mask = shift == 56 ? std::uint64_t{0} : all_bits << (shift + 8);
         if (active && (mask != expected_mask || (prefix & ~mask) != 0 ||
                        rank == 0 || rank > static_cast<std::uint64_t>(blocks))) {
@@ -224,8 +272,18 @@ void radix_select(int blocks, int partials, int shift, QsaSelectWorkspace w) {
 // ADAPT furnace top_k_radix_gather: a fully resolved UNIQUE key determines
 // membership, including the cutoff's lower-ID ties. Atomic arrival order only
 // determines temporary slots; it cannot decide which tied IDs are selected.
+template<bool Batched = false>
 __global__ __launch_bounds__(threads)
-void radix_gather(const float* scores, int blocks, int partials, QsaSelectWorkspace w) {
+void radix_gather(const float* scores, int blocks, int partials, QsaSelectWorkspace w,
+                  BatchArgs<Batched> b = {}) {
+    if constexpr (Batched) {
+        const int q = batch_query(b);
+        blocks = (b.first_visible + q) / ratio;
+        partials = (blocks + 1023) / 1024;
+        if (static_cast<int>(blockIdx.x) >= partials) return;
+        scores += static_cast<std::size_t>(q) * b.scores;
+        w = batch_workspace(w, b, q);
+    }
     // This kernel can report errors in other groups, so use an atomic flag load.
     if (__atomic_load_n(w.error, __ATOMIC_RELAXED) != 0) return;
     const auto threshold = w.state[prefix_word];
@@ -250,14 +308,25 @@ void radix_gather(const float* scores, int blocks, int partials, QsaSelectWorksp
 // 512 LDS keys (4 KiB), 45 compare/barrier passes. Never sort the full history.
 // One group owns all validation AND publication, so after its final barrier no
 // thread can discover a late numeric error while another is publishing IDs.
-template<bool Radix>
+template<bool Radix, bool Batched = false, bool PrepareOnly = false>
 __global__ __launch_bounds__(threads)
 void sort_publish(int blocks, int k, int visible, std::int32_t* token_ids,
-                  std::int32_t* block_ids, int* counts, QsaSelectWorkspace w) {
+                  std::int32_t* block_ids, int* counts, QsaSelectWorkspace w,
+                  BatchArgs<Batched> b = {}) {
+    if constexpr (Batched) {
+        const int q = batch_query(b);
+        visible = b.first_visible + q;
+        blocks = visible / ratio;
+        k = blocks < max_candidates ? blocks : max_candidates;
+        token_ids += static_cast<std::size_t>(q) * b.tokens;
+        block_ids += static_cast<std::size_t>(q) * b.blocks;
+        counts += static_cast<std::size_t>(q) * b.counts;
+        w = batch_workspace(w, b, q);
+    }
     const int tid = threadIdx.x;
     __shared__ std::uint64_t keys[max_candidates];
     __shared__ int publish;
-    if (tid == 0) publish = *w.error == 0;
+    if (tid == 0) publish = (Batched ? __atomic_load_n(w.error, __ATOMIC_RELAXED) : *w.error) == 0;
     __syncthreads();
     if (!publish) return;
 
@@ -302,9 +371,16 @@ void sort_publish(int blocks, int k, int visible, std::int32_t* token_ids,
     }
     report(flags, w.error);
     __syncthreads(); // All group-local checks/atomic flags precede publication.
-    if (tid == 0) publish = *w.error == 0;
+    if (tid == 0) publish = (Batched ? __atomic_load_n(w.error, __ATOMIC_RELAXED) : *w.error) == 0;
     __syncthreads();
     if (!publish) return;
+
+    if constexpr (PrepareOnly) {
+        // Private scratch can change on failure; public output cannot.
+        for (int i = tid; i < max_candidates; i += threads)
+            w.candidates[i] = keys[i];
+        return;
+    }
 
     for (int rank = tid; rank < k; rank += threads) {
         const auto id = static_cast<std::int32_t>(~static_cast<std::uint32_t>(keys[rank]));
@@ -318,6 +394,40 @@ void sort_publish(int blocks, int k, int visible, std::int32_t* token_ids,
         counts[0] = k * ratio + tail;
         counts[1] = k;
     }
+}
+
+
+__global__ __launch_bounds__(threads)
+void publish_batch(std::int32_t* token_ids, std::int32_t* block_ids,
+                   int* counts, QsaSelectWorkspace w, BatchOffset b) {
+    // All initialization/radix/sort checks in ALL rows precede this kernel.
+    if (*w.error != 0) return;
+    const int q = static_cast<int>(blockIdx.x), visible = b.first_visible + q;
+    const int blocks = visible / ratio;
+    const int k = blocks < max_candidates ? blocks : max_candidates;
+    w = batch_workspace(w, b, q);
+    token_ids += static_cast<std::size_t>(q) * b.tokens;
+    block_ids += static_cast<std::size_t>(q) * b.blocks;
+    counts += static_cast<std::size_t>(q) * b.counts;
+    const int tid = threadIdx.x;
+    for (int rank = tid; rank < k; rank += threads) {
+        const auto id = static_cast<std::int32_t>(~static_cast<std::uint32_t>(w.candidates[rank]));
+        block_ids[rank] = id;
+        for (int member = 0; member < ratio; ++member)
+            token_ids[rank * ratio + member] = id * ratio + member;
+    }
+    const int tail = visible % ratio;
+    if (tid < tail) token_ids[k * ratio + tid] = blocks * ratio + tid;
+    if (tid == 0) { counts[0] = k * ratio + tail; counts[1] = k; }
+}
+
+template<class T>
+bool valid_view(QsaSelectView<T> v, int queries, std::size_t width) noexcept {
+    if (v.stride < width || width == 0) return false;
+    const auto extra = static_cast<std::size_t>(queries - 1);
+    if (extra && v.stride > (std::numeric_limits<std::size_t>::max() - width) / extra)
+        return false;
+    return v.elements >= extra * v.stride + width;
 }
 
 } // namespace
@@ -356,17 +466,75 @@ hipError_t launch_qsa_select(const float* scores, int visible_tokens,
     if (status != hipSuccess) return status;
     const int partials = (blocks + 1023) / 1024; // 1..32 after bounded host validation
     for (int shift = 56; shift >= 0; shift -= 8) {
-        radix_histogram<<<partials, threads, 0, stream>>>(scores, blocks, partials, shift, w);
+        radix_histogram<false><<<partials, threads, 0, stream>>>(scores, blocks, partials, shift, w);
         status = hipGetLastError();
         if (status != hipSuccess) return status;
-        radix_select<<<1, threads, 0, stream>>>(blocks, partials, shift, w);
+        radix_select<false><<<1, threads, 0, stream>>>(blocks, partials, shift, w);
         status = hipGetLastError();
         if (status != hipSuccess) return status;
     }
-    radix_gather<<<partials, threads, 0, stream>>>(scores, blocks, partials, w);
+    radix_gather<false><<<partials, threads, 0, stream>>>(scores, blocks, partials, w);
     status = hipGetLastError();
     if (status != hipSuccess) return status;
     sort_publish<true><<<1, threads, 0, stream>>>(blocks, k, visible_tokens, token_ids, block_ids, counts, w);
+    return hipGetLastError();
+}
+
+
+hipError_t launch_qsa_select_batch(QsaSelectView<const float> scores,
+        int queries, int first_visible, QsaSelectView<std::int32_t> token_ids,
+        QsaSelectView<std::int32_t> block_ids, QsaSelectView<int> counts,
+        QsaSelectBatchWorkspace w, hipStream_t stream) noexcept {
+    if (queries < 1 || queries > 8 || first_visible < 1 ||
+        first_visible > 131072 - (queries - 1)) return hipErrorInvalidValue;
+    const int last_blocks = (first_visible + queries - 1) / ratio;
+    const auto width = static_cast<std::size_t>(last_blocks ? last_blocks : 1);
+    if (!valid_view(scores, queries, width) ||
+        !valid_view(token_ids, queries, token_capacity) ||
+        !valid_view(block_ids, queries, max_candidates) ||
+        !valid_view(counts, queries, 2) ||
+        !valid_view(w.histogram, queries, max_partials * bins) ||
+        !valid_view(w.state, queries, state_words) ||
+        !valid_view(w.candidates, queries, max_candidates) ||
+        !valid_ranges(std::array{
+            range(scores.data, scores.elements), range(token_ids.data, token_ids.elements, true),
+            range(block_ids.data, block_ids.elements, true), range(counts.data, counts.elements, true),
+            range(w.histogram.data, w.histogram.elements, true),
+            range(w.state.data, w.state.elements, true),
+            range(w.candidates.data, w.candidates.elements, true), range(w.error, 1, true)}))
+        return hipErrorInvalidValue;
+    QsaSelectWorkspace base{w.histogram.data, w.state.data, w.candidates.data, w.error};
+    BatchOffset b{first_visible, 0, scores.stride, token_ids.stride, block_ids.stride,
+                  counts.stride, w.histogram.stride, w.state.stride, w.candidates.stride};
+    int direct = 0;
+    while (direct < queries && (first_visible + direct) / ratio <= max_candidates) ++direct;
+    // Direct/radix rows form contiguous groups even across the512-block boundary.
+    if (direct) {
+        initialize<true, true><<<dim3(1, direct), threads, 0, stream>>>(scores.data, 0, 0, base, b);
+        auto status = hipGetLastError(); if (status != hipSuccess) return status;
+        sort_publish<false, true, true><<<dim3(1, direct), threads, 0, stream>>>(
+            0, 0, 0, token_ids.data, block_ids.data, counts.data, base, b);
+        status = hipGetLastError(); if (status != hipSuccess) return status;
+    }
+    if (direct < queries) {
+        b.first_query = direct;
+        const int rows = queries - direct, partials = (last_blocks + 1023) / 1024;
+        initialize<false, true><<<dim3(1, rows), threads, 0, stream>>>(scores.data, 0, 0, base, b);
+        auto status = hipGetLastError(); if (status != hipSuccess) return status;
+        for (int shift = 56; shift >= 0; shift -= 8) {
+            radix_histogram<true><<<dim3(partials, rows), threads, 0, stream>>>(
+                scores.data, 0, 0, shift, base, b);
+            status = hipGetLastError(); if (status != hipSuccess) return status;
+            radix_select<true><<<dim3(1, rows), threads, 0, stream>>>(0, 0, shift, base, b);
+            status = hipGetLastError(); if (status != hipSuccess) return status;
+        }
+        radix_gather<true><<<dim3(partials, rows), threads, 0, stream>>>(scores.data, 0, 0, base, b);
+        status = hipGetLastError(); if (status != hipSuccess) return status;
+        sort_publish<true, true, true><<<dim3(1, rows), threads, 0, stream>>>(
+            0, 0, 0, token_ids.data, block_ids.data, counts.data, base, b);
+        status = hipGetLastError(); if (status != hipSuccess) return status;
+    }
+    publish_batch<<<queries, threads, 0, stream>>>(token_ids.data, block_ids.data, counts.data, base, b);
     return hipGetLastError();
 }
 
