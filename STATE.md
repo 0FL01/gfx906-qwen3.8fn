@@ -122,10 +122,15 @@ attention9.302s22.29%,GDN1.683s,dense1.651s. H2Dsum3.008/2.906,D2H.654/.653.
 No crossingevents. Diagnostic only. Original runtimeb201 unchanged; core-mtp-
 profile separately built. No GPU work active after profile.
 
-NEXT bounded physicalCols16/Rows2 Q4 candidate, K640/2560,M<=2560,
-columns>=16 and remainder<=8 so at most two launches. Other shapes unchanged.
-Must compare exact old short outputs, graph counts/tails and A/B/A timings.
-If no material win reject; no new model/default promotion without gates.
+PhysicalCols16/Rows2 Q4 candidate REJECTED:758/762/763 native0, source56496c8/
+dirtytrue.512cases and530056502GPU values/device exact,136600CPU samples,
+21rejects/510graph checks. Only1/42 wins,median0.82095,range.72506–1.02792.
+Code/fixture restored; patch preserved, journal84. No model runtime rebuild.
+
+NEXT Q4 K640 packed-six-row experiment:40 active canonical fragments/row,
+6rows in256threads; identical original partial indices,+0wave merge,sum64 and
+output lane. Need exact both-GPU tests and A/B/A; no promotion by theory.
+Maintain physicalN8 and old tails; at most2launches. No extra long-lived VRAM.
 
 ## Принятые границы / не повторять
 

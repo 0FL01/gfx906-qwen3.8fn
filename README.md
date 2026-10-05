@@ -2722,3 +2722,20 @@ these numbers are NOT paired wall-speed comparisons. Journal83, trace CSVs
 remain ROOT/runs/r4-profile-layerwise-20261005; compact summary copied.
 Next bounded candidate: canonical Q4 physical16columns/2rows, retaining exact
 per-output reduction math; compare component A/B/A before any model promotion.
+
+
+The canonical Q4 physical16columns/2rows experiment was rejected. A/B/A native
+758/762/763 all exit0, source56496c8/dirtytrue. EachGPU512cases/530056502exact
+GPU values,136600CPU samples,21host rejects and510graph checks pass. But only
+1/42 changed coordinates beats both controls; meanA/B median0.82095,
+range0.72506–1.02792. Production code/fixture restored; ordinary runtime never
+rebuilt. Exact experiment patch and extended fixture preserved under runs,
+raw r4-tile16x2-{a1,b,a2}.jsonl and journal84. No speculative register-pressure
+explanation is claimed as a measured cause.
+
+Next bounded hypothesis targets wasted lanes rather than a larger accumulator
+tile: Q4 K640 has20 blocks/two fragments, so only40/128 oldthreads enter the K
+loop. Pack six40-lane output rows in256threads, store original64-lane partials
+with explicit old wave1+0, then use the same sum64 and original output lane.
+This preserves per-output arithmetic but changes occupancy/reuse. Unimplemented
+and unqualified at this checkpoint; measure both-GPU exact gates and A/B/A first.
