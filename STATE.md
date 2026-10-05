@@ -41,14 +41,30 @@ Pipeline correctness PUSHED dc60e0f56da9d2b10bdbb5de845491470da8d0eb,
 remote master verified. Ordinary core-mtp-run rebuilt with this revision/dirtytrue.
 Paired PID1468638 completed native0 at11:12:52 UTC; journal95 validated.
 Actual six raws/manifests/one runtime digest and old94 byte prefix verified.
-ACTIVE separate VRAM observation: detached PID1474125, from11:15UTC;
-ROOT/runs/r4-pipeline-vram-dc6.py, prefix ROOT/runs/r4-pipeline-vram-dc6
-(.series.log/.exit.json/.pid), directory same prefix. Fresh HIP mapping,
-16K+512 exact candidate argv, expected IDs/RNG from paired16K-B.
-Do not rebuild/change ordinary binary until this observation completes.
-After recording observed memory, rebuild ONLY core-mtp-profile for diagnostic
-4K+128 phase tracing, then choose the next measured improvement.
-No other GPU workload; full PLAN and llama.cpp win remain open.
+VRAM PID1474125 completed native0 at11:21:21 UTC; journal96 validated.
+Separate16K+512, exact IDs/RNG to paired B. Fresh HIP mapping05:00/08:00.
+3227 samples at0.1s,324.30s including load/request/cleanup:
+max used12701908992/16393617408B; min free4461182976/769474560B.
+Sampled global driver extrema, not exact instantaneous/per-phase peaks.
+Actual copied raws and previous95 byte prefix verified.
+
+Profile PID1476852 completed native0 at11:32:29 UTC; journal97 verified.
+Source6b78bb7 dirty; ordinary dc60e0f binary unchanged. Actual32 and128
+annotation trajectories match. Target PP traced52.720s; GPU kernel sums42.078s,
+unions21.304/20.768s, intersection3.199s. Envelopes overlap21.508s INCLUDINGidle.
+Q4 tiled15.904s (37.8% sum), attention8.845s (21.0%). Trace overhead material:
+untraced/traced128-output requests55.019/64.428s; no speed claim from trace.
+No copy byte counts in this CSV. Details/raw paths in README/journal97.
+
+Next concrete slice: bound device head-logit output to128 rows and stream each
+completed tile to its host destination. Current allocation1024*248320*4 on EACH
+GPU wastes889978880B/device relative to128. Matrix already tiles at128; preserve
+its exact arithmetic and stream order. This is NOT implemented/qualified yet.
+Keep defaultN1/short<=128 buffer shapes unchanged. Update explicit per-buffer
+ledger and versioned wide-memory validators, not numerical tolerances.
+After real parity/ownership/failure tests, measure VRAM; then consider larger
+logical pipeline windows with stage-sized scratch. No GPU work currently active.
+Full PLAN and llama.cpp win remain open.
 
 ## Не повторять
 Packed640, small/large-output N16, row-owned2560 и row1/row4 Q4 geometry

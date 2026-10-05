@@ -2956,3 +2956,41 @@ again on the controller. Journal95 contains full evidence; raw directory is
 ROOT/runs/r4-pipeline-ab-20261005. The selected configuration remains opt-in.
 Pinned llama.cpp still wins the full requests (~57/~144s); full PLAN is open.
 Next: separately observed VRAM and refreshed diagnostic GPU phase profile.
+
+
+### 2026-10-05: pipeline memory and phase diagnostics
+
+Separate observed16K+512 completed with the same full token/RNG trajectory as
+the unobserved pipeline candidate. Fresh HIP PCI mapping was05:00.0/08:00.0.
+3227 samples at0.1s over324.30s (load/request/cleanup) found max driver usage
+12,701,908,992 /16,393,617,408 bytes and minimum free
+4,461,182,976 /769,474,560 bytes, from17,163,091,968 bytes per device.
+These are sampled global extrema, not exact instantaneous or per-phase peaks.
+Journal96, ROOT/runs/r4-pipeline-vram-dc6; source dc60e0f dirty.
+
+Diagnostic profile source6b78bb7 dirty completed natively at11:32:29 UTC.
+The ordinary runtime binary was unchanged. Annotation32 and untraced/traced
+4K+128 outputs/RNG/acceptance matched. Tracing perturbs latency: the untraced
+request was55.019s, traced64.428s; neither is a new512-output speed result.
+
+The traced target PP range was52.720290s, with1,200,175 kernel events and
+42.078131 summed kernel seconds. Per-GPU kernel unions were21.303615/20.767612s,
+union across both38.872606s, actual simultaneous kernel overlap3.198621s.
+First-to-last kernel envelopes overlapped21.508125s, but envelopes INCLUDE
+idle gaps; this is not21.5s of simultaneous GPU work. No boundary-crossing events.
+Q4_0 tiled projections remain37.80% of summed kernel time (15.904007s);
+attention21.02% (8.844621s), GDN1.682261s, dense tiled1.651964s.
+H2D duration sums4.771855/4.720751s are not wall fractions or bandwidth:
+this CSV does not include copy byte counts. The trace does not establish a
+single causal explanation for the gaps. Journal97 retains complete summaries.
+Artifacts: ROOT/runs/r4-profile-pipeline-20261005 and
+r4-profile-pipeline-{summary,envelopes}.json.
+
+Next bounded allocation hypothesis: Device currently reserves1024*248320*4
+bytes for head logits on EACH GPU, although Matrix::apply already projects
+at most128 rows per qualified tile. Queue a completed tile copy before reusing
+a128-row output buffer. This would save889,978,880 bytes per GPU at frame1024,
+without changing output vocabulary, arithmetic, host publication or head HC.
+This is a SOURCE-DERIVED opportunity, not implemented or a measured saving yet.
+Qualify bytes/parity and update versioned memory evidence before using the
+headroom for larger logical pipeline windows. Full PLAN remains open.
