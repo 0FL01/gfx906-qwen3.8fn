@@ -2681,3 +2681,21 @@ Fresh matched series r4-layerwise-mtp-ab-b201 uses a Python detached wrapper
 with native exit JSON; the first shell wrapper had an unrelated printf quoting
 failure, so its empty exitfile is not evidence. Original candidate manifest
 records native1. No failed run is reused as a speed comparison.
+
+
+### 2026-10-05 layerwise4096 measured full-request improvement
+Fresh same-build A/B/A completed nativeexit0 at05:21:28UTC, detachedPID1377858.
+Sourceb2014ceabbe099f7eb4cf64471cfa9d9235466eb/dirtytrue, source/actual binary
+unchanged across all six requests. Saved baseline hash unchanged. Candidate
+explicit --layerwise-prefill4096; controls0; all use frame1024,slots112,tile8,
+prompt+1024 capacity, original4K IDs/four-concat16K and primaryseed12345.
+4K+512: A104.162715269/105.963112306s, B91.233442267s, meanA/B1.151583358.
+B PP77.55286872/TG13.30181011.16K+512: A319.447977231/322.707701777s,
+B267.236364684s,meanA/B1.201475106,PP71.70604842/TG13.18837323.
+All512 output IDs,acceptance,RNG andpending token exact within both triplets.
+Load is separate; no prefix reuse; expert cache warmness unknown. Both candidate
+requests fit target+trained-MTP, but no new sampled/exact peak VRAM measurement
+yet. These are qualified opt-in own-runtime wins, not default policy promotion,
+llama.cpp win, independent HF or full-plan completion. Pinned donor~57s/~144s
+remains faster. Journal81; actual copied raws/manifest/IDs verified under
+ROOT/runs/r4-layerwise-mtp-ab-b201; failed earlier bcd series remains excluded.

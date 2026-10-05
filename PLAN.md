@@ -349,3 +349,11 @@ Opt-in full-window routing and bounded GPU frames pass32/128/4096 full-vocabular
 self-parity, full teacher taps, occupied continuation and ownership gates.
 Both-GPU opaque byte-copy16384 bound and full39CTest pass; details README/journal78.
 MTP integration, representative full-request win and16K fit remain OPEN.
+
+
+### 2026-10-05 layerwise4096 full-request result
+Opt-in trained MTP with layerwise4096 improves matched4K+512 to91.233s
+(meanA/B1.15158) and16K+512 to267.236s (1.20148), all IDs/RNG/acceptance exact.
+Journal81/README retain actual sourceb2014ce and raw evidence. Native exit0.
+Still behind pinned llama.cpp57s/144s. Next sampled VRAM and refreshed phase
+profile before choosing another kernel/scheduling change; full R4–R8 remain open.

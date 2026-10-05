@@ -9,6 +9,10 @@
 
 ## Последний подтверждённый runtime
 
+Opt-in layerwise4096 b2014ce/dirtytrue:4K91.233s,16K267.236s (both+512),
+PP77.553/71.706 and TG13.302/13.188. Journal81, paired both-controls win.
+Default configuration remains ordinary1024; prior last-head result below.
+
 Last-head48de1ba/dirtytrue:4K104.385s PP62.1766/TG13.2706;16K323.481s
 PP57.6149/TG13.0663. Paired result pushed5677a87b2bee81ff25ff41f5918a4ac447bbdbb0.
 The preceding sampler slice is recorded below for comparison.
@@ -99,13 +103,18 @@ Carry validator repair PASSED job1791175643524-720 exit0/4m13:
 Sourceb2014ce/dirtytrue, journal80; failed paired bcd run retained/excluded.
 No arithmetic/allocation change, carry still copies one checked row.
 
-ACTIVE fresh A/B/A from04:52UTC: ROOT/runs/r4-layerwise-mtp-ab-b201.py
-under Python detached wrapper PID1377858. Read prefixr4-layerwise-mtp-ab-b201
-.series.log/.exit.json/.pid; no shell-wrapper quoting. One GPU workload,
-samebinary A0/B4096/A0 on4K then16K+512; no heavy build while active.
-Saved baselines preserved. After terminal verify raws/manifest/512IDs, record,
-commit/push and continue full PLAN. Runtime source remainsb2014ce/dirtytrue
-even if this repair is committed under a newer source hash.
+Fresh paired series COMPLETE native0 at05:21:28UTC,sourceb2014ce/dirtytrue,
+journal81.4K A104.163/105.963→B91.233s,PP77.5529/TG13.3018,meanA/B1.15158.
+16K A319.448/322.708→B267.236s,PP71.7060/TG13.1884,meanA/B1.20148.
+All512 IDs/acceptance/RNG/pending exact inside triplets; saved baseline untouched.
+Raw ROOT/runs/r4-layerwise-mtp-ab-b201 and .exit.json verified and copied.
+Layerwise4096 remains explicit opt-in; both target+MTP requests fit, no new peak
+VRAM evidence yet. Earlier bcd failed series excluded. Fullplan/llama win open.
+
+NEXT separate16K+512 candidate sampled-VRAM observer using same binary/config,
+then rebuild ONLY diagnostic core-mtp-profile and profile4K PP+128output.
+No trace-derived speed claims. Use updated phase profile to choose next change.
+Potential Columns16/Rows2 canonical geometry is UNTRIED; no blind promotion.
 
 ## Принятые границы / не повторять
 
