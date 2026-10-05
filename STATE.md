@@ -11,7 +11,7 @@ custom stop is not natural EOS. R7 practical API/tokenizer/long context andR8
 original safetensors streaming pack remain open.
 
 ## Latest results
-Canonical journal104, controller actual logs/manifests and old103 prefix verified.
+Canonical journal105, controller actual logs/manifests and old104 prefix verified.
 Latest sourcec3d7625129f1a3c50bf32d96180d0859d6c81064/dirtytrue.
 Stage4096 withinlogical16384:16K+512182.044469s,PP113.318528/TG13.641648.
 Controlsstage2048:186.827339/185.103706s,PP110.805481/111.225462.
@@ -40,11 +40,20 @@ Full4096x1024 13,494,576,640 exact comparisons;4099+32carry exact;
 two targeted CTests. Full41CTest remains journal100, no runtime code changes.
 A/B/A request85.297698/85.556014/86.214582s; PP89.052903/85.555633/88.090998.
 B slower PP than both controls, no stable request win: NOT promoted.
-No GPU workload active. Next: profile16K logical16384/stage2048 with128 outputs,
-match annotation/traced/untraced trajectories, preserve ordinary runtime.
-Adapt runs/r4-profile-pipeline-{driver,host,analyze}.py with fresh16K paths
-and actual committed source revision. Source3cb ordinary runtime remains intact.
-Then use actual current phase evidence to choose the next bounded change.
+Profile PID1551076 completed native0 at17:54:17UTC; journal105 copied evidence verified.
+ROOT/runs/r4-profile-logical16k-20261005, source9f6f2bedirty, ordinary3cb unchanged.
+16K+128 untraced155.972s/traced213.622s, exact trajectories; no512-output claim.
+Target trace197.308s,6,045,736kernels, summed183.679s; unions92.147/91.473,
+simultaneous23.385s. Q4N8 63.651s, attention40.209s.
+Radix histogram/select EACH1,375,968 launches, total11.880s kernel sum.
+Next physical change: bounded QSA batch select up to8 chronologicalqueries.
+Reuse existing exact integer radix algorithm and separate output publication
+after all-query validation. Explicit strided views/aliases/guards; N1 unchanged.
+Component CPU/serial parity, graph/sticky/boundary tests and timings BEFORE
+Session integration. Existing attention_queries serializes score/select perquery
+on one scratch; integration requires dedicated bounded scores and selector scratch.
+Read src/hip/qsa_select.cuh/.hip and src/session.hip attention_queries.
+No GPU workload active. No new selector implementation written yet.
 
 ## Memory
 Head128 owned allocation saved889,978,880B/device; full41CTest journal98.

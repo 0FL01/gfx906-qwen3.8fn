@@ -3195,3 +3195,34 @@ Journal104, actual copied logs/manifests and old103 prefix verified.
 Next diagnostic: completed-phase16K profiling at logical16384/stage2048,
 with matching traced/untraced128-output trajectories and ordinary binary intact.
 Use separate profile target/source stamp and fresh artifact paths, no speedclaim.
+
+### 2026-10-05: current16K completed-phase diagnostic
+PID1551076 completed native0 at17:54:17UTC. Profile source9f6f2be dirty;
+ordinary3cb runtime digest unchanged. Annotation32 and traced/untraced128
+trajectories pass. Untraced/traced16K+128 request155.971536/213.622188s:
+tracing materially perturbs the run; none of these timings is512-output promotion.
+Journal105, actual copied request logs/manifests/summary and old104 prefix verified.
+Full CSVs remain on GPU host in runs/r4-profile-logical16k-20261005/mtp16k128-trace/.
+
+Target PP completed197.308246s under trace,6,045,736 kernels.
+Summed kernel183.679131s; perGPU unions92.147192/91.473480s;
+union across both160.235462s, actual simultaneous kernel intersection23.385210s.
+Zero events cross the completed phase boundaries. Sums overlap, not a wall breakdown.
+Largest kernel sums: Q4_0 N8 matrix63.651312s(34.65%), attention40.208678s(21.89%).
+Radix select and histogram each launch1,375,968 times, sums6.162286/5.717471s.
+Both together are2,751,936 launches, a concrete launch-overhead candidate.
+H2D sums18.922865/18.954299s; no byte counts in copy CSV, no bandwidth claim.
+MTP verify46windows:10.992098s hostwall,4.542691s summed kernels; no decode claim.
+
+Next bounded implementation: a borrowed-buffer QSA selector for up to8 chronological
+queries, batching the EXISTING integer radix phases across the query grid.
+Keep rank keys, signed-zero/tie order, eight radix bytes, whole blocks and actual tail.
+Per-query constructor-owned histogram/state/candidate storage; bounded score rows.
+Keep the existing N1 entry point unchanged in semantics. Validate extents/strides
+and all aliases before enqueue. Separate scratch sorting/validation from final
+batch publication so any sticky error prevents output publication across queries.
+First qualify component IDs/counts against CPU oracle and old serial launches,
+including mixed direct/radix boundary, tails, signed-zero/subnormal/ties,
+NaN/Inf/sticky flags, invalid descriptors, guards, reuse and graph capture.
+Only after component timing/parity integrate into attention_queries, preserving
+all current full-model gates, memory ownership and matched request measurements.

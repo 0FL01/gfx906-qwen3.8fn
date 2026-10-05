@@ -421,3 +421,5 @@ Driver peak observation and larger-window PP remain the next steps.
 **2026-10-05 R4 configuration result:** stage4096/logical16K passes full16K parity and16387carry;16K+512182.044s versus186.827/185.104s controls (~2.15%). Extra216MB/device; no default change or llama.cpp win. Journal103. Next4K stage1024 overlap test; all R4–R8 completion criteria remain open.
 
 **2026-10-05 R4 negative result:** stage1024 for4K passed full parity/carry, but PP85.556 versus89.053/88.091 and request85.556s did not beat both controls. Not promoted; journal104. Next current16K completed-phase profile; full goals stay open.
+
+**2026-10-05 next R4 candidate:** current16K profile journal105 exposes2,751,936 radix histogram/select launches. Implement bounded up-to8-query selection on the existing integer rank contract; component qualification first, then full-model integration. Traced197.3s is diagnostic, not a speed measurement.
