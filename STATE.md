@@ -72,13 +72,27 @@ remain enforced. New head-layout test plus actual old/new collectors pass.
 No new native long4K/16K reference run claimed. Source-off snapshot:
 controller runs/head-logits-off-8ea.hip.
 
-Next: commit/push this slice, then prepare runs/r4-head128-vram.revision with
-the new commit and rebuild ordinary core-mtp-run outside measurement.
-Prepared runs/r4-head128-vram.py is NOT launched. It uses paired16K-B args,
-compares all512 IDs/RNG, allows only source revision to differ, and samples
-driver VRAM with fresh HIP mapping. Use a new detached prefix, preserve baseline.
-No GPU work currently active. After measured headroom, expand logical pipeline
-with stage-sized scratch; full PLAN and llama.cpp win still open.
+Head128 slice PUSHED58f3bbdbea1415c52894f82447b580e1a73536fd; remote verified.
+Ordinary core-mtp-run rebuilt with58f3bbd/dirtytrue.
+Head128 VRAM observation completed native0 at13:07:51 UTC; journal99.
+PID1497345, ROOT/runs/r4-head128-vram, source58f3bbd dirty.
+All512 IDs/RNG/acceptance/pending match paired pipeline B. Fresh HIP mapping.
+3171 samples/0.1s: max used11812704256/15504785408B; min free
+5350387712/1658306560B. Sampled global driver extrema, not exact peak or speed.
+Old98 byte prefix and actual request/observer logs verified.
+
+Next slice: stage-sized pipeline resources with logical capacity up to16384,
+fixed2048 stage. Current physical arrays still reserve4096 rows. Allocate
+original Q8/contributions/DTO and six host activation vectors for the stage,
+while published root taps keep ALL actual logical rows. Default serial path
+keeps its logical-capacity allocation. Report logical and physical capacities.
+Respect coordinator max4096 windows and constructor stage bound<=4096.
+Estimated root free after stage shrink and16K taps867450880B, NOT fit proof.
+Native long fixture should retain one full N1 reference (validate old1024 path
+against it) rather than two redundant16GB arrays; preserve full tap evidence.
+Then actual MTP long carry and full41CTest, followed matched full requests.
+No GPU work active. Latest qualified speed84.422/229.376s remains dc60e0f;
+full PLAN and llama.cpp victory are still open.
 
 ## Не повторять
 Packed640, small/large-output N16, row-owned2560 и row1/row4 Q4 geometry

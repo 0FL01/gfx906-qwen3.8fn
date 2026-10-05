@@ -3038,7 +3038,33 @@ The long emitter's protocol2 schema is covered by reader tests; no new native
 
 Reproduce the existing container build with the actual source revision, then
 core-prefill-wide-test MODEL; core-prefill-attention-test MODEL;
-core-prefill-layerwise-test MODEL256 [129]; core-mtp-runner-test TARGET SIDECAR
---large-carry; and the full CTest suite. Use separate arguments MODEL and256.
+core-prefill-layerwise-test MODEL 256 [129]; core-mtp-runner-test TARGET SIDECAR
+--large-carry; and the full CTest suite.
 Next: observed16K+512 driver VRAM, then stage-sized buffers and larger logical
 pipeline windows if the measured budget permits. Full PLAN remains open.
+
+
+### 2026-10-05: bounded-head driver VRAM observation
+Source58f3bbd dirty, separate16K+512 run, native0 at13:07:51 UTC. All512 IDs,
+acceptance, RNG and pending matched the previous pipeline candidate.
+Fresh HIP mapping05:00.0/08:00.0;3171 samples at0.1s over318.735s including
+load/request/cleanup. Max used11,812,704,256 /15,504,785,408 bytes; minimum free
+5,350,387,712 /1,658,306,560 bytes, total17,163,091,968 per device.
+Observed max-usage differences from the previous pipeline run were
+889,204,736 /888,832,000 bytes. These sampled driver differences are distinct
+from the exact889,978,880-byte owned allocation reduction; runtime overhead and
+sampling can differ. No exact instantaneous-peak or speed claim.
+Journal99 and ROOT/runs/r4-head128-vram retain actual evidence. The old98 byte
+prefix and actual copied request/observer logs were verified on the controller.
+
+Next bounded change: separate logical pipeline/tap capacity from per-stage
+scratch. Retain a2048-token stage but permit a logical window up to16384.
+At frame1024, compared with the current logical4096/stage2048 allocation,
+shrinking physical stage storage from4096 to2048 saves215,777,280 bytes/device;
+growing two root taps from4096 to16384 costs1,006,632,960 bytes on GPU1.
+Using observed free memory gives a SOURCE-DERIVED estimate867,450,880 root
+bytes left. This is not a fit guarantee or implemented result; it needs actual
+constructor/ownership, full-logit/tap/continuation/MTP gates and observed fit.
+The longer fixture must avoid keeping two redundant full-vocabulary reference
+arrays at16384 rows; retain one full N1 reference and validate the old1024 path
+against it before comparing the candidate. Numerical gates remain unchanged.
