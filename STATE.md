@@ -33,17 +33,19 @@ is exactly258,944B/device; full attention ID/count storage is retained.
 No model speed claim from this correctness slice.
 
 ## Next physical step
-QSA integration committed/pushed611895f; paired series completed0 at22:09:56UTC.
-Journal108 validated against all six actual logs/manifests/input IDs.
-4K+512:81.749504s, PP92.904993/TG13.568888 (mean-control request1.052122x).
-16K+512:175.970231s, PP117.911638/TG13.804565 (mean-control request1.059137x).
-Both beat both A controls, all512 IDs/acceptance/RNG/pending exactly equal.
-Candidate restored; protected baseline unchanged. Commit/push this result slice.
-Then prioritize the user's Strata issue641 donor review:
-controller read-only checkout /home/opencode/ai/strata-donor-review,
-pin6f32ec070f23ced9f50e704d854d775da52591ab. Compare code/contracts and licenses;
-select a bounded compatible transplant, preserve frozen numerical gates.
-Do not launch another unrelated geometry sweep before that donor review.
+QSA paired result committed/pushed8cae1a4, journal108:4K81.749504s,
+PP92.904993/TG13.568888;16K175.970231s,PP117.911638/TG13.804565.
+All512 IDs/acceptance/RNG/pending exact; both beat both A controls.
+User-priority Strata deployment completed and stopped23:28:58UTC; all setup,
+start/stop/logs scripts remain in /home/radneon/strata. Both GPUs are free.
+Source6f32ec0+documented compatibility/privacy patches; actualAPI/auth/SSE/
+5053-token prompt/cancel-reuse/restart passed. Not an occupied128K proof.
+Now implement submitted-byte/explicit-barrier diagnostics and opt-in bounded
+GPU-resident residual for pipeline stages. Preserve math, CPU routing and
+expert groups initially; compare one factor in a same-binary A/B/A. Full
+numeric/tap/fault/reset/MTP gates and exact owned-memory accounting remain.
+Use user-supplied research as hypotheses, not as measured oracles. See new
+RECON section; do not repeat rejected N16 or expert-wide MMQ experiments.
 
 ## Latest qualified performance before this candidate
 Current best16K+512 is182.044469s, PP113.318528/TG13.641648, using stage4096

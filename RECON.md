@@ -475,3 +475,50 @@ mx/furnace — MIT; reinstinct объявляет Apache-2.0 в Cargo.toml. Пр
 - `GGML_CUDA_NO_F32_NC`: ggml-cuda.cu; `LLAMA_QSA_NO_MS_CACHE`: src/llama-memory-hybrid-idx.cpp.
 
 Наличие switch или kernel не доказывает его активацию в preset и выигрыш на наших shapes. Новую работу концентрировать на GPU expert residency, CPU/H2D miss scheduling, overlap, shared route loading N=2/3 и grouped PP; новый expert quant — после same-Q4 runtime.
+
+## 2026-10-05 update: Strata is now a gfx906 donor
+The October1 statement that Strata has no wave64 path is obsolete.
+Pinned source: Niko1221/Strata6f32ec070f23ced9f50e704d854d775da52591ab (MIT);
+llama.cpp dependency3cf03257f219afbe7334045ff7c6a06ac68c627d.
+Sources: https://github.com/Niko1221/Strata/issues/641 ,
+https://github.com/Niko1221/Strata/pull/638 ,
+https://github.com/Niko1221/Strata/pull/639 ,
+https://github.com/Niko1221/Strata/pull/640 ,
+https://github.com/Niko1221/Strata/pull/677 .
+Direct target-host deployment now builds and serves Coder IQ1_M on both GPUs.
+Two bounded local HIP compatibility fixes were required at this pin: protect
+five template kernel pointers from macro comma parsing and map the preferred
+shared-memory carveout enum. No kernel arithmetic was changed.
+Five targeted GPU tests pass; live API generation/stream/disconnect-reuse,
+a5053-token prompt and restart/stop all pass. Final service/autostart OFF and
+GPUs released. The deployment receipt is runs/strata-deployment-20261005.json.
+This is NOT independent HF validation or an occupied128K test.
+
+The published MI50 report uses Coder IQ1_M, all12,288 experts resident, MTP4
+plus suffix drafting, INT8 hybrid KV, greedy256 outputs; it is not our
+keep1 Q4_0/MTP2/primary-sampling512 workload. PP is320.9 at4K,522.8 at32K,
+516.8 at128000, not520 at every length. Our single5053-token functional smoke
+reported372.6 PP/41.8 TG; it is not a matched or repeated performance result.
+The current upstream own-layer dense trimming is OPT-IN (STRATA_STAGE_TRIM=1),
+unlike the apparent default in the original port report.
+
+Transferable organization: device-resident residual across a stage; explicit
+own-layer weight ownership; grouped expert launches; byte-budget streaming
+rings and overlapping next-layer copies. The current Strata MMQ supported()
+does not cover Q4_0, and its CUDA tensor-core fused experts return unavailable
+on gfx906. Do not transplant those as an already-working Q4_0 gfx906 kernel.
+IQ byte-permute/sign tricks are not automatically applicable to our Q4_0 ABI.
+Strata's raw expanded-position QSA selection is not our HF whole-block oracle.
+
+The user-supplied October5 research identifies120GiB of residual copies on a
+16K request: four token*10240*FP32 copies per layer*48 layers. This is a static
+source calculation; instrument actual submitted copy bytes and explicit
+loop barriers before claiming bus traffic or saved time.
+Next bounded candidate: retain a stage's residual in one private GPU buffer,
+while reusing the existing distinct frame scratch. This may need only80MiB
+perGPU at stage2048 (not two new160MiB buffers), but ownership, finite-error
+checks and whole-call publication must be proved. Preserve CPU routing,
+expert grouping, math and checks initially to isolate the transfer change.
+Batched QSA scoring and broader Q4 weight reuse remain separate candidates.
+llama.cpp PR29901 supplies64-key/8-query tiling, but its half-product arithmetic
+must NOT silently replace our ordered F32 contract.
