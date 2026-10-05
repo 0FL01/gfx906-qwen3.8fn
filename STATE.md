@@ -33,15 +33,17 @@ is exactly258,944B/device; full attention ID/count storage is retained.
 No model speed claim from this correctness slice.
 
 ## Next physical step
-After committing/pushing this integration:
-1. Save current session.hip as runs/qsa-batch-session-on.hip.
-2. Copy it, runs/qsa-batch-session-off-54a.hip and r4-qsa-batch-ab.py to GPU runs.
-3. Write the committed40-character source hash to r4-qsa-batch-ab.revision.
-4. Launch the prepared driver with a fresh detached prefix r4-qsa-batch-ab-20261005.
-The driver builds A/B/A variants outside timing, runs4K/16K+512 with primary
-sampling, logical4096/16384 and stage2048, verifies full trajectories, then restores
-the candidate. Do not overwrite protected baseline binaries.
-No GPU workload is active after the completed qualification.
+QSA integration committed/pushed611895f; paired series completed0 at22:09:56UTC.
+Journal108 validated against all six actual logs/manifests/input IDs.
+4K+512:81.749504s, PP92.904993/TG13.568888 (mean-control request1.052122x).
+16K+512:175.970231s, PP117.911638/TG13.804565 (mean-control request1.059137x).
+Both beat both A controls, all512 IDs/acceptance/RNG/pending exactly equal.
+Candidate restored; protected baseline unchanged. Commit/push this result slice.
+Then prioritize the user's Strata issue641 donor review:
+controller read-only checkout /home/opencode/ai/strata-donor-review,
+pin6f32ec070f23ced9f50e704d854d775da52591ab. Compare code/contracts and licenses;
+select a bounded compatible transplant, preserve frozen numerical gates.
+Do not launch another unrelated geometry sweep before that donor review.
 
 ## Latest qualified performance before this candidate
 Current best16K+512 is182.044469s, PP113.318528/TG13.641648, using stage4096

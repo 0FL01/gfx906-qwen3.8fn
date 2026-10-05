@@ -427,3 +427,28 @@ Driver peak observation and larger-window PP remain the next steps.
 **2026-10-05 R4 primitive complete:** boundedQSA batch selector passes both-GPU CPU/serial parity, invalid/sticky/graph/guard tests and legacyQSA gates;28/28 resident coordinates beat controls (8-query median6.25x). Journal106. Component only; Session integration and full-model/performance gates next.
 
 **2026-10-05 R4 integration checkpoint:** batched QSA selection passes full16K logits/taps, attention tiles16/128, MTP state/carry and full41/41CTest. Exact owned increase258944B/device at tile8. Journal107. Matched full-request A/B/A remains the performance gate; the whole plan and llama.cpp win stay open.
+
+### 2026-10-05 exact batched QSA: paired full requests (journal108)
+Source611895f dirty, trace-off source-switched Session A/B/A; same QSA
+component library, scalar per-query selector versus bounded batched selector.
+Both variants use frame1024/tile8/stage2048, logical4096/16384 respectively.
+Full primary-sampling512 trajectories, acceptance/RNG/pending match exactly.
+4K controls86.194940/85.825983s versus81.749504s; candidate PP92.904993,
+TG13.568888. Mean-control request speedup1.052122; PP-time speedup1.049236.
+16K controls187.302567/185.450542s versus175.970231s; candidate PP117.911638,
+TG13.804565. Mean-control request speedup1.059137; PP-time speedup1.059900.
+Candidate beats both controls for PP and complete request at both lengths.
+Native PID1628582 completed0 at22:09:56UTC; candidate restored, protected
+baseline unchanged. Actual six logs/manifests/input IDs copied and validated
+on controller; journal old107 byte prefix preserved. Builds and load excluded
+from request times, no prefix reuse, expert-cache warmness unknown.
+This qualifies the bounded workload gain; it is not independent HF validation
+or a llama.cpp win (historical matched donor still~57s/~144s).
+Raw reproduction driver:runs/r4-qsa-batch-ab.py;
+validator:runs/r4-qsa-batch-paired-record.py; raw:runs/r4-qsa-batch-ab-20261005.
+
+User-directed next task: inspect Strata issue641 and related gfx906 changes
+before another speculative optimization. Read-only source clone is pinned at
+6f32ec070f23ced9f50e704d854d775da52591ab. Its published MI50 benchmark uses
+Coder IQ1_M, fully VRAM-resident experts, MTP4 plus suffix drafting, greedy256,
+int8 hybrid KV; direct comparison with our Q4_0/MTP2/sample512 is invalid.
