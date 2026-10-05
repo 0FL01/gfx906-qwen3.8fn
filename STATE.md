@@ -8,17 +8,17 @@
 Численные gates, weights, precision, top-k/QSA budget не ослаблять.
 
 ## Последний runtime / измерения
-Attention-deferred source53d1153/dirtytrue, explicitlayerwise4096:
-4K+51291.140152s, PP78.853648/TG13.037670;
-16K+512260.903173s, PP73.315235/TG13.652910.
-Journal92, result pushedadcd7f46af01a3edebe3c26c9fbb5ac09623b438.
-A/B/A: PP~2% быстрее meancontrols на обоих размерах;4K fullrequest лишь
-19.5ms быстрее лучшего A (шум),16K~2.49% лучше meancontrols.
-Все512 IDs/acceptance/RNG/pending совпадают. Pinned llama.cpp~57/~144s быстрее.
-Default остаётся ordinary1024, layerwise4096 opt-in. Ordinarycore-mtp-run
-восстановлен на attention candidate. Saved core-mtp-run-baseline7df и
-core-session-baseline775 НЕ перезаписывать: разрешения на это нет.
-Полная история, raw provenance и отрицательные результаты: results.jsonl/README.
+Pipeline2048 within layerwise4096, source dc60e0f dirty:
+4K+51284.422057s, PP88.353420/TG13.425791;
+16K+512229.376431s, PP85.327488/TG13.677163.
+Matched A/B/A journal95: controls92.547/92.184s and265.569/260.969s.
+Both PP/request beat both controls; mean request ratios1.094096/1.147759.
+All512 IDs, acceptance, RNG, pending equal. Same binary in all six processes.
+Serial deferred-attention prior result91.140/260.903s is retained in journal92.
+Pinned llama.cpp~57/~144s still faster. Default remains ordinary1024;
+fast configuration is explicit --layerwise-prefill4096 --prefill-pipeline2048.
+Saved core-mtp-run-baseline7df and core-session-baseline775 MUST stay untouched.
+Full history, actual provenance and negative experiments: results.jsonl/README.
 
 ## Текущий срез / следующий шаг
 Двух-GPU pipeline correctness завершён: journal94, source48f3d14 dirty.
@@ -37,12 +37,18 @@ absolute positions, transactional publication и failure drain сохранен�
 Host-only coordinator push48f3d14, journal93:84cases,20 repeats, ASan/UBSan pass.
 TSan не стартовал из-за ASLR layout; security settings не менялись.
 
-Следующий шаг: commit/push этого среза, затем runs/r4-pipeline-ab.py.
-Скрипт пока НЕ запущен и revision file не создан. Собрать ordinary core-mtp-run
-со stamp нового commit вне timing; одна неизменная binary, pipeline0 vs2048,
-layerwise4096,4K/16K+512, capacity prompt+1024. Сохранённый baseline не трогать.
-После paired result — измерить фактическую VRAM и выбрать следующий bottleneck.
-GPU/CTest работы сейчас нет. Полный PLAN и победа над llama.cpp ещё не закрыты.
+Pipeline correctness PUSHED dc60e0f56da9d2b10bdbb5de845491470da8d0eb,
+remote master verified. Ordinary core-mtp-run rebuilt with this revision/dirtytrue.
+Paired PID1468638 completed native0 at11:12:52 UTC; journal95 validated.
+Actual six raws/manifests/one runtime digest and old94 byte prefix verified.
+ACTIVE separate VRAM observation: detached PID1474125, from11:15UTC;
+ROOT/runs/r4-pipeline-vram-dc6.py, prefix ROOT/runs/r4-pipeline-vram-dc6
+(.series.log/.exit.json/.pid), directory same prefix. Fresh HIP mapping,
+16K+512 exact candidate argv, expected IDs/RNG from paired16K-B.
+Do not rebuild/change ordinary binary until this observation completes.
+After recording observed memory, rebuild ONLY core-mtp-profile for diagnostic
+4K+128 phase tracing, then choose the next measured improvement.
+No other GPU workload; full PLAN and llama.cpp win remain open.
 
 ## Не повторять
 Packed640, small/large-output N16, row-owned2560 и row1/row4 Q4 geometry

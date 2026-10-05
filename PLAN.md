@@ -383,3 +383,27 @@ Session/HIP integration, causal model gates and measured overlap remain OPEN.
 windows, eight failure/reset cases, trained MTP carry and full40 CTests pass.
 Keep it opt-in. Full-request A/B/A and observed VRAM remain the promotion gates;
 the full R4 speed target and remaining R5–R8 are still open.
+
+
+### 2026-10-05: two-GPU pipeline full-request result
+
+The trace-off A/B/A series completed natively at 11:12:52 UTC. One unchanged
+runtime binary, source dc60e0f56da9d2b10bdbb5de845491470da8d0eb / dirty=true,
+compared serial layerwise4096 against pipeline2048 within the same logical4096.
+Capacity was prompt+1024, slots112, frame1024, attention tile8, primary sampling
+(seed12345, temperature1, top-p.95, top-k20), fresh processes, no prefix reuse.
+
+4K+512: A92.547317/92.184304s, B84.422057s; B PP88.353420, TG13.425791.
+16K+512: A265.568701/260.969029s, B229.376431s; B PP85.327488, TG13.677163.
+Candidate PP and full requests beat both controls at both sizes. Mean-control
+request speedups were1.094096x/1.147759x; PP time ratios1.135659x/1.170804x.
+TG differences are measurements, not evidence of a changed decode kernel:
+prefill scheduling can change cache residency, and warmness is not isolated.
+
+All512 output IDs, acceptance, proposal/decision RNG and pending IDs matched in
+each triplet. Protected saved baseline stayed unchanged. Six actual514-row logs,
+manifests, one runtime digest and the previous94 journal byte prefix were checked
+again on the controller. Journal95 contains full evidence; raw directory is
+ROOT/runs/r4-pipeline-ab-20261005. The selected configuration remains opt-in.
+Pinned llama.cpp still wins the full requests (~57/~144s); full PLAN is open.
+Next: separately observed VRAM and refreshed diagnostic GPU phase profile.
