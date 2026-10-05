@@ -41,7 +41,7 @@ constexpr std::uint64_t handoff_bytes = batch * 4 * 2560 * sizeof(float), stage_
 constexpr std::uint64_t staging_bytes = 4 * stage_bytes;
 // Necessary aggregate floor only: the public ledger does not expose individual scratch capacities.
 constexpr std::uint64_t workspace_floor = 24ULL * batch * 12288 * sizeof(float) + batch * 320ULL * 36 +
-    logit_bytes + batch * 10ULL * 2560 * sizeof(float) + 2 * stage_bytes;
+    128ULL * vocabulary * sizeof(float) + batch * 10ULL * 2560 * sizeof(float) + 2 * stage_bytes;
 constexpr std::array<std::string_view, 3> phases{"reference_n1", "canonical1024", "occupied5_then997"};
 constexpr std::int32_t token_at(std::size_t position) {
     return position == 0 ? 248044 : 99 + static_cast<std::int32_t>(position);
@@ -70,7 +70,7 @@ static_assert(CORE_DIRTY == 0 || CORE_DIRTY == 1);
 static_assert(std::string_view(CORE_REVISION).size() == 40);
 static_assert(exact_ids<4096>() && exact_ids<16384>());
 static_assert((4096 + 32) % 4 == 0 && (16384 + 32) % 4 == 0);
-static_assert(payload == 68262297600ULL && logit_bytes == 1017118720ULL && workspace_floor == 2433482752ULL);
+static_assert(payload == 68262297600ULL && logit_bytes == 1017118720ULL && workspace_floor == 1543503872ULL);
 static_assert(mixed_chunks(4096) == 5 && mixed_chunks(16384) == 17);
 static_assert(success_records(4096) == 93 && success_records(16384) == 129);
 
@@ -100,7 +100,7 @@ struct Writer {
         std::ostringstream out;
         out.imbue(std::locale::classic());
         out << std::boolalpha << std::setprecision(std::numeric_limits<double>::max_digits10)
-            << "{\"kind\":\"prefill_long_" << kind << "\",\"protocol\":1";
+            << "{\"kind\":\"prefill_long_" << kind << "\",\"protocol\":2";
         fields(out);
         out << "}\n";
         require(static_cast<bool>(out), "JSONL formatting failed");
@@ -123,7 +123,7 @@ auto host_key(const qwen::SessionMemory& m) {
 auto device_key(const qwen::SessionDeviceMemory& d) {
     return std::tuple{d.device, d.first_layer, d.last_layer, d.gdn_layers, d.qsa_layers, d.weights,
         d.expert_slots, d.qsa_kv, d.qsa_index, d.gdn_state, d.ple_state, d.workspace, d.owned_bytes,
-        d.owned_peak_bytes, d.owned_buffers, d.total_vram}; // Unowned runtime free VRAM may fluctuate.
+        d.owned_peak_bytes, d.owned_buffers, d.total_vram, d.head_logits_bytes}; // Unowned runtime free VRAM may fluctuate.
 }
 void json_stats(std::ostream& out, const qwen::SessionStats& s) {
     out << "{\"consumed_tokens\":" << s.consumed_tokens << ",\"expert_hits\":" << s.expert_hits
@@ -147,7 +147,7 @@ void json_memory(std::ostream& out, const qwen::SessionMemory& m) {
         out << "{\"device\":" << d.device << ",\"first_layer\":" << d.first_layer << ",\"last_layer\":" << d.last_layer
             << ",\"gdn_layers\":" << d.gdn_layers << ",\"qsa_layers\":" << d.qsa_layers << ",\"weights\":" << d.weights
             << ",\"expert_slots\":" << d.expert_slots << ",\"qsa_kv\":" << d.qsa_kv << ",\"qsa_index\":" << d.qsa_index
-            << ",\"gdn_state\":" << d.gdn_state << ",\"ple_state\":" << d.ple_state << ",\"workspace\":" << d.workspace
+            << ",\"gdn_state\":" << d.gdn_state << ",\"ple_state\":" << d.ple_state << ",\"workspace\":" << d.workspace << ",\"head_logits_bytes\":" << d.head_logits_bytes
             << ",\"owned_bytes\":" << d.owned_bytes << ",\"owned_peak_bytes\":" << d.owned_peak_bytes
             << ",\"owned_buffers\":" << d.owned_buffers << ",\"total_vram\":" << d.total_vram << ",\"free_vram\":" << d.free_vram << '}';
     }
@@ -233,7 +233,7 @@ struct Audit {
                 for (const auto bytes : {d.weights, d.expert_slots, d.qsa_kv, d.qsa_index, d.gdn_state, d.ple_state, d.workspace}) {
                     require(bytes <= std::numeric_limits<std::uint64_t>::max() - sum, "category sum overflow"); sum += bytes;
                 }
-                require(d.weights > 0 && d.workspace >= workspace_floor && d.owned_bytes == sum &&
+                require(d.head_logits_bytes == 128ULL * vocabulary * sizeof(float) && d.weights > 0 && d.workspace >= workspace_floor && d.owned_bytes == sum &&
                         d.owned_buffers > 0 && d.owned_peak_bytes >= sum, "Buffer category/count/peak accounting");
             }
             loaded = m; minimum_free = {m.devices[0].free_vram, m.devices[1].free_vram};
@@ -405,7 +405,7 @@ void json_proofs(std::ostream& out, const std::array<Proof, 4>& proofs, std::siz
     out << ']';
 }
 
-// JSONL protocol 1: source; memory(loaded, reset x3, final_reset); baseline_checkpoint
+// JSONL protocol 2 (bounded head logits): source; memory(loaded, reset x3, final_reset); baseline_checkpoint
 // (every 1024 N1 teacher calls, then 32 N1 continuation calls); window (every candidate
 // call); phase x3; complete OR bounded failure. Streaming records use one temporary
 // string, never one retained record/memory snapshot per baseline row. Check every call

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Validate core-prefill-attention-test protocol 1; append ONE r4_attention_prefill.
+"""Validate core-prefill-attention-test protocols 1/2; append ONE r4_attention_prefill.
 
 The frozen C++ emitter has 31 successful records. This is retained same-Session
 old-N1 full-vocabulary correctness, not a component gate, HF oracle or speed test.
@@ -69,6 +69,16 @@ ERROR_METRICS = ('maxabs', 'rms', 'maxboundratio')
 ERROR_COORDS = ('maxabs_row', 'maxabs_column', 'maxratio_row', 'maxratio_column')
 
 
+def protocol(obj):
+    return integer(obj.get("protocol"), "protocol", 1, 2)
+
+
+def workspace_floor(version):
+    # Version1 keeps its ORIGINAL full-frame device-output floor. Version2
+    # explicitly reports each bounded128 Buffer; host output capacity is unchanged.
+    return WORKSPACE_FLOOR - ((MAX_BATCH - 128) * VOCAB * 4 if version == 2 else 0)
+
+
 def records(path):
     """Bound stat/open/read and each scalar-summary record; no tensor arrays."""
     info = path.stat()
@@ -97,15 +107,15 @@ def records(path):
     return result
 
 
-def base(kind, record_index, phase_index=None, passed=True):
-    return {'protocol': 1, 'kind': 'prefill_attention_' + kind, 'record_index': record_index,
+def base(kind, record_index, phase_index=None, passed=True, version=1):
+    return {'protocol': version, 'kind': 'prefill_attention_' + kind, 'record_index': record_index,
             'phase_index': phase_index, 'phase': PHASES[phase_index] if phase_index is not None else None,
             'passed': passed}
 
 
 def failure(obj, index):
     # main's failure footer always has null phase, even when a phase failed.
-    expect(obj, {**base('failure', index, passed=False), 'all_owners_unwound': True},
+    expect(obj, {**base('failure', index, passed=False, version=protocol(obj)), 'all_owners_unwound': True},
            ('session_constructed', 'failure'), 'failure')
     require(type(obj['session_constructed']) is bool, 'failure.session_constructed: expected boolean')
     message = text(obj['failure'], 'failure.failure')
@@ -117,7 +127,7 @@ def failed_window(obj, record_index):
     """Recognize the catch-path schema, but never turn partial work into evidence."""
     phase_index = integer(obj.get('phase_index'), 'failed_window.phase_index', 0, 2)
     label = 'failed_window'
-    expect(obj, base('window', record_index, phase_index, passed=False),
+    expect(obj, base('window', record_index, phase_index, passed=False, version=protocol(obj)),
            ('window_index', 'offset', 'rows', 'completed_rows', 'completed_calls', 'segment',
             'errors', 'state_before', 'state_after', 'failure'), label)
     integer(obj['window_index'], label + '.window_index', 0, 5)
@@ -153,7 +163,7 @@ def failed_window(obj, record_index):
 
 def source(obj):
     expect(obj, {
-        **base('source', 0),
+        **base('source', 0, version=protocol(obj)),
         'config': {'capacity': 2088, 'expert_slots': 1, 'max_batch_tokens': 1024,
                    'cpu_workers': 0, 'hybrid_probe': False, 'trace_directory': '',
                    'attention_query_tile': 8, 'initial_attention_batch': False},
@@ -241,7 +251,7 @@ def completed_state(obj, previous, offset, rows, singles, label):
     return deltas
 
 
-def memory(obj, label, loaded=None):
+def memory(obj, label, loaded=None, version=1):
     expect(obj, {
         'capacity': CAPACITY, 'expert_slots': 1, 'attention_query_tile': TILE, 'ownership_verified': True,
         'ram_expert_payload': RAM_PAYLOAD, 'expert_payload_reads': 144, 'expert_payload_bytes_read': RAM_PAYLOAD,
@@ -263,7 +273,7 @@ def memory(obj, label, loaded=None):
     require(type(devices) is list and len(devices) == 2, label + ': expected both owners')
     for i, d in enumerate(devices):
         where = f'{label}.devices[{i}]'
-        expect(d, {'device': i, 'first_layer': 24 * i, 'last_layer': 24 * i + 23,
+        expect(d, {**({'head_logits_bytes': 128 * VOCAB * 4} if version == 2 else {}), 'device': i, 'first_layer': 24 * i, 'last_layer': 24 * i + 23,
                    'gdn_layers': 18, 'qsa_layers': 6,
                    'expert_slots': (6 * Q41 + 18 * Q40) if i == 0 else 24 * Q40,
                    'qsa_kv': 6 * CAPACITY * 32 * 18, 'qsa_index': 6 * (CAPACITY // 4 * 128 + 384) * 4,
@@ -272,7 +282,7 @@ def memory(obj, label, loaded=None):
                ('weights', 'workspace', 'owned_bytes', 'owned_peak_bytes', 'owned_buffers',
                 'total_vram', 'free_vram'), where)
         integer(d['weights'], where + '.weights', 1)
-        integer(d['workspace'], where + '.workspace', WORKSPACE_FLOOR)
+        integer(d['workspace'], where + '.workspace', workspace_floor(version))
         owned = integer(d['owned_bytes'], where + '.owned_bytes', 1)
         exact(owned, integer(sum(d[k] for k in CATEGORIES), where + '.category_sum'), where + '.category_sum')
         integer(d['owned_peak_bytes'], where + '.peak', owned)
@@ -375,6 +385,8 @@ def collect(raw_path):
     """Return a fully validated compact aggregate; no append, model IO or GPU IO."""
     raw_path = Path(raw_path).resolve()
     rows = records(raw_path)
+    version = protocol(rows[0])
+    require(all(protocol(row) == version for row in rows), "mixed protocol versions")
     for i, obj in enumerate(rows):
         if obj.get('kind') == 'prefill_attention_window' and obj.get('passed') is False:
             failed_window(obj, i)
@@ -390,12 +402,12 @@ def collect(raw_path):
         nonlocal cursor
         require(cursor < len(rows), 'timeline: missing record')
         obj = rows[cursor]
-        expect(obj, {**base(kind, cursor, phase_index), **fixed}, variable, f'{kind}[{cursor}]')
+        expect(obj, {**base(kind, cursor, phase_index, version=version), **fixed}, variable, f'{kind}[{cursor}]')
         cursor += 1
         return obj
 
     def ledger(obj):
-        memory(obj['memory'], 'memory', loaded)
+        memory(obj['memory'], 'memory', loaded, version)
         exact(obj['memory_snapshot_index'], snapshots - 1, 'memory_snapshot_index')
         memories.append(obj['memory'])
 
@@ -507,7 +519,8 @@ def collect(raw_path):
     prefix = backing['private_workspace_bytes'] - private
     selection = sum(backing[k] for k in ('selected_id_bytes', 'selected_block_bytes', 'selected_count_bytes'))
     return {
-        'kind': 'r4_attention_prefill', 'protocol': 1,
+        'kind': 'r4_attention_prefill', 'protocol': version,
+        **({'head_logit_byte_proof': {'rows': 128, 'bytes_per_device': 128 * VOCAB * 4, 'included_in_workspace': True}} if version == 2 else {}),
         'timestamp': datetime.datetime.now(datetime.timezone.utc).isoformat(),
         'revision': origin['revision'], 'dirty': bool(origin['dirty']), 'runtime': 'own_48_layer_HIP',
         'model_variant': 'qwen38-keep1-Q4_0', 'model': origin['model'], 'model_bytes': origin['model_bytes'],

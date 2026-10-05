@@ -231,6 +231,9 @@ struct SessionDeviceMemory {
     std::uint64_t gdn_state = 0, ple_state = 0, workspace = 0;
     std::uint64_t owned_bytes = 0, owned_peak_bytes = 0, owned_buffers = 0;
     std::uint64_t total_vram = 0, free_vram = 0;
+    // Actual output Buffer capacity, already INCLUDED in workspace/owned_bytes.
+    // min(max_batch_tokens,128) full-vocabulary rows; host output stays full.
+    std::uint64_t head_logits_bytes = 0;
 };
 
 // Diagnostic snapshot, not a hot-path allocator or occupied-context test.

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Validate core-prefill-long-test protocol 1; append ONE r4b_long_prefill.
+"""Validate core-prefill-long-test protocols 1/2; append ONE r4b_long_prefill.
 
 Exactly 93 (4096 teacher) or 129 (16384 teacher) finished records: source,
 loaded memory, three (reset, checkpoints/windows, phase), final-reset memory,
@@ -66,6 +66,16 @@ def counts(teacher):
     return total, mixed, windows, 10 + teacher // MAX_BATCH + 1 + sum(windows[1:])
 
 
+def protocol(obj):
+    return integer(obj.get("protocol"), "protocol", 1, 2)
+
+
+def workspace_floor(version):
+    # Version1 keeps its ORIGINAL full-frame device-output floor. Version2
+    # explicitly reports each bounded128 Buffer; host output capacity is unchanged.
+    return WORKSPACE_FLOOR - ((MAX_BATCH - 128) * VOCAB * 4 if version == 2 else 0)
+
+
 def records(path):
     """Bound before and during reading; never read an unbounded/growing log."""
     info = path.stat()
@@ -97,7 +107,7 @@ def source(obj):
     total, mixed, windows, record_count = counts(teacher)
     reference_bytes = total * VOCAB * 4
     expect(obj, {
-        "kind": "prefill_long_source", "protocol": 1, "runtime": "own_48_layer_HIP",
+        "kind": "prefill_long_source", "protocol": protocol(obj), "runtime": "own_48_layer_HIP",
         "session_instances": 1,
         "config": {"capacity": total, "expert_slots": SLOTS, "max_batch_tokens": MAX_BATCH, "trace": False},
         "large_RAM_opt_in": "explicit_ROWS_4096_or_16384",
@@ -133,7 +143,7 @@ def source(obj):
         "known_host_min_bytes_before_embedding_metadata_runtime": RAM_PAYLOAD + reference_bytes +
         2 * HOST_LOGIT_BYTES + PINNED_HANDOFF + PINNED_STAGING + FLOAT_GUARD_BYTES + INPUT_WORKSPACE_BYTES,
         "host_accounting": "expert_RAM_plus_reference_plus_preservation_plus_Session_logits_plus_pinned_handoff_and_expert_staging_no_weight_copy",
-        "workspace_aggregate_min_bytes_per_device": WORKSPACE_FLOOR,
+        "workspace_aggregate_min_bytes_per_device": workspace_floor(protocol(obj)),
         "individual_buffer_capacities_observable": False, "physical_128_column_tile_proven": False,
         "coverage_scope": "actual_teacher_rows_and_call_offsets_cover_visible2047..2056_each_mod4_not_selected_ID_trace_or_synthetic_QKV",
         "performance_claim": False, "peak_VRAM_qualification_claim": False, "R4_complete_claim": False,
@@ -249,7 +259,7 @@ def aggregate_errors(obj, components, offset, rows, compared_rows, label, values
     require(math.isclose(obj["rms"], rms, rel_tol=1e-12, abs_tol=0), label + ": inconsistent RMS aggregate")
 
 
-def memory(obj, total, label, loaded=None):
+def memory(obj, total, label, loaded=None, version=1):
     expect(obj, {"capacity": total, "expert_slots": SLOTS, "ownership_verified": True,
                  "ram_expert_payload": RAM_PAYLOAD, "pinned_handoff": PINNED_HANDOFF,
                  "pinned_expert_staging": PINNED_STAGING, "expert_payload_reads": 144,
@@ -262,14 +272,14 @@ def memory(obj, total, label, loaded=None):
     require(type(devices) is list and len(devices) == 2, label + ": expected both static owners")
     for i, d in enumerate(devices):
         where = f"{label}.devices[{i}]"
-        expect(d, {"device": i, "first_layer": 24 * i, "last_layer": 24 * i + 23,
+        expect(d, {**({"head_logits_bytes": 128 * VOCAB * 4} if version == 2 else {}), "device": i, "first_layer": 24 * i, "last_layer": 24 * i + 23,
                    "gdn_layers": 18, "qsa_layers": 6,
                    "expert_slots": SLOTS * ((6 * Q41 + 18 * Q40) if i == 0 else 24 * Q40),
                    "qsa_kv": 6 * total * 32 * 18, "qsa_index": 6 * (total // 4 * 128 + 384) * 4,
                    "gdn_state": 18 * (786432 + 30720) * 4, "ple_state": 368640 if i == 0 else 0},
                ("weights", "workspace", "owned_bytes", "owned_peak_bytes", "owned_buffers", "total_vram", "free_vram"), where)
         integer(d["weights"], where + ".weights", 1)
-        integer(d["workspace"], where + ".workspace", WORKSPACE_FLOOR)
+        integer(d["workspace"], where + ".workspace", workspace_floor(version))
         owned = integer(d["owned_bytes"], where + ".owned_bytes", 1)
         exact(owned, sum(d[key] for key in CATEGORIES), where + ".category_sum")
         integer(d["owned_peak_bytes"], where + ".owned_peak_bytes", owned)
@@ -287,12 +297,12 @@ def memory(obj, total, label, loaded=None):
 
 def memory_row(obj, event, index, total, loaded=None, reported=None):
     label = f"{event}[{index}]"
-    expect(obj, {"kind": "prefill_long_memory", "protocol": 1, "event": event,
+    expect(obj, {"kind": "prefill_long_memory", "protocol": protocol(obj), "event": event,
                  "phase_index": index, "host_accounting_excludes_metadata_allocator_runtime_overhead": True,
                  "passed": True}, ("stats", "route_stats", "memory", "reported_known_host_and_fixture_bytes"), label)
     same_stats(obj["stats"], ZERO_STATS, label + ".stats")
     same_groups(obj["route_stats"], ZERO_GROUPS, label + ".route_stats")
-    memory(obj["memory"], total, label + ".memory", loaded)
+    memory(obj["memory"], total, label + ".memory", loaded, protocol(obj))
     m = obj["memory"]
     floor = sum(m[key] for key in ("ram_expert_capacity", "host_embedding_capacity", "host_logit_capacity",
                                   "pinned_handoff", "pinned_expert_staging"))
@@ -306,7 +316,7 @@ def memory_row(obj, event, index, total, loaded=None, reported=None):
 def checkpoint(obj, position, shape, teacher, previous, previous_groups, loaded):
     offset, rows = shape
     label = f"reference_n1.checkpoint[{position}]"
-    expect(obj, {"kind": "prefill_long_baseline_checkpoint", "protocol": 1, "phase_index": 0,
+    expect(obj, {"kind": "prefill_long_baseline_checkpoint", "protocol": protocol(obj), "phase_index": 0,
                  "checkpoint_index": position, "offset": offset, "rows": rows, "windows": rows,
                  "segment": "teacher" if offset < teacher else "continuation",
                  "max_expert_group_count": 1, "expert_groups_gt128": 0,
@@ -319,13 +329,13 @@ def checkpoint(obj, position, shape, teacher, previous, previous_groups, loaded)
     same_groups(obj["route_stats_after"], {GROUP_FIELDS[0]: 1, GROUP_FIELDS[1]: 0}, label + ".route_stats_after")
     require(number(obj["correctness_completed_call_wall_ms_sum"], label + ".wall_sum") > 0, label + ": nonpositive time")
     errors(obj["errors"], offset, rows, 0, label + ".errors")
-    memory(obj["memory"], teacher + CONTINUATION, label + ".memory", loaded)
+    memory(obj["memory"], teacher + CONTINUATION, label + ".memory", loaded, protocol(obj))
 
 
 def window(obj, index, position, shape, teacher, previous, previous_groups, loaded):
     offset, rows = shape
     label = f"{PHASES[index]}.window[{position}]"
-    expect(obj, {"kind": "prefill_long_window", "protocol": 1, "phase_index": index, "phase": PHASES[index],
+    expect(obj, {"kind": "prefill_long_window", "protocol": protocol(obj), "phase_index": index, "phase": PHASES[index],
                  "window_index": position, "offset": offset, "rows": rows,
                  "stage": "memory_and_full_live_span_preservation", "completed_call": True,
                  "segment": "teacher" if offset < teacher else "continuation", "expected_routes": 480 * rows,
@@ -341,7 +351,7 @@ def window(obj, index, position, shape, teacher, previous, previous_groups, load
     exact(obj["expert_groups_gt128_delta"], delta, label + ".delta")
     require(number(obj["correctness_completed_call_wall_ms"], label + ".wall_ms") > 0, label + ": nonpositive time")
     errors(obj["errors"], offset, rows, rows, label + ".errors")
-    memory(obj["memory"], teacher + CONTINUATION, label + ".memory", loaded)
+    memory(obj["memory"], teacher + CONTINUATION, label + ".memory", loaded, protocol(obj))
 
 
 def coverage(teacher, index):
@@ -401,7 +411,7 @@ def phase(obj, index, current, teacher):
     label = PHASES[index]
     maximum = max(w["max_expert_group_count"] if index == 0 else w["route_stats_after"][GROUP_FIELDS[0]] for w in current)
     threshold = sum(w["expert_groups_gt128"] if index == 0 else w["expert_groups_gt128_delta"] for w in current)
-    expect(obj, {"kind": "prefill_long_phase", "protocol": 1, "phase_index": index, "phase": label,
+    expect(obj, {"kind": "prefill_long_phase", "protocol": protocol(obj), "phase_index": index, "phase": label,
                  "windows": windows[index], "teacher_rows": teacher, "continuation_rows": CONTINUATION,
                  "max_expert_group_count": maximum, "expert_groups_gt128": threshold,
                  "coverage": coverage(teacher, index), "passed": True},
@@ -424,6 +434,8 @@ def collect(raw_path):
     """Validate every emitted record; return one compact aggregate, no writes."""
     raw_path = Path(raw_path).resolve()
     rows = records(raw_path)
+    version = protocol(rows[0])
+    require(all(protocol(row) == version for row in rows), "mixed protocol versions")
     origin = rows[0]
     teacher = source(origin)
     total, _, windows, record_count = counts(teacher)
@@ -462,7 +474,7 @@ def collect(raw_path):
     maximum, threshold = max(p["max_expert_group_count"] for p in phases), sum(p["expert_groups_gt128"] for p in phases)
     exact(preserved, REJECTION_VALUES, "complete.rejection_values")
     expect(footer, {
-        "kind": "prefill_long_complete", "protocol": 1, "teacher_rows_per_phase": teacher,
+        "kind": "prefill_long_complete", "protocol": version, "teacher_rows_per_phase": teacher,
         "continuation_rows_per_phase": CONTINUATION, "phase_count": 3, "timeline_rows": 3 * total,
         "window_count": sum(windows), "record_count": record_count,
         "max_expert_group_count": maximum, "expert_groups_gt128": threshold,
@@ -487,7 +499,8 @@ def collect(raw_path):
         upper = min(m["devices"][i]["free_vram"] for m in memories)
         integer(minimum, f"complete.minimum_free_vram_bytes[{i}]", 1, upper)
     return {
-        "kind": "r4b_long_prefill", "protocol": 1,
+        "kind": "r4b_long_prefill", "protocol": version,
+        **({"head_logit_byte_proof": {"rows": 128, "bytes_per_device": 128 * VOCAB * 4, "included_in_workspace": True}} if version == 2 else {}),
         "timestamp": datetime.datetime.now(datetime.timezone.utc).isoformat(),
         "revision": origin["revision"], "dirty": origin["dirty"], "runtime": origin["runtime"],
         "model_variant": "qwen38-keep1-Q4_0", "model": origin["model"], "model_bytes": origin["model_bytes"],

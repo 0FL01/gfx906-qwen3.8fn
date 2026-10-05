@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Validate core-prefill-wide-test JSONL protocol 1; append ONE r4b_wide_prefill.
+"""Validate core-prefill-wide-test JSONL protocols 1/2; append ONE r4b_wide_prefill.
 
 Exactly 1181 rows: source, loaded memory, four (reset, chronological windows,
 phase), final-reset memory, cleanup-complete footer. The 1169 windows cover
@@ -48,6 +48,16 @@ ZERO_STATS = {"consumed_tokens": 0, **dict.fromkeys(COUNTERS, 0),
 ZERO_GROUPS = dict.fromkeys(GROUP_FIELDS, 0)
 
 
+def protocol(obj):
+    return integer(obj.get("protocol"), "protocol", 1, 2)
+
+
+def workspace_floor(version):
+    # Version1 keeps its ORIGINAL full-frame device-output floor. Version2
+    # explicitly reports each bounded128 Buffer; host output capacity is unchanged.
+    return WORKSPACE_FLOOR - ((MAX_BATCH - 128) * VOCAB * 4 if version == 2 else 0)
+
+
 def records(path):
     """Bound before loading and again while reading, including growing files."""
     info = path.stat()
@@ -74,7 +84,7 @@ def records(path):
 
 def source(obj):
     expect(obj, {
-        "kind": "prefill_wide_source", "protocol": 1, "runtime": "own_48_layer_HIP",
+        "kind": "prefill_wide_source", "protocol": protocol(obj), "runtime": "own_48_layer_HIP",
         "model_source": "caller_supplied_GGUF_path_no_checksum_attestation",
         "config": {"capacity": 1056, "expert_slots": 1, "max_batch_tokens": 1024, "trace": False},
         "teacher_ids": [248044, *range(100, 1123)], "continuation_ids": list(range(1123, 1155)),
@@ -107,9 +117,9 @@ def source(obj):
             "gdn_slice_limit": 128, "expert_band": 16, "stages_per_device": 2,
             "pinned_expert_staging_bytes": PINNED_STAGING, "pinned_handoff_bytes": PINNED_HANDOFF,
             "host_logit_min_bytes": HOST_LOGIT_BYTES,
-            "workspace_aggregate_min_bytes_per_device": WORKSPACE_FLOOR,
+            "workspace_aggregate_min_bytes_per_device": workspace_floor(protocol(obj)),
             "individual_buffer_capacities_observable": False,
-            "individual_buffer_capacity_qualification": "unavailable_from_memory_API_aggregate_floor_only",
+            "individual_buffer_capacity_qualification": ("head_logits_reported_other_buffers_aggregate_floor" if protocol(obj) == 2 else "unavailable_from_memory_API_aggregate_floor_only"),
             "component_128_staging_repack_qualified": False,
             "component_128_staging_repack_evidence": "not_inferred_from_N1024_or_aggregate_memory_floor",
             "free_vram_equality_required": False,
@@ -174,7 +184,7 @@ def routes(obj, rows, label):
             label + ": upload bytes outside unchanged per-miss-group payload range")
 
 
-def memory(obj, label, loaded=None):
+def memory(obj, label, loaded=None, version=1):
     expect(obj, {"capacity": CAPACITY, "expert_slots": 1, "ownership_verified": True,
                  "ram_expert_payload": RAM_PAYLOAD, "pinned_handoff": PINNED_HANDOFF,
                  "pinned_expert_staging": PINNED_STAGING, "expert_payload_reads": 144,
@@ -187,7 +197,7 @@ def memory(obj, label, loaded=None):
     require(type(devices) is list and len(devices) == 2, label + ": expected both static owners")
     for i, d in enumerate(devices):
         where = f"{label}.devices[{i}]"
-        expect(d, {"device": i, "first_layer": 24 * i, "last_layer": 24 * i + 23,
+        expect(d, {**({"head_logits_bytes": 128 * VOCAB * 4} if version == 2 else {}), "device": i, "first_layer": 24 * i, "last_layer": 24 * i + 23,
                    "gdn_layers": 18, "qsa_layers": 6,
                    "expert_slots": (6 * Q41 + 18 * Q40) if i == 0 else 24 * Q40,
                    "qsa_kv": 6 * CAPACITY * 32 * 18,
@@ -195,7 +205,7 @@ def memory(obj, label, loaded=None):
                    "gdn_state": 18 * (786432 + 30720) * 4, "ple_state": 368640 if i == 0 else 0},
                ("weights", "workspace", "owned_bytes", "owned_peak_bytes", "owned_buffers", "total_vram", "free_vram"), where)
         integer(d["weights"], where + ".weights", 1)
-        integer(d["workspace"], where + ".workspace", WORKSPACE_FLOOR)
+        integer(d["workspace"], where + ".workspace", workspace_floor(version))
         owned = integer(d["owned_bytes"], where + ".owned_bytes", 1)
         exact(owned, sum(d[key] for key in CATEGORIES), where + ".category_sum")
         integer(d["owned_peak_bytes"], where + ".owned_peak_bytes", owned)
@@ -213,18 +223,18 @@ def memory(obj, label, loaded=None):
 
 def memory_row(obj, event, index, loaded=None):
     label = event + ("" if index is None else f"[{index}]")
-    expect(obj, {"kind": "prefill_wide_memory", "protocol": 1, "event": event,
+    expect(obj, {"kind": "prefill_wide_memory", "protocol": protocol(obj), "event": event,
                  "phase_index": index, "passed": True}, ("stats", "route_stats", "memory"), label)
     same_stats(obj["stats"], ZERO_STATS, label + ".stats")
     same_groups(obj["route_stats"], ZERO_GROUPS, label + ".route_stats")
-    memory(obj["memory"], label + ".memory", loaded)
+    memory(obj["memory"], label + ".memory", loaded, protocol(obj))
 
 
 def window(obj, index, position, shape, previous, previous_groups, reference, loaded):
     offset, rows = shape
     label = f"{PHASES[index]}.window[{position}]"
     expect(obj, {
-        "kind": "prefill_wide_window", "protocol": 1, "phase_index": index, "phase": PHASES[index],
+        "kind": "prefill_wide_window", "protocol": protocol(obj), "phase_index": index, "phase": PHASES[index],
         "window_index": position, "offset": offset, "rows": rows,
         "segment": "teacher" if offset < TEACHER_ROWS else "continuation", "reference": index == 0,
         "completed_call": True, "expected_routes": 480 * rows,
@@ -251,7 +261,7 @@ def window(obj, index, position, shape, previous, previous_groups, reference, lo
         for key in (*ROUTE_FIELDS, "miss_payload_min_bytes", "miss_payload_max_bytes")}
     exact(obj["retained_n1_route_delta"], retained, label + ".matching_N1_routes")
     errors(obj["errors"], offset, rows, None if index == 0 else reference[offset:offset + rows], label + ".errors")
-    memory(obj["memory_snapshot"], label + ".memory_snapshot", loaded)
+    memory(obj["memory_snapshot"], label + ".memory_snapshot", loaded, protocol(obj))
 
 
 def invalid_proofs(proofs, windows, index):
@@ -294,7 +304,7 @@ def phase(obj, index, windows):
     maximum = max(w["max_expert_group_count"] for w in windows)
     threshold = sum(w["expert_groups_gt128_delta"] for w in windows)
     expect(obj, {
-        "kind": "prefill_wide_phase", "protocol": 1, "phase_index": index, "phase": label,
+        "kind": "prefill_wide_phase", "protocol": protocol(obj), "phase_index": index, "phase": label,
         "windows": len(windows), "teacher_rows": 1024, "continuation_rows": 32,
         "expected_routes": 480 * CAPACITY, "finite_logit_values": CAPACITY * VOCAB,
         "compared_logit_values": CAPACITY * VOCAB if index else 0,
@@ -318,6 +328,8 @@ def collect(raw_path):
     """Validate ALL raw windows; return compact aggregate without writing files."""
     raw_path = Path(raw_path).resolve()
     rows = records(raw_path)
+    version = protocol(rows[0])
+    require(all(protocol(row) == version for row in rows), "mixed protocol versions")
     origin = rows[0]
     source(origin)
     memory_row(rows[1], "loaded", None)
@@ -358,7 +370,7 @@ def collect(raw_path):
     maximum = max(w["max_expert_group_count"] for w in windows)
     threshold = sum(w["expert_groups_gt128_delta"] for w in windows)
     expect(footer, {
-        "kind": "prefill_wide_complete", "protocol": 1, "phase_count": 4, "record_count": RECORD_COUNT,
+        "kind": "prefill_wide_complete", "protocol": version, "phase_count": 4, "record_count": RECORD_COUNT,
         "timeline_rows": 4224, "teacher_rows": 4096, "continuation_rows": 128,
         "timeline_routes": 2027520, "window_count": WINDOW_COUNT,
         "finite_logit_values": 1048903680, "compared_logit_values": 786677760, "violations": 0,
@@ -390,7 +402,8 @@ def collect(raw_path):
         upper = min(m["devices"][i]["free_vram"] for m in memories)
         integer(minimum, f"complete.minimum_free_vram_bytes[{i}]", 1, upper)
     return {
-        "kind": "r4b_wide_prefill", "protocol": 1,
+        "kind": "r4b_wide_prefill", "protocol": version,
+        **({"head_logit_byte_proof": {"rows": 128, "bytes_per_device": 128 * VOCAB * 4, "included_in_workspace": True}} if version == 2 else {}),
         "timestamp": datetime.datetime.now(datetime.timezone.utc).isoformat(),
         "revision": origin["revision"], "dirty": origin["dirty"], "runtime": origin["runtime"],
         "model_variant": "qwen38-keep1-Q4_0", "model": origin["model"],

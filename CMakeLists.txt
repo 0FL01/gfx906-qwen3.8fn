@@ -147,6 +147,8 @@ if(BUILD_TESTING)
     -s ${CMAKE_CURRENT_SOURCE_DIR}/tests -p hybrid_results_test.py)
   add_test(NAME prefill-attention-results COMMAND ${Python3_EXECUTABLE} -B -m unittest discover
     -s ${CMAKE_CURRENT_SOURCE_DIR}/tests -p prefill_attention_results_test.py)
+  add_test(NAME head-logit-layout-results COMMAND ${Python3_EXECUTABLE} -B -m unittest discover
+    -s ${CMAKE_CURRENT_SOURCE_DIR}/tests -p head_logits_protocol_test.py)
   add_test(NAME restore-results COMMAND ${Python3_EXECUTABLE} -B -m unittest discover
     -s ${CMAKE_CURRENT_SOURCE_DIR}/tests -p restore_results_test.py)
   set_tests_properties(mtp-model-loader speculative-decisions session-comparison session-results memory-results batch-results mmq-results mmq-wide-results prefill-results prefill-wide-results prefill-long-results request-results vram-observer hybrid-results prefill-attention-results restore-results PROPERTIES

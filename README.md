@@ -2994,3 +2994,51 @@ without changing output vocabulary, arithmetic, host publication or head HC.
 This is a SOURCE-DERIVED opportunity, not implemented or a measured saving yet.
 Qualify bytes/parity and update versioned memory evidence before using the
 headroom for larger logical pipeline windows. Full PLAN remains open.
+
+
+### 2026-10-05: bounded128 device head-output staging
+
+Device logits now hold min(frame,128) vocabulary rows. The head still executes
+the same qualified projection tiles and computes every requested output row.
+Each tile's D2H copy is ordered on the same stream before that buffer is reused;
+the caller completes/checks the stream before host validation and publication.
+Head HC, weights, precision, output vocabulary and host capacities are unchanged.
+N1 and all constructor frames <=128 retain their previous buffer sizes.
+
+The actual SessionDeviceMemory.head_logits_bytes field is included in workspace
+and independent live-Buffer accounting. With frame1024, each GPU now owns
+127,139,840 head bytes instead of1,017,118,720. Matching old/new loaded ledgers
+confirm an EXACT889,978,880-byte reduction in both owned/workspace bytes on each
+GPU; all other categories and buffer counts match. This is allocation evidence,
+not a sampled driver-peak or speed claim.
+
+Wide, long and attention fixtures now emit protocol2 with explicit head bytes.
+Their readers retain the ORIGINAL protocol1 memory floors and accept archived
+protocol1 records without rewriting them. Protocol2 requires the exact new
+capacity; mixed versions, missing/false head data and undersized workspace reject.
+No numerical tolerance changed. Five new test methods cover both versions and
+failure cases across all three reader families; actual old/new attention logs
+also passed their corresponding strict collectors.
+
+Qualification source8ea78b03e3a9e4ceac1b580dbd9863eeb6427785 / dirty=true:
+- Native wide786,677,760 and attention1,036,984,320 logit comparisons passed
+  with zero gate violations and diagnostic bit mismatches
+- Serial256 and pipeline256/subwindow129 each passed862,512,640 comparisons
+  (including hidden taps and repeated references), with zero error/bit differences
+- MTP API and2051-token carry passed the established32 IDs/RNG/acceptance gates
+- Default capacity131072 memory fixture and strict collector passed; this remains
+  allocation/ownership evidence, not occupied128K qualification
+- Full strict build and41/41 CTests passed in1151.11 seconds
+
+The series exited0 at12:50:59 UTC. Journal98 includes actual manifests/footers
+and allocation deltas; previous97 records remain byte-identical. The controller
+re-ran actual collectors. Artifacts: ROOT/runs/r4-head128-gates-8ea/.
+The long emitter's protocol2 schema is covered by reader tests; no new native
+4K/16K long-reference fixture is claimed for this slice.
+
+Reproduce the existing container build with the actual source revision, then
+core-prefill-wide-test MODEL; core-prefill-attention-test MODEL;
+core-prefill-layerwise-test MODEL256 [129]; core-mtp-runner-test TARGET SIDECAR
+--large-carry; and the full CTest suite. Use separate arguments MODEL and256.
+Next: observed16K+512 driver VRAM, then stage-sized buffers and larger logical
+pipeline windows if the measured budget permits. Full PLAN remains open.

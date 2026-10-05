@@ -81,7 +81,7 @@ template<class T, std::size_t N> void array(std::ostream& out, const std::array<
     out << ']';
 }
 
-// Separate JSONL protocol 1: source; memory(loaded/reset/final_reset); window;
+// Separate JSONL protocol 2 (bounded head logits): source; memory(loaded/reset/final_reset); window;
 // rejection; phase; complete/failure. Exactly 31 successful, bounded raw records.
 // Window rows are chronological *logical accepted rows*, NOT GPU selected IDs or
 // measured per-query visibility. N1 groups summarize immediately inspected calls.
@@ -97,7 +97,7 @@ struct Records {
     }
     void begin(std::ostringstream& out, std::string_view kind, int phase = -1) const {
         format(out);
-        out << "{\"protocol\":1,\"kind\":"; text(out, kind);
+        out << "{\"protocol\":2,\"kind\":"; text(out, kind);
         out << ",\"record_index\":" << count << ",\"phase_index\":";
         if (phase < 0) out << "null,\"phase\":null";
         else { out << phase << ",\"phase\":"; text(out, phases.at(static_cast<std::size_t>(phase))); }
@@ -195,7 +195,7 @@ void memory_json(std::ostream& out, const qwen::SessionMemory& m, bool stable_on
             << ",\"gdn_layers\":" << d.gdn_layers << ",\"qsa_layers\":" << d.qsa_layers;
 #define DEVICE_FIELD(name) out << ",\"" #name "\":" << d.name
         DEVICE_FIELD(weights); DEVICE_FIELD(expert_slots); DEVICE_FIELD(qsa_kv); DEVICE_FIELD(qsa_index);
-        DEVICE_FIELD(gdn_state); DEVICE_FIELD(ple_state); DEVICE_FIELD(workspace); DEVICE_FIELD(owned_bytes);
+        DEVICE_FIELD(gdn_state); DEVICE_FIELD(ple_state); DEVICE_FIELD(workspace); DEVICE_FIELD(head_logits_bytes); DEVICE_FIELD(owned_bytes);
         DEVICE_FIELD(owned_peak_bytes); DEVICE_FIELD(owned_buffers); DEVICE_FIELD(total_vram);
         if (!stable_only) { DEVICE_FIELD(free_vram); }
 #undef DEVICE_FIELD
@@ -233,6 +233,7 @@ void check_memory(const qwen::SessionMemory& m) {
             d.gdn_state == 18ULL * (786432 + 30720) * sizeof(float) &&
             d.ple_state == (i == 0 ? 92160ULL * sizeof(float) : 0), "unchanged cache/index/GDN/PLE geometry");
         std::uint64_t sum = 0;
+        require(d.head_logits_bytes == 128ULL * 248320 * sizeof(float), "actual bounded head logits");
         for (auto n : {d.weights, d.expert_slots, d.qsa_kv, d.qsa_index, d.gdn_state, d.ple_state, d.workspace}) {
             require(n <= std::numeric_limits<std::uint64_t>::max() - sum, "owned byte sum overflow"); sum += n;
         }

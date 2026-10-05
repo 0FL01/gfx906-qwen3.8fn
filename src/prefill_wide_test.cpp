@@ -44,7 +44,7 @@ constexpr std::uint64_t stage_bytes = 16 * q4_1_expert_bytes;
 constexpr std::uint64_t pinned_expert_staging_bytes = 2 * 2 * stage_bytes;
 // Necessary aggregate floor, not evidence of individual Buffer capacities.
 constexpr std::uint64_t workspace_floor = 24ULL * max_batch_tokens * 12288 * sizeof(float) +
-    max_batch_tokens * 320ULL * 36 + host_logit_bytes +
+    max_batch_tokens * 320ULL * 36 + 128ULL * vocabulary * sizeof(float) +
     max_batch_tokens * 10ULL * 2560 * sizeof(float) + 2 * stage_bytes;
 constexpr std::array<std::uint64_t, 2> slot_bytes{
     6 * q4_1_expert_bytes + 18 * q4_0_expert_bytes, 24 * q4_0_expert_bytes};
@@ -90,7 +90,7 @@ static_assert(teacher_rows + continuation_rows == capacity && 7 * 129 + 121 == t
 static_assert(exact_source_ids() && 1 + (1154 - 100 + 1) == capacity);
 static_assert(ram_expert_payload == 68262297600ULL && reference_bytes == 1048903680ULL);
 static_assert(host_logit_bytes == 1017118720ULL && pinned_handoff_bytes == 41943040ULL);
-static_assert(pinned_expert_staging_bytes == 183500800ULL && workspace_floor == 2433482752ULL);
+static_assert(pinned_expert_staging_bytes == 183500800ULL && workspace_floor == 1543503872ULL);
 static_assert(expected_windows[0] + expected_windows[1] + expected_windows[2] + expected_windows[3] == window_count);
 // source + loaded + four (reset, windows, phase) + final_reset + complete.
 static_assert(success_record_count == window_count + 12);
@@ -152,7 +152,7 @@ void format(std::ostringstream& out) {
     out << std::boolalpha << std::setprecision(std::numeric_limits<double>::max_digits10);
 }
 
-// JSONL protocol 1, all kinds prefixed "prefill_wide_":
+// JSONL protocol 2 (bounded head logits), all kinds prefixed "prefill_wide_":
 // source: provenance/config, exact IDs/schedules, frozen gate and evidence scope.
 // memory: event=loaded/reset/final_reset, nullable phase_index, stats/route_stats, memory.
 // window: phase_index/name, chronological window_index/offset/rows, segment,
@@ -298,7 +298,7 @@ void check_memory(const qwen::SessionMemory& m, const std::string& where) {
             require(bytes <= std::numeric_limits<std::uint64_t>::max() - sum, where + ": category sum overflow");
             sum += bytes;
         }
-        require(d.weights > 0 && d.workspace >= workspace_floor && d.owned_bytes == sum && d.owned_buffers > 0 &&
+        require(d.head_logits_bytes == 128ULL * vocabulary * sizeof(float) && d.weights > 0 && d.workspace >= workspace_floor && d.owned_bytes == sum && d.owned_buffers > 0 &&
                 d.owned_peak_bytes >= d.owned_bytes, where + ": allocation category/count/peak ledger");
         require(d.total_vram > 0 && d.free_vram > 0 && d.free_vram <= d.total_vram &&
                 d.owned_bytes <= d.total_vram - d.free_vram, where + ": owned bytes/observed VRAM");
@@ -320,6 +320,7 @@ void check_steady_memory(const qwen::SessionMemory& a, const qwen::SessionMemory
                 x.gdn_layers == y.gdn_layers && x.qsa_layers == y.qsa_layers && x.weights == y.weights &&
                 x.expert_slots == y.expert_slots && x.qsa_kv == y.qsa_kv && x.qsa_index == y.qsa_index &&
                 x.gdn_state == y.gdn_state && x.ple_state == y.ple_state && x.workspace == y.workspace &&
+                x.head_logits_bytes == y.head_logits_bytes &&
                 x.owned_bytes == y.owned_bytes && x.owned_peak_bytes == y.owned_peak_bytes &&
                 x.owned_buffers == y.owned_buffers && x.total_vram == y.total_vram, where + ": device ledger changed");
         // Free VRAM includes unowned HIP/context/rocBLAS state; equality is not a ledger gate.
@@ -339,7 +340,7 @@ void json_memory(std::ostream& out, const qwen::SessionMemory& m) {
         out << "{\"device\":" << d.device << ",\"first_layer\":" << d.first_layer << ",\"last_layer\":" << d.last_layer
             << ",\"gdn_layers\":" << d.gdn_layers << ",\"qsa_layers\":" << d.qsa_layers << ",\"weights\":" << d.weights
             << ",\"expert_slots\":" << d.expert_slots << ",\"qsa_kv\":" << d.qsa_kv << ",\"qsa_index\":" << d.qsa_index
-            << ",\"gdn_state\":" << d.gdn_state << ",\"ple_state\":" << d.ple_state << ",\"workspace\":" << d.workspace
+            << ",\"gdn_state\":" << d.gdn_state << ",\"ple_state\":" << d.ple_state << ",\"workspace\":" << d.workspace << ",\"head_logits_bytes\":" << d.head_logits_bytes
             << ",\"owned_bytes\":" << d.owned_bytes << ",\"owned_peak_bytes\":" << d.owned_peak_bytes
             << ",\"owned_buffers\":" << d.owned_buffers << ",\"total_vram\":" << d.total_vram << ",\"free_vram\":" << d.free_vram << '}';
     }
@@ -529,7 +530,7 @@ void json_errors(std::ostream& out, const Errors& e, std::size_t offset) {
 void source_record(Records& records, const std::string& model, std::uint64_t model_bytes) {
     std::ostringstream out;
     format(out);
-    out << "{\"kind\":\"prefill_wide_source\",\"protocol\":1,\"revision\":";
+    out << "{\"kind\":\"prefill_wide_source\",\"protocol\":2,\"revision\":";
     json_string(out, CORE_REVISION);
     out << ",\"dirty\":" << (CORE_DIRTY != 0) << ",\"model\":";
     json_string(out, model);
@@ -567,7 +568,7 @@ void source_record(Records& records, const std::string& model, std::uint64_t mod
            ",\"expert_band\":16,\"stages_per_device\":2,\"pinned_expert_staging_bytes\":" << pinned_expert_staging_bytes
         << ",\"pinned_handoff_bytes\":" << pinned_handoff_bytes << ",\"host_logit_min_bytes\":" << host_logit_bytes
         << ",\"workspace_aggregate_min_bytes_per_device\":" << workspace_floor
-        << ",\"individual_buffer_capacities_observable\":false,\"individual_buffer_capacity_qualification\":\"unavailable_from_memory_API_aggregate_floor_only\""
+        << ",\"individual_buffer_capacities_observable\":false,\"individual_buffer_capacity_qualification\":\"head_logits_reported_other_buffers_aggregate_floor\""
            ",\"component_128_staging_repack_qualified\":false,\"component_128_staging_repack_evidence\":\"not_inferred_from_N1024_or_aggregate_memory_floor\""
            ",\"free_vram_equality_required\":false,\"memory_scope\":\"Session_owned_Buffer_ledger_and_reported_host_capacities_excludes_allocator_metadata\"}"
            ",\"preallocated_reference_bytes\":" << reference_bytes << ",\"preallocated_preservation_snapshot_bytes\":" << host_logit_bytes
@@ -582,7 +583,7 @@ void memory_record(Records& records, std::string_view event, std::size_t phase,
                    const qwen::SessionStats& stats, const qwen::SessionRouteStats& route_stats, const qwen::SessionMemory& memory) {
     std::ostringstream out;
     format(out);
-    out << "{\"kind\":\"prefill_wide_memory\",\"protocol\":1,\"event\":"; json_string(out, event);
+    out << "{\"kind\":\"prefill_wide_memory\",\"protocol\":2,\"event\":"; json_string(out, event);
     out << ",\"phase_index\":";
     if (phase < phase_names.size()) out << phase; else out << "null";
     out << ",\"stats\":"; json_stats(out, stats);
@@ -614,7 +615,7 @@ void window_record(Records& records, std::size_t phase, std::size_t window, std:
                    bool passed, std::string_view failure_stage, std::string_view failure) {
     std::ostringstream out;
     format(out);
-    out << "{\"kind\":\"prefill_wide_window\",\"protocol\":1,\"phase_index\":" << phase << ",\"phase\":";
+    out << "{\"kind\":\"prefill_wide_window\",\"protocol\":2,\"phase_index\":" << phase << ",\"phase\":";
     json_string(out, phase_names[phase]);
     out << ",\"window_index\":" << window << ",\"offset\":" << offset << ",\"rows\":" << rows
         << ",\"segment\":\"" << (offset < teacher_rows ? "teacher" : "continuation") << "\",\"reference\":" << (phase == 0)
@@ -681,7 +682,7 @@ void phase_record(Records& records, std::size_t phase, std::size_t windows, cons
                   const std::array<InvalidProof, 5>& proofs, std::size_t proof_count) {
     std::ostringstream out;
     format(out);
-    out << "{\"kind\":\"prefill_wide_phase\",\"protocol\":1,\"phase_index\":" << phase << ",\"phase\":";
+    out << "{\"kind\":\"prefill_wide_phase\",\"protocol\":2,\"phase_index\":" << phase << ",\"phase\":";
     json_string(out, phase_names[phase]);
     out << ",\"windows\":" << windows << ",\"teacher_rows\":1024,\"continuation_rows\":32,\"expected_routes\":" << routes_per_row * capacity
         << ",\"finite_logit_values\":" << after.finite_values - before.finite_values
@@ -908,7 +909,7 @@ void complete_record(Records& records, const Totals& totals, const MemoryAudit& 
             "single1024 has not proven actual logical expert group>128");
     std::ostringstream out;
     format(out);
-    out << "{\"kind\":\"prefill_wide_complete\",\"protocol\":1,\"phase_count\":4,\"record_count\":" << records.count + 1
+    out << "{\"kind\":\"prefill_wide_complete\",\"protocol\":2,\"phase_count\":4,\"record_count\":" << records.count + 1
         << ",\"timeline_rows\":4224,\"teacher_rows\":4096,\"continuation_rows\":128,\"timeline_routes\":" << 4ULL * capacity * routes_per_row
         << ",\"window_count\":" << totals.windows << ",\"finite_logit_values\":" << totals.finite_values
         << ",\"compared_logit_values\":" << totals.compared_values << ",\"violations\":" << totals.violations
@@ -954,7 +955,7 @@ int main(int argc, char** argv) {
         try {
             std::ostringstream out;
             format(out);
-            out << "{\"kind\":\"prefill_wide_failure\",\"protocol\":1,\"passed\":false,\"session_constructed\":" << constructed
+            out << "{\"kind\":\"prefill_wide_failure\",\"protocol\":2,\"passed\":false,\"session_constructed\":" << constructed
                 << ",\"raii_session_and_fixture_cleanup_completed\":" << cleanup_completed << ",\"error\":";
             json_string(out, std::string_view(error.what()).substr(0, 4096));
             out << '}';
@@ -967,7 +968,7 @@ int main(int argc, char** argv) {
         try {
             std::ostringstream out;
             format(out);
-            out << "{\"kind\":\"prefill_wide_failure\",\"protocol\":1,\"passed\":false,\"session_constructed\":" << constructed
+            out << "{\"kind\":\"prefill_wide_failure\",\"protocol\":2,\"passed\":false,\"session_constructed\":" << constructed
                 << ",\"raii_session_and_fixture_cleanup_completed\":" << cleanup_completed << ",\"error\":\"non-standard exception\"}";
             records.add(out);
             records.flush();

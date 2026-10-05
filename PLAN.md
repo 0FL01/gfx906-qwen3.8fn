@@ -407,3 +407,9 @@ again on the controller. Journal95 contains full evidence; raw directory is
 ROOT/runs/r4-pipeline-ab-20261005. The selected configuration remains opt-in.
 Pinned llama.cpp still wins the full requests (~57/~144s); full PLAN is open.
 Next: separately observed VRAM and refreshed diagnostic GPU phase profile.
+
+2026-10-05: bounded128 head-output staging is qualified (journal98).
+Actual owned saving889,978,880B per GPU at frame1024; full output/math retained.
+Native wide/attention/pipeline/MTP/default-memory gates and full41 CTests pass.
+Protocol2 reports the head capacity; protocol1 retains its original bounds.
+Driver peak observation and larger-window PP remain the next steps.

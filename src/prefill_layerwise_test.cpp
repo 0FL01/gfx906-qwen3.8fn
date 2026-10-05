@@ -153,6 +153,7 @@ void resources(qwen::Session& s, int n) {
     } else require(!m.prefill_pipeline_workers && !m.host_pipeline_owner && !m.host_pipeline_payload &&
         !m.pinned_pipeline_handoff && !m.pinned_pipeline_metadata, "serial owns no pipeline payload");
     for (int id = 0; id < 2; ++id) {
+        require(m.devices[id].head_logits_bytes == 128ULL * V * sizeof(float), "bounded head output capacity");
         require(m.layerwise_original_q8_bytes[id] == N * 80 * 36 &&
             m.layerwise_contribution_bytes[id] == N * 10 * 2560 * 4 &&
             m.layerwise_metadata_bytes[id] == N * 10 * 8, "global GPU extents");
@@ -164,6 +165,7 @@ void resources(qwen::Session& s, int n) {
         << ",\"dto_each_bytes\":" << N * 10 * 8 << ",\"router_host_bytes\":" << m.host_layerwise_probabilities
         << ",\"host_logits_capacity_bytes\":" << m.host_logit_capacity << ",\"root_tap_each_bytes\":" << m.target_tap_bytes[1]
         << ",\"free_vram0\":" << m.devices[0].free_vram << ",\"free_vram1\":" << m.devices[1].free_vram
+        << ",\"head_logits_bytes_per_device\":" << m.devices[0].head_logits_bytes
         << ",\"pipeline_tokens\":" << m.prefill_pipeline_tokens << ",\"pipeline_host_payload\":" << m.host_pipeline_payload
         << ",\"pipeline_pinned_handoff\":" << m.pinned_pipeline_handoff << ",\"ownership_verified\":true}\n";
 }
@@ -384,13 +386,13 @@ int main(int argc, char** argv) {
             require(stage >= 0 && stage <= 1 && window >= 0 && window < 4, "fault fixture bounds");
             run_failure(argv[1], stage, window, argc == 5); return 0;
         }
-        require(argc == 2 || argc == 3 || argc == 4, "usage: core-prefill-layerwise-test MODEL [32|128|4096|16384] [pipeline_tokens]");
+        require(argc == 2 || argc == 3 || argc == 4, "usage: core-prefill-layerwise-test MODEL [32|128|256|4096|16384] [pipeline_tokens]");
         disabled_gate(argv[1]);
         if (argc == 2) { run(argv[1], 32); run(argv[1], 128); }
         else {
             int n = 0; const std::string_view text(argv[2]); const auto parsed = std::from_chars(text.data(), text.data() + text.size(), n);
             require(parsed.ec == std::errc{} && parsed.ptr == text.data() + text.size() &&
-                (n == 32 || n == 128 || n == 4096 || n == 16384), "explicit fixture row bound");
+                (n == 32 || n == 128 || n == 256 || n == 4096 || n == 16384), "explicit fixture row bound");
             int pipe = 0;
             if (argc == 4) {
                 const std::string_view arg(argv[3]); const auto parsed_pipe = std::from_chars(arg.data(), arg.data() + arg.size(), pipe);

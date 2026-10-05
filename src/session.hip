@@ -321,7 +321,11 @@ struct Device {
                 scratch.emplace_back(checked_size(n, sizeof(float)));
             }
             q8 = Buffer(checked_size(std::max<std::size_t>(512, checked_size(max_tokens, W / 32)), sizeof(Q8_1)));
-            error = Buffer(sizeof(int)); logits = Buffer(checked_size(checked_size(max_tokens, V), sizeof(float)));
+            error = Buffer(sizeof(int));
+            // The head already projects in qualified logical tiles <=128.
+            // Bound device output independently of the full PP frame; host
+            // publication still owns every requested vocabulary row.
+            logits = Buffer(checked_size(checked_size(std::min(max_tokens, microtile_tokens), V), sizeof(float)));
             gathered_k = Buffer(checked_size(checked_size(attention_tile, attention_gather_elements), sizeof(std::uint16_t)));
             gathered_v = Buffer(checked_size(checked_size(attention_tile, attention_gather_elements), sizeof(std::uint16_t)));
             partial_o = Buffer(checked_size(checked_size(attention_tile, attention_partial_elements), sizeof(float)));
@@ -1888,6 +1892,7 @@ struct Session::Impl {
             auto& out = result.devices[id];
             auto& d = *devices[id];
             d.drain();
+            out.head_logits_bytes = d.logits.bytes();
             result.host_routing_capacity += d.route_probabilities.capacity() * sizeof(float) +
                 d.route_weights.capacity() * sizeof(float) + d.route_ids.capacity() * sizeof(std::int32_t);
             if (d.routes) result.host_route_group_payload += sizeof(RouteGroups) +
@@ -2215,9 +2220,8 @@ struct Session::Impl {
                     checked_size(checked_size(tokens, W), sizeof(float)), hipMemcpyDeviceToDevice, d->stream));
             }
             head_hc->mix(*d, residual, epsilon, tokens, true); capture_batch(*d, "result_norm", d->f(6), H, tokens);
-            head.apply(*d, d->f(6) + output_first * H, d->logits.get(), output_rows);
             auto& destination = publication_staging ? working_logits : host_logits;
-            hip(hipMemcpyAsync(destination.data(), d->logits.get(), output_rows * V * sizeof(float), hipMemcpyDeviceToHost, d->stream));
+            head_to_host(*d, d->f(6) + output_first * H, destination.data(), output_rows);
             d->check("head");
             for (float v : std::span(destination).first(output_rows * V)) if (!std::isfinite(v)) throw std::runtime_error("logits nonfinite");
             // Each counted group consumes >=129 of 48*10 assignments per token.
@@ -2377,6 +2381,22 @@ struct Session::Impl {
             }
         }
     }
+    void head_to_host(Device& d, const float* normalized, float* destination, int rows) {
+        const auto capacity = d.logits.bytes() / (static_cast<std::size_t>(V) * sizeof(float));
+        if (capacity < 1 || capacity > static_cast<std::size_t>(microtile_tokens) ||
+            rows < 1 || rows > config.max_batch_tokens)
+            throw std::runtime_error("Session head output tile extent");
+        const int tile = static_cast<int>(capacity);
+        for (int first = 0; first < rows; first += tile) {
+            const int count = std::min(tile, rows - first);
+            head.apply(d, normalized + static_cast<std::size_t>(first) * H, d.logits.get(), count);
+            // Same stream: this copy finishes before the next tile overwrites
+            // d.logits. Caller checks/drains before host validation/publication.
+            hip(hipMemcpyAsync(destination + static_cast<std::size_t>(first) * V,
+                d.logits.get(), static_cast<std::size_t>(count) * V * sizeof(float),
+                hipMemcpyDeviceToHost, d.stream));
+        }
+    }
     void layerwise_head(LayerwiseHost& p, int current, float* transfer,
                         int first, int count, float* destination) {
         auto& d = *devices[1]; hip(hipSetDevice(1));
@@ -2385,8 +2405,7 @@ struct Session::Impl {
         hip(hipMemcpyAsync(d.f(0), transfer, static_cast<std::size_t>(count) * W * sizeof(float), hipMemcpyHostToDevice, d.stream));
         d.check("layerwise head upload");
         head_hc->mix(d, d.f(0), epsilon, count, true);
-        head.apply(d, d.f(6), d.logits.get(), count);
-        hip(hipMemcpyAsync(destination, d.logits.get(), static_cast<std::size_t>(count) * V * sizeof(float), hipMemcpyDeviceToHost, d.stream));
+        head_to_host(d, d.f(6), destination, count);
         d.check("layerwise head completion");
     }
     void pipeline_fault(int stage, int window) {

@@ -56,15 +56,29 @@ Q4 tiled15.904s (37.8% sum), attention8.845s (21.0%). Trace overhead material:
 untraced/traced128-output requests55.019/64.428s; no speed claim from trace.
 No copy byte counts in this CSV. Details/raw paths in README/journal97.
 
-Next concrete slice: bound device head-logit output to128 rows and stream each
-completed tile to its host destination. Current allocation1024*248320*4 on EACH
-GPU wastes889978880B/device relative to128. Matrix already tiles at128; preserve
-its exact arithmetic and stream order. This is NOT implemented/qualified yet.
-Keep defaultN1/short<=128 buffer shapes unchanged. Update explicit per-buffer
-ledger and versioned wide-memory validators, not numerical tolerances.
-After real parity/ownership/failure tests, measure VRAM; then consider larger
-logical pipeline windows with stage-sized scratch. No GPU work currently active.
-Full PLAN and llama.cpp win remain open.
+Bounded-head128 correctness COMPLETE, journal98; source8ea78b0 dirty.
+Detached1483257 ended native0 at12:50:59 UTC. Full strict build41/41 CTests,
+1151.11s. Native wide786677760/attention1036984320 zero errors/bits;
+serial256/pipeline256x129 each862512640 exact; MTP API/carry and default-memory
+capacity131072 pass. Actual controller collectors and old97 byte prefix verified.
+Default-memory is allocation proof, not occupied128K.
+
+Device.logits=min(frame,128)*V, ordered per-tile copies, full host output.
+N1/short<=128 shapes unchanged. Actual head Buffer127139840B at frame1024;
+matching old/new native ledgers show889978880B less owned/workspace per GPU,
+other categories/counts unchanged. Not a driver peak measurement yet.
+Wide/long/attention protocol2 reports exact head bytes; protocol1 ORIGINAL floors
+remain enforced. New head-layout test plus actual old/new collectors pass.
+No new native long4K/16K reference run claimed. Source-off snapshot:
+controller runs/head-logits-off-8ea.hip.
+
+Next: commit/push this slice, then prepare runs/r4-head128-vram.revision with
+the new commit and rebuild ordinary core-mtp-run outside measurement.
+Prepared runs/r4-head128-vram.py is NOT launched. It uses paired16K-B args,
+compares all512 IDs/RNG, allows only source revision to differ, and samples
+driver VRAM with fresh HIP mapping. Use a new detached prefix, preserve baseline.
+No GPU work currently active. After measured headroom, expand logical pipeline
+with stage-sized scratch; full PLAN and llama.cpp win still open.
 
 ## Не повторять
 Packed640, small/large-output N16, row-owned2560 и row1/row4 Q4 geometry
