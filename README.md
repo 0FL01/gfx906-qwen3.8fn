@@ -3130,3 +3130,22 @@ journal byte prefix verified on the controller; journal101. Raw directory:
 runs/r4-pipeline16k-ab-20261005/. Explicit opt-in fast16K setting:
 --layerwise-prefill16384 --prefill-pipeline2048. Default has not changed.
 Separate driver VRAM observation PID1525727 is running; no new memory peak claim.
+
+### 2026-10-05: logical16K/stage2048 observed driver VRAM
+Separate PID1525727 completed native0 at15:43:58 UTC; sourceeaa778c/dirtytrue,
+same executable SHA25653d77552893a77728d025c6c1346286f03b40329ad7e6c8316f97cda22cfd6fa
+and same16K-B request as journal101. All512 IDs/acceptance/RNG/pending agree.
+Fresh HIP PCI mapping05:00.0/08:00.0.2710 samples at0.1s over272.362s,
+including load/request/cleanup: maxused11,596,705,792/16,294,354,944B;
+minfree5,566,386,176/868,737,024B, total17,163,091,968B each.
+These are sampled global driver extrema, not exact instantaneous peaks or a
+new timing comparison. Journal102, actual copied raw request/observer/manifests
+and the old101 byte prefix verified. Artifacts runs/r4-pipeline16k-vram/.
+
+Next bounded configuration experiment: physicalstage4096 within logical16384.
+Source-derived extra stage ownership215,777,280B/device leaves approximately
+652,959,744B root headroom based on the sampled2048 run, not a fit guarantee.
+A4097-token all-row/tap fixture will cover a full4096 stage plus partial carry,
+then a separate same-binary16K+512 A/B/A will compare stage2048 versus4096.
+No runtime arithmetic change or default promotion; qualify correctness before
+timing and retain the current2048 path if4096 does not improve full requests.

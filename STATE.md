@@ -102,10 +102,13 @@ Ordinary runtime rebuilt with eaa778c/dirtytrue.
 Paired A/B/A PID1520517 completednative0 at15:37:12UTC.
 ROOT/runs/r4-pipeline16k-ab-20261005; journal101 actualsixlogs verified.
 One unchanged eaa778cdirty binary, logical4096vs16384, fixedstage2048.
-Separate driver VRAM observer launched15:39UTC PID1525727,
-ROOT/runs/r4-pipeline16k-vram. Same eaa binary and16K-B args.
-After observation validate actual512 IDs/RNG, driver mapping/extrema,
-record next journal once. Do not launch another GPU workload.
+Separate driver VRAM observer PID1525727 endednative0 at15:43:58UTC;
+ROOT/runs/r4-pipeline16k-vram, journal102 verified.
+Minfree5,566,386,176/868,737,024B,2710samples; exact512IDs/RNG; no speedclaim.
+Next: existing opt-in4096 stage withinlogical16K, full4097-row logits/taps
+and16K+512 A/B/A stage2048vs4096. Extra215,777,280B/device bysource,
+estimated root652,959,744B left is NOT fit proof. No runtime arithmetic edit.
+No GPU workload active; prepare unique driver/source stamp and launch.
 Full PLAN and llama.cpp victory are still open.
 
 ## Не повторять
