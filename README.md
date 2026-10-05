@@ -2576,3 +2576,12 @@ RNG/reset/reject/custom-stop/capacity48 fixture passed. Source48de1ba/dirtytrue,
 journal74; raw ROOT/runs/r4-mtp-last-48d-*. No speed claim before paired requests.
 Driver ROOT/runs/r4-last-head-ab.py toggles only actual MtpRunner source snapshots
 between builds, outside timed inference; saved baseline remains unchanged.
+
+Last-head paired series1791166462036-582 finished exit0/31m35.4K+512:
+all-head110.443/108.628s versus last104.385s (meanA/B1.049345),PP62.177/TG13.271.
+16K+512: all-head332.074/334.021s versus last323.481s (1.029575),PP57.615/TG13.066.
+Every512 output ID,acceptance histogram,RNG andpending token matches inside
+both triplets. Source48de1ba/dirtytrue, same original fixtures/sampling and
+prompt+1024 capacity; builds outside timing, saved baseline unchanged.
+Journal75 and actual copied raws ROOT/runs/r4-last-head-ab-48d. This is a bounded
+own-runtime improvement, still slower than the pinned llama.cpp full requests.

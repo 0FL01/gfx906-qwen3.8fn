@@ -31,7 +31,7 @@ Original core-session-baseline775/source77f89c3dirty (1750328B) also untouched.
 New Session::prefill_last consumes the full window and retains ALL pre-head tap
 rows, but projects/copies only final logits. All-row step_batch/verify unchanged.
 No new allocations; root HC still computes all rows. API PUSHED48de1ba23172d0d8ddf301e5742099caed1dc7ab.
-MtpRunner one-line begin() integration passes full regression; commit next.
+MtpRunner integration PUSHED3c1ee722bea7251df1eea4d8201e96e4eb20aec9.
 Strict selected builds/model jobs562(exit0/2m32) and568(exit0/3m19) passed,
 compiled daee1ef/dirtytrue. Checkpoint fixture35,261,440 values,ordinary2,483,200:
 zero bit mismatches/maxabs. Nine checkpoint cases,26 invalids,full tap bits,
@@ -45,12 +45,27 @@ records72 initial and73 strengthened fixture are distinct, do not reappend.
 Full build/MTP API/39CTest job1791164948838-576 COMPLETEexit0/22m00,
 source48de1ba/dirtytrue;39CTest1154.97s and MTP API pass.
 Raw ROOT/runs/r4-mtp-last-48d-{build.log,api.jsonl,api.err,ctest.log}.
-Next matched
-4K/16K+512 via runs/r4-last-head-ab.py, old/new MtpRunner source snapshots,
-preserved baseline. Both source48de1ba/dirtytrue with explicit variants.
-No other GPU workload/build. Do not relabel compiled sources to closure commits.
+Last-head paired job1791166462036-582 COMPLETEexit0/31m35; journal75,
+old74 prefix and actual six raws/footers/512 IDs/manifests verified.
+4K all-head110.443/108.628s -> last104.385s (1.049345x),PP62.1766/TG13.2706.
+16K all-head332.074/334.021s -> last323.481s (1.029575x),PP57.6149/TG13.0663.
+Both candidates beat both controls; all512 IDs/acceptance/RNG/pending exact.
+Source48de1ba/dirtytrue; explicit MtpRunner snapshots; same sampling/capacity.
+Saved baseline7df unchanged. Ordinary core-mtp-run restored to last-head candidate.
+No GPU work active after582. Full-plan/llama.cpp win remains open.
 
-Before the larger refactor, test a bounded kernel hypothesis: canonical Q4
+NEXT: controller-only small-K one-wave primitive below. Sync only after this
+completed series, build core-linear-small-k plus legacy linear fixtures and run
+isolated component bit/canary/host-reject/A/B/A gates. Runtime remains untouched.
+Before the larger refactor, inspect two bounded kernel hypotheses:
+(1) For Q4 K<=1024, wave1 of matrix32 is provably all zero (blocks<=32,
+fragments2,tid>=64). A one-wave CTA with explicit acc+0 before the SAME sum64
+could remove idle-wave registers/LDS/barrier. Controller ONLY now has an
+UNCOMPILED/UNCOMMITTED separate checked small-K API and focused
+core-linear-small-k fixture. Old short/tiled kernels remain the exact reference.
+Not synced to GPU: wait for current last-head series to finish before copying
+linear.hip/.cuh,CMake and tests/linear_small_k_test.hip. No runtime integration.
+(2) Canonical Q4
 physicalColumns16/Rows2 in the existing tiled wrapper (Q5/Q8/Q6/dense unchanged).
 Per-column K/reduction math can stay identical; compare full bits to serialN8
 and same-coordinate A/B/A, inspect spills/occupancy. Prior row1/row4 experiments
