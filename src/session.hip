@@ -1877,7 +1877,7 @@ struct Session::Impl {
         std::swap(residual, alternate);
         capture_batch(d, "ple_residual", residual, W, tokens, 1);
     }
-    std::span<const float> step_batch(std::span<const std::int32_t> window, bool verify = false) {
+    std::span<const float> step_batch(std::span<const std::int32_t> window, bool verify = false, bool last_only = false) {
         if (!usable) throw std::runtime_error("Session invalidated; reset required");
         if (verify && (!checkpoints || window.empty() || window.size() > 3))
             throw std::invalid_argument("Session verify resources/length");
@@ -1914,6 +1914,8 @@ struct Session::Impl {
         }
         const int tokens = static_cast<int>(window.size());
         const int position = static_cast<int>(statistics.consumed_tokens);
+        const int output_first = last_only ? tokens - 1 : 0;
+        const int output_rows = last_only ? 1 : tokens;
         const bool trace_observations = trace_metadata.is_open() &&
             statistics.consumed_tokens + window.size() > static_cast<std::uint64_t>(config.trace_first_token);
         // Diagnostic checks never clear the sticky flag. Their labels identify
@@ -2022,11 +2024,11 @@ struct Session::Impl {
                     checked_size(checked_size(tokens, W), sizeof(float)), hipMemcpyDeviceToDevice, d->stream));
             }
             head_hc->mix(*d, residual, epsilon, tokens, true); capture_batch(*d, "result_norm", d->f(6), H, tokens);
-            head.apply(*d, d->f(6), d->logits.get(), tokens);
+            head.apply(*d, d->f(6) + output_first * H, d->logits.get(), output_rows);
             auto& destination = publication_staging ? working_logits : host_logits;
-            hip(hipMemcpyAsync(destination.data(), d->logits.get(), tokens * V * sizeof(float), hipMemcpyDeviceToHost, d->stream));
+            hip(hipMemcpyAsync(destination.data(), d->logits.get(), output_rows * V * sizeof(float), hipMemcpyDeviceToHost, d->stream));
             d->check("head");
-            for (float v : std::span(destination).first(tokens * V)) if (!std::isfinite(v)) throw std::runtime_error("logits nonfinite");
+            for (float v : std::span(destination).first(output_rows * V)) if (!std::isfinite(v)) throw std::runtime_error("logits nonfinite");
             // Each counted group consumes >=129 of 48*10 assignments per token.
             // Default capacity bounds the cumulative count; opt-in rollback uses
             // the preflight completed-work bounds above. Publication cannot fail.
@@ -2053,7 +2055,7 @@ struct Session::Impl {
                     checkpoints->state = {true, true, static_cast<std::uint64_t>(position), tokens, tokens + 1};
                 }
             }
-            return {host_logits.data(), static_cast<std::size_t>(tokens) * V};
+            return {host_logits.data(), static_cast<std::size_t>(output_rows) * V};
         } catch (...) {
             usable = false;
             if (cpu_pool) (void)cpu_pool->drain(); // Stop owner submissions; gate failed batch globally.
@@ -2118,6 +2120,7 @@ Session::Session(const std::string& path, SessionConfig config) : impl_(std::mak
 Session::~Session() = default;
 std::span<const float> Session::step(std::int32_t token) { return step_batch(std::span(&token, 1)); }
 std::span<const float> Session::step_batch(std::span<const std::int32_t> tokens) { return impl_->step_batch(tokens); }
+std::span<const float> Session::prefill_last(std::span<const std::int32_t> tokens) { return impl_->step_batch(tokens, false, true); }
 std::span<const float> Session::verify_window(std::span<const std::int32_t> tokens) { return impl_->step_batch(tokens, true); }
 void Session::restore_prefix(int retained_inputs) { impl_->restore_prefix(retained_inputs); }
 SessionCheckpointState Session::checkpoint_state() const {

@@ -2550,3 +2550,21 @@ Journal71, raw ROOT/runs/r5-sampling-zero-ab-253; source2535cbf/dirtytrue with
 explicit sampler snapshots. The ordinary executable was rebuilt outside
 measurements and restored to the candidate; saved baseline unchanged. These
 are bounded1–2% full-request improvements over the own previous runtime.
+
+### Last-row prefill output API
+
+Session::prefill_last forwards the entire input window with unchanged state,
+routes and complete layer47 tap, but requests only the final LM-head row.
+step_batch and verify_window still return all rows. Existing bounds, pending
+verify invalidation and borrowed-publication rules are unchanged; no new owner
+or allocation. Root HC still runs for every input row. MtpRunner is not yet
+using this API at this checkpoint.
+
+core-prefill-last-test MODEL tests full-output32 reference against last-output
+chunks1/2/3/8/17/32, continuations, mixed calls, invalid/capacity preservation,
+pending verification and restore. Both checkpoint modes pass. Native562/568
+exit0;35,261,440 checkpoint and2,483,200 ordinary values bit-identical,full tap
+bytes exact,owned allocations steady. Constructorcapacity40/slots1/max32/tile8;
+this is bounded self-parity, not independent HF or long-context qualification.
+Source daee1efcd6e83c115175284d7ce9512045298b8d/dirtytrue, journal72/73,
+raw ROOT/runs/r4-prefill-last-dae{,-expanded}.jsonl. No speed claim yet.

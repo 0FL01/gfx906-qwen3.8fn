@@ -297,6 +297,12 @@ public:
     // N=1..max_batch_tokens, token-major [N][248320] completed logits. Validate
     // the entire window's IDs/length/capacity before any state/cache mutation.
     std::span<const float> step_batch(std::span<const std::int32_t> tokens);
+    // Ordinary forward of the SAME full window/state/tap, but project and return
+    // only the final input's [248320] logits. Earlier LM-head rows do not feed
+    // state and are deliberately not requested. Bounds, borrowed-view lifetime,
+    // pending-verify invalidation and failure/reset rules match step_batch.
+    // No extra owner or allocation; step_batch and verify_window stay all-rows.
+    std::span<const float> prefill_last(std::span<const std::int32_t> tokens);
     // Exclusive N=1..3 target forward. Requires constructor snapshots and no
     // pending verify. Full argument preflight precedes any mutation. Publishes
     // PRE-window + all chronological prefix states only after network/head
