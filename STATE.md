@@ -87,14 +87,25 @@ MtpRunner/CLI opt-in integration passes bounded API and six early CLI rejects:
 job1791174641902-701 exit0/3m51; cap0/cap16 actual32 IDs/RNG/reset/cap48
 match old expected fixture, custom stop only. Sourcebcd5320/dirtytrue; journal79.
 
-ACTIVE paired series ROOT/runs/r4-layerwise-mtp-ab.py, started04:37UTC;
-nohup shellPID1373518, survives SSH disconnect. Read .series.log/.exit/.pid
-with prefix ROOT/runs/r4-layerwise-mtp-ab-bcd. Only ONE GPU workload.
-Same ordinary runtime hash, A1capacity0/B4096/A2capacity0,4K then16K+512.
-Saved baseline untouched. Do NOT rebuild/edit runtime source while timed series.
-First4K-A1 running;4096+MTP fit and speed remain unqualified until candidate.
-After terminal validate ALL actual raws/IDs/manifests; record honest paired result,
-commit/push and continue full PLAN. Default remains off pending speed evidence.
+Paired bcd series STOPPED:4K-A1 completed105.542s, then4K-B nativeexit1
+at MtpSession::save_target_carry: stale hard cap tap.rows<=1024. Constructor
+and full4096 target/teacher had run, but no generation/performance result.
+Failed raws preserved under runs/r4-layerwise-mtp-ab-bcd. No A/B speed claim.
+Old shell exit-wrapper also misquoted printf (empty exitfile); actual candidate
+manifest records native1 and traceback, no active GPU after failure.
+
+Carry validator repair PASSED job1791175643524-720 exit0/4m13:
+2051prompt, default1024 vs layerwise[1025,1025,1], exact32IDs/RNG/acceptance.
+Sourceb2014ce/dirtytrue, journal80; failed paired bcd run retained/excluded.
+No arithmetic/allocation change, carry still copies one checked row.
+
+ACTIVE fresh A/B/A from04:52UTC: ROOT/runs/r4-layerwise-mtp-ab-b201.py
+under Python detached wrapper PID1377858. Read prefixr4-layerwise-mtp-ab-b201
+.series.log/.exit.json/.pid; no shell-wrapper quoting. One GPU workload,
+samebinary A0/B4096/A0 on4K then16K+512; no heavy build while active.
+Saved baselines preserved. After terminal verify raws/manifest/512IDs, record,
+commit/push and continue full PLAN. Runtime source remainsb2014ce/dirtytrue
+even if this repair is committed under a newer source hash.
 
 ## Принятые границы / не повторять
 

@@ -720,7 +720,9 @@ void MtpSession::reset() {
 void MtpSession::save_target_carry(int row) {
     auto& p=*impl_;if (!p.usable) throw std::runtime_error("MTP invalidated; reset required");
     const auto tap=p.target.target_tap();
-    if (tap.device!=1 || tap.width!=W || row<0 || row>=tap.rows || tap.rows>1024 ||
+    // Session can now publish an opt-in full-window tap up to16384 rows.
+    // The carry remains ONE checked row; no larger copy or new allocation.
+    if (tap.device!=1 || tap.width!=W || row<0 || row>=tap.rows || tap.rows>16384 ||
         !valid_row({tap.device,tap.pointer,W},false) ||
         reinterpret_cast<std::uintptr_t>(tap.pointer)>std::numeric_limits<std::uintptr_t>::max()-bytes(tap.rows*W,sizeof(float)))
         throw std::invalid_argument("MTP target carry view/row");

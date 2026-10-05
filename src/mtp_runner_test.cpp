@@ -17,7 +17,24 @@ std::vector<std::int32_t> finish(qwen::MtpRunner& r,qwen::MtpEmission e){
 int main(int argc,char** argv){
  try {
     static_assert(std::endian::native==std::endian::little);
-    need(argc==4 || (argc==5 && std::string_view(argv[4])=="--layerwise"),"usage: core-mtp-runner-test TARGET SIDECAR CLI32_IDS [--layerwise]");
+    if(argc==4 && std::string_view(argv[3])=="--large-carry") {
+        std::vector<std::int32_t> prompt(2051);prompt[0]=248044;
+        for(int i=1;i<2051;++i)prompt[i]=99+i;
+        std::vector<std::int32_t> reference;qwen::MtpRunStats baseline{};
+        for(int cap:{0,1025}) {
+            qwen::SessionConfig c;c.capacity=2112;c.expert_slots=112;
+            c.max_batch_tokens=1024;c.attention_query_tile=8;c.layerwise_prefill_capacity=cap;
+            qwen::MtpRunner r(argv[1],argv[2],c,qwen::SamplingConfig(12345));
+            const auto out=finish(r,r.begin(prompt,32,true));const auto s=r.stats();
+            need(out.size()==32 && s.consumed==2082,"large carry output/prefix");
+            if(cap==0){reference=out;baseline=s;}
+            else need(out==reference && s.accepted==baseline.accepted && s.proposal_draws==baseline.proposal_draws &&
+                s.decision_draws==baseline.decision_draws,"large carry IDs/RNG/acceptance");
+        }
+        std::cout<<"{\"kind\":\"mtp_large_carry_test\",\"prompt_tokens\":2051,\"layerwise_windows\":[1025,1025,1],\"outputs\":32,\"ids_rng_acceptance_equal\":true,\"passed\":true}\n";
+        return 0;
+    }
+    need(argc==4 || (argc==5 && std::string_view(argv[4])=="--layerwise"),"usage: core-mtp-runner-test TARGET SIDECAR CLI32_IDS [--layerwise], or TARGET SIDECAR --large-carry");
     std::vector<std::int32_t> expected(32);
     std::ifstream f(argv[3],std::ios::binary);
     need(bool(f.read(reinterpret_cast<char*>(expected.data()),128)) && f.peek()==std::char_traits<char>::eof(),"exact32 IDs required");

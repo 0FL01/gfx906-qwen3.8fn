@@ -2666,3 +2666,18 @@ saved-baseline hashes checked. Driver is SSH-disconnect-resilient under nohup,
 PID and native exit files r4-layerwise-mtp-ab-bcd.{pid,exit}; output directory
 r4-layerwise-mtp-ab-bcd, series log same prefix. Actual emitted512 IDs/acceptance/
 RNG/pending must match, not merely reported PP. Series still active at this commit.
+
+
+The first layerwise4096 paired candidate exposed a stale integration bound:
+MtpSession::save_target_carry still rejected target taps above1024 rows. The
+4K-B process exited1 after target/teacher prefill, before output generation;
+raw r4-layerwise-mtp-ab-bcd preserved and excluded from performance claims.
+The carry validator now matches Session's16384 full-window bound and still
+copies exactly one checked row. No arithmetic or memory allocation change.
+Native720 strict selected build + new2051-token regression passed exit0/4m13:
+default1024 chunks versus layerwise[1025,1025,1] give exactly the same32 IDs,
+RNG counts and acceptance. Sourceb2014ce/dirtytrue, journal80.
+Fresh matched series r4-layerwise-mtp-ab-b201 uses a Python detached wrapper
+with native exit JSON; the first shell wrapper had an unrelated printf quoting
+failure, so its empty exitfile is not evidence. Original candidate manifest
+records native1. No failed run is reused as a speed comparison.
