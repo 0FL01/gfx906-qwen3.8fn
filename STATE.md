@@ -9,9 +9,12 @@
 
 ## Последний подтверждённый runtime
 
-Opt-in layerwise4096 b2014ce/dirtytrue:4K91.233s,16K267.236s (both+512),
-PP77.553/71.706 and TG13.302/13.188. Journal81, paired both-controls win.
-Default configuration remains ordinary1024; prior last-head result below.
+Attention-deferred source53d1153/dirtytrue, opt-inlayerwise4096:
+4K+51291.140152s PP78.853648/TG13.037670;16K+512260.903173s PP73.315235/TG13.652910.
+Journal92. PP improves~2% vsmeanbookends atbothsizes. 4K fullrequest gain
+vsfastestcontrol only19.5ms/noise-floor;16K measured~2.49% vsmeancontrols.
+Default remains ordinary1024. Full trajectory512IDs/RNG/acceptance exact.
+Pinned llama.cpp~57/~144s still faster; whole PLAN goal remains open.
 
 Last-head48de1ba/dirtytrue:4K104.385s PP62.1766/TG13.2706;16K323.481s
 PP57.6149/TG13.0663. Paired result pushed5677a87b2bee81ff25ff41f5918a4ac447bbdbb0.
@@ -27,7 +30,7 @@ seed12345/temp1/top-p.95/top-k20/ignoreEOS. Load separate, expert warmness unkno
 Pinned donor dcd6854 same target/sidecar/headroom:4K~57s,16K~144s, still faster.
 Donor QSA historical semantics are not an independent correctness oracle.
 
-Current ordinary core-mtp-run is last-head48de1ba/dirtytrue (rolled attention,
+Current ordinary core-mtp-run is attention-deferred53d1153/dirtytrue (rolled attention,
 selective tiled projections, fused SiLU/Q8 and sparse sampling). Saved core-mtp-run-baseline7df1c74
 MUST stay untouched: overwrite was denied; no permission was obtained.
 Safe comparisons rebuild ONLY ordinary executable between actual source variants,
@@ -174,15 +177,29 @@ wide maxabs0; layerwise128,MTPAPI pass. Six targeted CTests72.61s, notfull39.
 Actual raws/collectors independently verified on controller. Only attention
 candidate retained; all packed/N16 Q4 variants removed.
 
-NEXT matchedfullrequest A/B/A runs/r4-attention-deferred-ab.py is prepared,
-not launched. Both explicitlayerwise4096,slots112,frame1024,4K/16K+512.
-Switch ONLY attention.hip using attention-deferred-{off,on}.hip. Revision file
-runs/r4-attention-deferred-ab.revision must be actual qualified commit before
-build. Saved baseline7df untouched, rebuild ordinary exe outside timing.
-No fullrequest improvement claimed yet; layerwise91.233/267.236s remains best.
-Next high-leverage PLAN item after this measurement: bounded two-GPU PP
-pipeline preserving per-layer/window causal order and explicit failure/reuse
-ownership. Unimplemented; must budget per-stage host/GPU frames and root taps.
+Attention correctness PUSHED53d1153c1cb450171c674ad122ed07cc10ae87a5.
+
+### 2026-10-05 deferred attention checks: paired full-request qualification
+A/B/A completed native0 at09:06:50UTC, source53d1153/dirtytrue, journal92.
+Both variants use explicitlayerwise4096, frame1024, slots112, capacityprompt+1024;
+only attention.hip changed, builds outside timing, preserved baseline unchanged.
+4K+512: A93.663597/91.159666s, B91.140152s; PP78.853648, TG13.037670.
+16K+512: A267.116887/267.692213s, B260.903173s; PP73.315235, TG13.652910.
+PP mean-control time ratios1.019943/1.020554, candidate faster than both PP
+controls. Request ratios1.013951/1.024919, but4K advantage over fastest control
+only0.019514s: noise-floor full-request gain, not a robust4K speedup claim.
+All512 IDs, acceptance, proposal/decision RNG and pending IDs exact pertriplet.
+Six actual514-row logs, manifests and journal byteprefix independently checked
+on controller. Ordinary runtime restored to candidate. This is a bounded
+self-parity/speed qualification, not independent HF or llama.cpp victory.
+Pinned donor remains faster(~57/~144s). Next: bounded two-GPU PP pipeline;
+no precision, routing, QSA or tolerance changes. Full PLAN remains open.
+
+No GPU workload active after terminal1436029. Next: qualify CPU bounded
+producer/consumer coordinator, then integrate opt-in two-GPU PP pipeline.
+Ignored runs/prefill_pipeline.{hpp,cpp} are only drafts, not compiled/tested
+or installed. Preserve per-layer causal windows and exact teacher tap rows;
+root GPU observed headroom only769118208B, avoid new device allocations.
 
 ## Принятые границы / не повторять
 

@@ -2841,3 +2841,20 @@ This is NOT a new full39 run, nor independent HF or a model-speed qualification.
 Journal91, actual raw r4-attention-deferred-model-22b-* copied and short/wide
 strict collectors independently rerun on controller. Next matched4K/16K+512
 A/B/A changes only actual attention.hip snapshots, both withlayerwise4096.
+
+
+### 2026-10-05 deferred attention checks: paired full-request qualification
+A/B/A completed native0 at09:06:50UTC, source53d1153/dirtytrue, journal92.
+Both variants use explicitlayerwise4096, frame1024, slots112, capacityprompt+1024;
+only attention.hip changed, builds outside timing, preserved baseline unchanged.
+4K+512: A93.663597/91.159666s, B91.140152s; PP78.853648, TG13.037670.
+16K+512: A267.116887/267.692213s, B260.903173s; PP73.315235, TG13.652910.
+PP mean-control time ratios1.019943/1.020554, candidate faster than both PP
+controls. Request ratios1.013951/1.024919, but4K advantage over fastest control
+only0.019514s: noise-floor full-request gain, not a robust4K speedup claim.
+All512 IDs, acceptance, proposal/decision RNG and pending IDs exact pertriplet.
+Six actual514-row logs, manifests and journal byteprefix independently checked
+on controller. Ordinary runtime restored to candidate. This is a bounded
+self-parity/speed qualification, not independent HF or llama.cpp victory.
+Pinned donor remains faster(~57/~144s). Next: bounded two-GPU PP pipeline;
+no precision, routing, QSA or tolerance changes. Full PLAN remains open.
