@@ -2585,3 +2585,14 @@ both triplets. Source48de1ba/dirtytrue, same original fixtures/sampling and
 prompt+1024 capacity; builds outside timing, saved baseline unchanged.
 Journal75 and actual copied raws ROOT/runs/r4-last-head-ab-48d. This is a bounded
 own-runtime improvement, still slower than the pinned llama.cpp full requests.
+
+The separate small-K Q4 one-wave experiment was not promoted. Native608 exited0:
+309 cases/device,9,161,968 exact GPU values,99,356 CPU samples,19 host rejects,
+308 graph checks and unchanged legacy tiled/short/dense regressions. K<=1024
+provably leaves the old second wave empty; the candidate preserves acc+0 and
+sum64 exactly. However,48 resident down-projection coordinates gave only19
+wins against both controls,median ratio1.00688 and several regressions.
+Runtime was never integrated; unused candidate API/test changes were reverted.
+Journal76; raw ROOT/runs/r5-small-k-567.jsonl and exact experiment patch
+ROOT/runs/r5-small-k-567.patch preserve the negative result. Cross-fixture
+cache/timing differences are not accepted as source speedups.

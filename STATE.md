@@ -9,6 +9,10 @@
 
 ## Последний подтверждённый runtime
 
+Last-head48de1ba/dirtytrue:4K104.385s PP62.1766/TG13.2706;16K323.481s
+PP57.6149/TG13.0663. Paired result pushed5677a87b2bee81ff25ff41f5918a4ac447bbdbb0.
+The preceding sampler slice is recorded below for comparison.
+
 Sparse sampler paired job1791161686931-537 exit0/31m53, result pushed
 daee1efcd6e83c115175284d7ce9512045298b8d; component350f8afe3f988af1a79a74f47e5f782f0c7051f7.
 4K+512 A112.812/110.077s -> B109.526s (1.017521x),PP58.3219/TG13.0049.
@@ -19,8 +23,8 @@ seed12345/temp1/top-p.95/top-k20/ignoreEOS. Load separate, expert warmness unkno
 Pinned donor dcd6854 same target/sidecar/headroom:4K~57s,16K~144s, still faster.
 Donor QSA historical semantics are not an independent correctness oracle.
 
-Current ordinary core-mtp-run is sparse-sampler2535cbf/dirtytrue (rolled attention,
-selective tiled projections, fused SiLU/Q8). Saved core-mtp-run-baseline7df1c74
+Current ordinary core-mtp-run is last-head48de1ba/dirtytrue (rolled attention,
+selective tiled projections, fused SiLU/Q8 and sparse sampling). Saved core-mtp-run-baseline7df1c74
 MUST stay untouched: overwrite was denied; no permission was obtained.
 Safe comparisons rebuild ONLY ordinary executable between actual source variants,
 never compile during timed inference; saved baseline checked unchanged.
@@ -54,22 +58,22 @@ Source48de1ba/dirtytrue; explicit MtpRunner snapshots; same sampling/capacity.
 Saved baseline7df unchanged. Ordinary core-mtp-run restored to last-head candidate.
 No GPU work active after582. Full-plan/llama.cpp win remains open.
 
-NEXT: controller-only small-K one-wave primitive below. Sync only after this
-completed series, build core-linear-small-k plus legacy linear fixtures and run
-isolated component bit/canary/host-reject/A/B/A gates. Runtime remains untouched.
-Before the larger refactor, inspect two bounded kernel hypotheses:
-(1) For Q4 K<=1024, wave1 of matrix32 is provably all zero (blocks<=32,
-fragments2,tid>=64). A one-wave CTA with explicit acc+0 before the SAME sum64
-could remove idle-wave registers/LDS/barrier. Controller ONLY now has an
-UNCOMPILED/UNCOMMITTED separate checked small-K API and focused
-core-linear-small-k fixture. Old short/tiled kernels remain the exact reference.
-Not synced to GPU: wait for current last-head series to finish before copying
-linear.hip/.cuh,CMake and tests/linear_small_k_test.hip. No runtime integration.
-(2) Canonical Q4
-physicalColumns16/Rows2 in the existing tiled wrapper (Q5/Q8/Q6/dense unchanged).
-Per-column K/reduction math can stay identical; compare full bits to serialN8
-and same-coordinate A/B/A, inspect spills/occupancy. Prior row1/row4 experiments
-changed ROW reuse, not this column-weight reuse. No code or win claim yet.
+Small-K one-wave experiment608 COMPLETEexit0/1m18:309cases/device,
+9,161,968 exact GPU values and99,356 CPU samples/device,19host rejects,
+308graph checks. Legacy tiled/short/dense pass. But only19/48 resident down
+coordinates beat both controls; median ratio1.00688, with regressions.
+NOT promoted; own candidate API/test changes reverted, runtime never integrated.
+Patch/test preserved in runs/r5-small-k-567.patch and source artifact; journal76.
+Same original tiled fixture confirmed its baseline timings unchanged; do not
+compare cross-fixture/cache regimes as a speedup.
+
+NEXT bounded geometry experiment: Q4 physical4columns x4rows vs existing
+8columns x2rows, same16 accumulators/CTA, same per-column K/reduction math.
+This trades more weight reads for fewer activation reads, not a proven win.
+Initially bound K640/2560,M<=2560,N>=16; other types/shapes remain unchanged.
+Extend existing tiled fixture to declare expected geometry and tail cases,
+then clean same-coordinate outer A/B/A with bit/canary/CPU gates. Source not
+changed yet. Reject if no material win; do not add a generic tuner.
 
 Then REVIEW/ADAPT runs/r4-layerwise-prefill.patch, still UNAPPLIED/UNQUALIFIED:
 whole-window expert reuse may reduce repeated1024-chunk uploads. Its16K
