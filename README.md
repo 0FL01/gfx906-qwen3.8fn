@@ -3149,3 +3149,28 @@ A4097-token all-row/tap fixture will cover a full4096 stage plus partial carry,
 then a separate same-binary16K+512 A/B/A will compare stage2048 versus4096.
 No runtime arithmetic change or default promotion; qualify correctness before
 timing and retain the current2048 path if4096 does not improve full requests.
+
+### 2026-10-05: stage4096 within logical16K
+The existing configuration (no runtime arithmetic/source changes) was qualified
+with the FULL16384x4096 fixture, rather than the initially planned4097 case:
+the fixture only accepts explicit bounded row cases.29,497,640,960 cumulative
+logit/tap comparisons, zero errors/bits, all continuation/reset gates pass.
+16387+32 CLI carry at stage2048/4096 gives identical IDs/acceptance/RNG/pending.
+Strict selected build and two targeted CTests pass; latest full41-test regression
+remains journal100 on the same runtime sources. Do not call this a new fullCTest.
+
+DetachedPID1529544 native0 at16:57:54 UTC, sourcec3d7625 dirty.
+SSH tunnel unavailable16:12..16:32; same process resumed observation,
+no duplicate workload or network changes. Actual A/B/A16K+512:
+A2048:186.827339s,PP110.805481,TG13.115193;
+B4096:182.044469s,PP113.318528,TG13.641648;
+A2048:185.103706s,PP111.225462,TG13.519534.
+Mean request1.021539x and PP1.020749x; B beats both controls, all512 trajectories
+exact. This modest result costs215,777,280B additional owned stage memory/GPU.
+The real MTP request fits;4096-stage driver peak was not sampled. Default remains
+unchanged; keep2048 as the lower-memory option. No4K benefit or llama.cpp win claimed.
+Journal103, actual manifests/raws and old102 byte prefix verified on controller.
+Raw roots runs/r4-stage4096-gates-c3d/ and runs/r4-stage4096-ab-20261005/.
+Next bounded experiment targets4K: stage1024 versus2048 within logical4096,
+to test whether four pipeline subwindows outweigh additional expert staging.
+Qualify full4096 logits/taps and4099-token carry before paired512-output requests.
