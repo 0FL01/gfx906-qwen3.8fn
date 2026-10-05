@@ -67,21 +67,16 @@ Patch/test preserved in runs/r5-small-k-567.patch and source artifact; journal76
 Same original tiled fixture confirmed its baseline timings unchanged; do not
 compare cross-fixture/cache regimes as a speedup.
 
-NEXT bounded geometry experiment: Q4 physical4columns x4rows vs existing
-8columns x2rows, same16 accumulators/CTA, same per-column K/reduction math.
-This trades more weight reads for fewer activation reads, not a proven win.
-Initially bound K640/2560,M<=2560,N>=16; other types/shapes remain unchanged.
-Extend existing tiled fixture to declare expected geometry and tail cases,
-then clean same-coordinate outer A/B/A with bit/canary/CPU gates. Source not
-changed yet. Reject if no material win; do not add a generic tuner.
+Tile4x4 experiment624/631/633 completed exit0; journal77. Exact component
+gates pass, but broad Q4_0 down geometry regresses; rejected/restored.
+48 coordinates,28 beatboth,median1.025915; dominant N32..128 down0.871–0.897x.
+Only narrow gate/up tails show useful potential; not model-qualified.
+All candidate source/extended fixture preserved in runs; production untouched.
 
-Then REVIEW/ADAPT runs/r4-layerwise-prefill.patch, still UNAPPLIED/UNQUALIFIED:
-whole-window expert reuse may reduce repeated1024-chunk uploads. Its16K
-contribution owners add1.608GiB/device plus1.26GiB extra root taps BEFORE trained
-MTP2.67GB; never assume16K fits. Start opt-in4096 only after memory checks.
-Retain current tiled128/fused primitives, correct offset/gather limits from old8.
-Patch transfers~129GB widened residuals/16K plus HC/router: count total traffic.
-No layerwise or two-GPU pipeline claim. Tokenizer/API,occupied128K and pack open.
+NEXT inspect and adapt the old unapplied layerwise-prefill patch to current
+tiled128/fused/last-head APIs. Start opt-in bounded4096, first small correctness
+fixture and measured allocation ledger; 16K/MTP memory fit is not established.
+No new full-request speed claim or completed-plan claim.
 
 ## Принятые границы / не повторять
 

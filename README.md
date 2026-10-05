@@ -2596,3 +2596,16 @@ Runtime was never integrated; unused candidate API/test changes were reverted.
 Journal76; raw ROOT/runs/r5-small-k-567.jsonl and exact experiment patch
 ROOT/runs/r5-small-k-567.patch preserve the negative result. Cross-fixture
 cache/timing differences are not accepted as source speedups.
+
+
+The equal-accumulator Q4 tile4columns/4rows experiment was rejected as a broad
+dispatch. Native624/631/633 all exit0, source8844338/dirtytrue. On each GPU,
+462 cases compare503,678,810 values exactly against canonical short kernels,
+115,228 CPU samples pass frozen gates,21 host rejects and460 graph checks pass.
+Outer A/B/A has48 changed resident coordinates:28 beat both controls,median
+meanA/B1.025915. However dominant Q4_0 down N32..128 regresses to0.871–0.897x.
+Gate/up tail cases N20/28/36 benefit, but no narrow policy or model speed
+qualification is claimed. Production kernel and fixture restored; experiment
+patch and extended fixture preserved under runs/r4-tile4x4-884.patch and
+runs/linear-tile4x4-test-884.hip. Journal77 and raw r4-tile4x4-{a1,b,a2}.jsonl.
+No ordinary runtime relink or baseline overwrite occurred.
