@@ -5,6 +5,7 @@
 #include <vector>
 #include <array>
 #include <stdexcept>
+#include <string_view>
 namespace {
 void need(bool b,const char* s){if(!b)throw std::runtime_error(s);}
 template<class F>void reject(F&& f){bool hit=false;try{f();}catch(const std::logic_error&){hit=true;}need(hit,"expected rejection");}
@@ -16,12 +17,13 @@ std::vector<std::int32_t> finish(qwen::MtpRunner& r,qwen::MtpEmission e){
 int main(int argc,char** argv){
  try {
     static_assert(std::endian::native==std::endian::little);
-    need(argc==4,"usage: core-mtp-runner-test TARGET SIDECAR CLI32_IDS");
+    need(argc==4 || (argc==5 && std::string_view(argv[4])=="--layerwise"),"usage: core-mtp-runner-test TARGET SIDECAR CLI32_IDS [--layerwise]");
     std::vector<std::int32_t> expected(32);
     std::ifstream f(argv[3],std::ios::binary);
     need(bool(f.read(reinterpret_cast<char*>(expected.data()),128)) && f.peek()==std::char_traits<char>::eof(),"exact32 IDs required");
     for(auto t:expected)need(t>=0 && t<248320,"expected vocabulary");
     qwen::SessionConfig c;c.capacity=48;c.expert_slots=112;c.max_batch_tokens=8;
+    if(argc==5)c.layerwise_prefill_capacity=16;
     qwen::MtpRunner r(argv[1],argv[2],c,qwen::SamplingConfig(12345));
     const std::array<std::int32_t,8> prompt{248044,100,101,102,103,104,105,106};
     need(r.requires_begin(),"new state");reject([&]{(void)r.next();});
@@ -49,7 +51,8 @@ int main(int argc,char** argv){
          e.ids[0]==two[1] && r.stats().consumed==9,"replacement stop/pending boundary");
     const auto full=finish(r,r.begin(prompt,41,true));
     need(full.size()==41 && r.stats().consumed==48 && r.requires_begin(),"actual capacity boundary");
-    std::cout<<"{\"kind\":\"mtp_runner_api_test\",\"passed\":true,\"cli32_ids_equal\":true,\"prefill_chunks\":[1,8],"
+    std::cout<<"{\"kind\":\"mtp_runner_api_test\",\"layerwise_prefill_capacity\":"<<c.layerwise_prefill_capacity
+      <<",\"passed\":true,\"cli32_ids_equal\":true,\"prefill_chunks\":[1,8],"
       "\"repeat_reset\":true,\"invalid_request_preservation\":true,\"custom_stop_cases\":2,"
       "\"actual_model_EOS_observed\":false,\"capacity_boundary\":48,\"performance_claim\":false}\n";
  }catch(const std::exception& e){std::cerr<<"mtp_runner_test: "<<e.what()<<'\n';return 1;}

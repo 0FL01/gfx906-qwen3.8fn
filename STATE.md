@@ -83,10 +83,18 @@ Target-only4096 freeGPU0/1~4.56/3.75GB; trained-MTP fit NOT checked yet.
 Warm monotone-ID fixture halves expert upload bytes but all-row is slower;
 no component/model speed promotion. Qualified correctness only, not fullR4.
 
-NEXT integrate explicit optional layerwise capacity into MtpRunner/CLI,
-keep defaultoff, test original32IDs/RNG/reset/capacity plus target+sidecar fit.
-Then matched trace-off4K/16K+512 A/B/A (layerwise4096 vs originalchunk1024).
-Do not overwrite saved baselines. Only ordinary executable rebuild permitted.
+MtpRunner/CLI opt-in integration passes bounded API and six early CLI rejects:
+job1791174641902-701 exit0/3m51; cap0/cap16 actual32 IDs/RNG/reset/cap48
+match old expected fixture, custom stop only. Sourcebcd5320/dirtytrue; journal79.
+
+ACTIVE paired series ROOT/runs/r4-layerwise-mtp-ab.py, started04:37UTC;
+nohup shellPID1373518, survives SSH disconnect. Read .series.log/.exit/.pid
+with prefix ROOT/runs/r4-layerwise-mtp-ab-bcd. Only ONE GPU workload.
+Same ordinary runtime hash, A1capacity0/B4096/A2capacity0,4K then16K+512.
+Saved baseline untouched. Do NOT rebuild/edit runtime source while timed series.
+First4K-A1 running;4096+MTP fit and speed remain unqualified until candidate.
+After terminal validate ALL actual raws/IDs/manifests; record honest paired result,
+commit/push and continue full PLAN. Default remains off pending speed evidence.
 
 ## Принятые границы / не повторять
 

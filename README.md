@@ -2646,3 +2646,23 @@ Warm-cache monotone-ID fixture uploads44.69GB oldchunk versus19.74GB layerwise,
 but all-row wall includes fixture comparisons and layerwise is slower there.
 No speed promotion from this fixture. Next integrate opt-in MTP, prove original
 IDs/state and actual memory fit, then trace-off matched full-request A/B/A.
+
+
+MtpRunner now accepts optional layerwise_prefill_capacity<=4096 (frame>=4).
+core-mtp-run --layerwise-prefill N exposes it explicitly;0/default keeps the
+original chunk path. Every full-window tap row is still consumed by sequential
+trained teacher warmup, including cross-window carry. CLI source records both
+frame and layerwise capacities. Six malformed/duplicate/bounds flags reject
+before model loading. Selected strict build and both default/enabled API tests
+passed job701 exit0/3m51; original32 IDs/RNG,reset/reject/custom stops/capacity48
+hold with an8-token prompt, layerwise capacity16. Sourcebcd5320/dirtytrue,
+journal79,raw r4-layerwise-mtp-bcd-*. This does not prove4096+sidecar fit or speed.
+The preceding39CTest belongs to the Session slice; no new full-suite claim.
+
+Paired driver ROOT/runs/r4-layerwise-mtp-ab.py compares ONE compiled binary with
+--layerwise-prefill0/4096/0 on4K then16K+512. Originalchunk1024/slots112 and
+sampling/capacity remain matched. No recompilation during timing; binary and
+saved-baseline hashes checked. Driver is SSH-disconnect-resilient under nohup,
+PID and native exit files r4-layerwise-mtp-ab-bcd.{pid,exit}; output directory
+r4-layerwise-mtp-ab-bcd, series log same prefix. Actual emitted512 IDs/acceptance/
+RNG/pending must match, not merely reported PP. Series still active at this commit.

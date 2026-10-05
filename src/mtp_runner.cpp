@@ -15,6 +15,9 @@ SessionConfig checked(SessionConfig c) {
        c.max_batch_tokens>1024 || c.expert_slots<1 || c.expert_slots>512 ||
        c.cpu_workers || c.hybrid_probe || !c.trace_directory.empty())
         throw std::invalid_argument("MTP runner requires valid GPU-only untraced SessionConfig");
+    if(c.layerwise_prefill_capacity<0 || c.layerwise_prefill_capacity>4096 ||
+       (c.layerwise_prefill_capacity && c.max_batch_tokens<4))
+        throw std::invalid_argument("MTP layerwise capacity requires 0..4096 and frame>=4");
     c.speculative_checkpoints=true;c.max_batch_tokens=std::max(3,c.max_batch_tokens);
     return c;
 }
@@ -22,6 +25,7 @@ SamplingConfig correction(SamplingConfig c){c.seed^=0x9e3779b97f4a7c15ULL;return
 }
 struct MtpRunner::Impl {
     int capacity,chunk;
+    bool layerwise;
     SamplingConfig sampling;
     // CPU samplers validate configuration before loading large model owners.
     Sampler proposal;
@@ -35,7 +39,8 @@ struct MtpRunner::Impl {
     std::int32_t pending=0,eos=248046;
     bool ignore=false,ready=false,done=false;
     Impl(const std::string& path,const std::string& sidecar,SessionConfig c,SamplingConfig s)
-      :capacity(checked(c).capacity),chunk(c.max_batch_tokens),sampling(s),
+      :capacity(checked(c).capacity),chunk(c.layerwise_prefill_capacity ? c.layerwise_prefill_capacity : c.max_batch_tokens),
+       layerwise(c.layerwise_prefill_capacity!=0),sampling(s),
        proposal(V,s),decision(V,correction(s)),target(path,checked(c)),
        draft(target,sidecar,{c.capacity,false}) {
         target.set_attention_batch(c.attention_query_tile>1);
@@ -59,7 +64,7 @@ struct MtpRunner::Impl {
             const auto ids=tokens.subspan(first,count);
             {
                 ProfileRange target_range("MTP_PP_TARGET_CHUNK");
-                last=target.prefill_last(ids);
+                last=layerwise ? target.prefill_layerwise(ids,Session::OutputMode::last_row) : target.prefill_last(ids);
             }
             const auto tap=target.target_tap();
             if(tap.rows!=int(count) || tap.width!=W || tap.first_position!=first || !tap.pointer)

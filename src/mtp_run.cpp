@@ -1,6 +1,7 @@
 #include "mtp_runner.hpp"
 #include "session_cli.hpp"
 #include <chrono>
+#include <charconv>
 #include <iomanip>
 #include <iostream>
 #include <string_view>
@@ -24,7 +25,7 @@ void json_string(std::string_view s) {
     std::cout<<'"';
 }
 void usage(){std::cout<<"core-mtp-run TARGET SIDECAR --sample --seed UINT64 --generate N "
-    "[--capacity N --slots N --prefill-chunk N --attention-query-tile N --ignore-eos "
+    "[--capacity N --slots N --prefill-chunk N --layerwise-prefill N --attention-query-tile N --ignore-eos "
     "--temperature T --top-p P --top-k K] token-id...\n"
     "Opt-in trained MTP2 token-ID runner; no tokenizer, HTTP or performance qualification.\n";}
 }
@@ -35,8 +36,18 @@ int main(int argc,char** argv) {
         const std::string sidecar=argv[2];
         if(sidecar.empty())throw std::invalid_argument("sidecar required");
         std::vector<const char*> args{argv[0],argv[1]};
-        for(int i=3;i<argc;++i)args.push_back(argv[i]);
-        const auto o=qwen::session_cli::parse(int(args.size()),args.data());
+        int layerwise=0;bool seen_layerwise=false;
+        for(int i=3;i<argc;++i) {
+            if(std::string_view(argv[i])=="--layerwise-prefill") {
+                if(seen_layerwise || ++i==argc)throw std::invalid_argument("one layerwise capacity required");
+                seen_layerwise=true;const std::string_view value(argv[i]);
+                const auto parsed=std::from_chars(value.data(),value.data()+value.size(),layerwise);
+                if(parsed.ec!=std::errc{} || parsed.ptr!=value.data()+value.size() || layerwise<0 || layerwise>4096)
+                    throw std::invalid_argument("layerwise capacity must be 0..4096");
+            } else args.push_back(argv[i]);
+        }
+        auto o=qwen::session_cli::parse(int(args.size()),args.data());
+        o.config.layerwise_prefill_capacity=layerwise;
         if(o.help){usage();return 0;}
         if(!o.sample || o.generate<1 || o.config.cpu_workers || o.hybrid_policy.mode!=qwen::SessionHybridMode::disabled ||
            !o.config.trace_directory.empty() || !o.logits_path.empty())
@@ -46,6 +57,7 @@ int main(int argc,char** argv) {
             <<"\",\"dirty\":"<<(CORE_DIRTY?"true":"false")<<",\"model\":";json_string(o.model);std::cout<<",\"sidecar\":";json_string(sidecar);
         std::cout<<",\"capacity\":"<<o.config.capacity<<",\"slots\":"<<o.config.expert_slots
             <<",\"prefill_chunk\":"<<o.config.max_batch_tokens<<",\"attention_query_tile\":"<<o.config.attention_query_tile
+            <<",\"layerwise_prefill_capacity\":"<<o.config.layerwise_prefill_capacity
             <<",\"seed\":"<<o.sampling.seed<<",\"correction_seed\":"<<(o.sampling.seed^0x9e3779b97f4a7c15ULL)
             <<",\"temperature\":"<<o.sampling.temperature<<",\"top_p\":"<<o.sampling.top_p<<",\"top_k\":"<<o.sampling.top_k
             <<",\"requested_outputs\":"<<o.generate<<",\"ignore_eos\":"<<(o.ignore_eos?"true":"false")
