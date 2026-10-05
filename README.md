@@ -2513,3 +2513,11 @@ core-mtp-run-baseline remains untouched and is checked unchanged. Builds and
 model loads are outside request timings; no compilation overlaps inference.
 Both variants preserve source6c26e2a/dirtytrue with explicit variant manifests,
 prompt+1024 capacity,512 outputs,primary sampling and the same4K/16K fixtures.
+
+Fused Session paired series job1791158371388-499 finished exit0/33m08.
+4K+512: separate112.052/110.843s, fused111.536s (meanA/B0.999212): no stable
+full-request win.16K+512: separate335.692/335.591s, fused331.419s
+(meanA/B1.012739); PP56.355/TG12.559. All512 IDs/acceptance/RNG/pending exact.
+This is a small16K benefit only; do not extrapolate component1.35–1.58x to the
+runtime. Six actual raws/manifests revalidated, journal69; raw directory
+ROOT/runs/r5-fused-session-ab-6c2. Saved baseline binary unchanged.

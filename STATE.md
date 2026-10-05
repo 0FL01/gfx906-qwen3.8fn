@@ -92,14 +92,21 @@ Strict SELECTED targets built, short/wide model gates and MTP API pass;
 39CTest pass1147.26s. Short29,798,400 and wide1,036,984,320 compared logits
 zero violations/diagnostic bit mismatches. Actual collectors rerun on copied
 raw files; journal68 old67-byteprefix unchanged. No speed promotion yet.
-Next trace-off MTP A/B/A4K/16K+512 using runs/r5-fused-session-ab.py.
-Safer comparison preserves core-mtp-run-baseline7df untouched: rebuild ONLY the
-ordinary core-mtp-run between separate/fused source snapshots, with no build
-during timed inference. Both source6c26e2a/dirtytrue; variant manifest explicit.
-Protected baseline checked unchanged; no permission to overwrite it inferred.
-User's prior replacement question remains unanswered but this comparison does
-not require that destructive step. Source snapshots are actual small code files,
-not extra model/worktree copies. One GPU workload, same original sampling.
+PUSHED integrationad94d17d84d699c33f4d73386ca9369b35945a77.
+Trace-off job1791158371388-499 COMPLETE nativeexit0/33m08; journal69,
+actual six runs/outputs/footers/manifests copied and verified, old68 prefix exact.
+4K separate112.052/110.843s vs fused111.536s: meanA/B.999212, no stable win.
+16K separate335.692/335.591s vs fused331.419s:1.012739x, beats both; PP56.355,
+TG12.559. All512 IDs/acceptance/RNG/pending exact. This is a small16K gain,
+not a4K/whole-project speed claim. Pinned llama remains faster(~57/~144s).
+Ordinary runtime rebuilt between measurements; no compile overlapped inference.
+Both source6c26e2a/dirtytrue with explicit variant snapshots/manifests.
+Protected core-mtp-run-baseline7df remained unchanged; permission not inferred.
+Current core-mtp-run restored to fused6c2dirty at successful series completion.
+Next measured-host-path hypothesis: sampler Neumaier scans currently add zeros
+across the full248320 vocabulary after top-k20. Benchmark exact zero skipping
+on actual saved logits, preserving all probability validation, normalization,
+residual arithmetic, RNG and output bytes. CPU-only gates before runtime change.
 Further candidates require fresh measured priority: PP launch density/selection,
 per-column dense reductions, two-GPU chunk overlap, grouped short MoE. Do not
 mix another optimization into this still-unqualified integration slice.
