@@ -2609,3 +2609,40 @@ qualification is claimed. Production kernel and fixture restored; experiment
 patch and extended fixture preserved under runs/r4-tile4x4-884.patch and
 runs/linear-tile4x4-test-884.hip. Journal77 and raw r4-tile4x4-{a1,b,a2}.jsonl.
 No ordinary runtime relink or baseline overwrite occurred.
+
+
+### 2026-10-05 opt-in layerwise prefill correctness checkpoint
+
+Session::prefill_layerwise uses a separate constructor capacity (off by default),
+routes a full window once per layer, and stages each active expert only once.
+Legacy chunk<=1024 and verify APIs retain their bounds. Canonical selective
+tiles<=128, fused SiLU/Q8, chronological GDN and rolled QSA math are unchanged.
+Two full-N pageable activation owners and bounded pinned frames preserve DMA
+lifetimes; all-row and final-row output modes retain every target teacher tap.
+A separate16384-token route-copy bound reuses exact byte-copy kernels; default
+1024 APIs still reject larger input. No new weight format or precision change.
+
+Native649/654 model32/128 passed. Native667 model4096 and strict full build
+passed before SSH transport exit255; the SAME Docker container continued.
+Recovery wait676 observed container exit0 and39/39CTest passed in1151.06s;
+nothing was rerun. Source c685d14a80bb94a5f7cab41afc0b4ddc73710401/dirtytrue.
+Full-vocabulary N1/chunk1024 self-parity, all/last output, full taps, occupied
+prefix, pending-owner rejects, restore/continuation, reset and steady buffers
+pass frozen .02+.002abs(ref). These are self-parity gates, not independent HF.
+
+Native663 copy tests passed both GPUs at16384 token capacity,327680 actual
+token/rank pairs per GPU (two alignments),9310 gather and9310 scatter calls,
+270host rejects/device, exact opaque bytes/canaries/sticky flags/read-only
+sources and owner cleanup. Original copy fixture and491148-check CPU route
+regression pass. Journal78; raw ROOT/runs/r4-layerwise-c685-{32,128,4096}.jsonl,
+r4-layerwise-copy{,-legacy}-c685.jsonl and build/CTest logs.
+
+At4096 target-only: each GPU originalQ8=11796480B,contributions419430400B,
+DTO327680B; root tap167772160B EACH. Two host activation owners167772160B each.
+Observed freeGPU0/1 initially4578082816/3764387840B, later4561305600/3745513472B.
+All-row transactional output owners grow to8136949760B host; last-row does not
+require that growth. This is measured target-only fit, NOT target+trained-MTP fit.
+Warm-cache monotone-ID fixture uploads44.69GB oldchunk versus19.74GB layerwise,
+but all-row wall includes fixture comparisons and layerwise is slower there.
+No speed promotion from this fixture. Next integrate opt-in MTP, prove original
+IDs/state and actual memory fit, then trace-off matched full-request A/B/A.

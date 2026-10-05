@@ -129,6 +129,7 @@ constexpr int down_row_bytes = moe_copy_width * sizeof(float);
 static_assert(q8_row_bytes == 2880 && down_row_bytes == 10240);
 static_assert(q8_row_bytes % 16 == 0 && down_row_bytes % 16 == 0);
 static_assert(moe_copy_max_input_tokens * moe_copy_ranks * moe_copy_width < std::numeric_limits<int>::max());
+static_assert(moe_layerwise_max_input_tokens * moe_copy_ranks * moe_copy_width < std::numeric_limits<int>::max());
 
 template<class T>
 Range copy_range(MoeCopyView<T> view, std::size_t required, bool writable = false) noexcept {
@@ -140,9 +141,9 @@ Range copy_range(MoeCopyView<T> view, std::size_t required, bool writable = fals
 }
 
 bool valid_copy_slice(int input_tokens, int metadata_entries, int route_offset,
-                      int count, int column_capacity) noexcept {
+                      int count, int column_capacity, int max_input_tokens) noexcept {
     // Subtraction only after bounding count; offset+count can never overflow.
-    return input_tokens >= 1 && input_tokens <= moe_copy_max_input_tokens &&
+    return input_tokens >= 1 && input_tokens <= max_input_tokens &&
         metadata_entries >= 1 && metadata_entries <= input_tokens * moe_copy_ranks &&
         count >= 1 && count <= session_ops_max_tokens && column_capacity >= count &&
         count <= metadata_entries && route_offset >= 0 && route_offset <= metadata_entries - count;
@@ -535,11 +536,14 @@ hipError_t launch_routed_fold(const float* contributions, const float* weights,
     return hipGetLastError();
 }
 
-hipError_t launch_moe_gather_q8(MoeCopyView<const Q8_1> input, int input_tokens,
+namespace {
+// KEEP the qualified byte-copy kernels. Only these internal host validators
+// receive a bound; public legacy callers cannot request the larger bound.
+hipError_t moe_gather_impl(MoeCopyView<const Q8_1> input, int input_tokens,
         MoeCopyView<const MoeRouteIndex> routes, int metadata_entries, int route_offset,
         int count, int blocks_per_token, MoeCopyView<Q8_1> gathered, int column_capacity,
-        int* error, hipStream_t stream) noexcept {
-    if (!valid_copy_slice(input_tokens, metadata_entries, route_offset, count, column_capacity) ||
+        int* error, hipStream_t stream, int max_input_tokens) noexcept {
+    if (!valid_copy_slice(input_tokens, metadata_entries, route_offset, count, column_capacity, max_input_tokens) ||
             blocks_per_token != moe_copy_q8_blocks ||
             column_capacity > std::numeric_limits<int>::max() / moe_copy_q8_blocks)
         return hipErrorInvalidValue;
@@ -560,11 +564,11 @@ hipError_t launch_moe_gather_q8(MoeCopyView<const Q8_1> input, int input_tokens,
     return hipGetLastError();
 }
 
-hipError_t launch_moe_scatter(MoeCopyView<const float> down, int input_tokens,
+hipError_t moe_scatter_impl(MoeCopyView<const float> down, int input_tokens,
         MoeCopyView<const MoeRouteIndex> routes, int metadata_entries, int route_offset,
         int count, int width, int ranks, MoeCopyView<float> contributions,
-        int column_capacity, int* error, hipStream_t stream) noexcept {
-    if (!valid_copy_slice(input_tokens, metadata_entries, route_offset, count, column_capacity) ||
+        int column_capacity, int* error, hipStream_t stream, int max_input_tokens) noexcept {
+    if (!valid_copy_slice(input_tokens, metadata_entries, route_offset, count, column_capacity, max_input_tokens) ||
             width != moe_copy_width || ranks != moe_copy_ranks ||
             column_capacity > std::numeric_limits<int>::max() / moe_copy_width)
         return hipErrorInvalidValue;
@@ -583,6 +587,37 @@ hipError_t launch_moe_scatter(MoeCopyView<const float> down, int input_tokens,
                 source, input_tokens, routes.data, route_offset, count, destination, error);
     }
     return hipGetLastError();
+}
+
+} // namespace
+
+hipError_t launch_moe_gather_q8(MoeCopyView<const Q8_1> input, int input_tokens,
+        MoeCopyView<const MoeRouteIndex> routes, int metadata_entries, int route_offset,
+        int count, int blocks_per_token, MoeCopyView<Q8_1> gathered, int column_capacity,
+        int* error, hipStream_t stream) noexcept {
+    return moe_gather_impl(input, input_tokens, routes, metadata_entries, route_offset,
+        count, blocks_per_token, gathered, column_capacity, error, stream, moe_copy_max_input_tokens);
+}
+hipError_t launch_moe_gather_q8_layerwise(MoeCopyView<const Q8_1> input, int input_tokens,
+        MoeCopyView<const MoeRouteIndex> routes, int metadata_entries, int route_offset,
+        int count, int blocks_per_token, MoeCopyView<Q8_1> gathered, int column_capacity,
+        int* error, hipStream_t stream) noexcept {
+    return moe_gather_impl(input, input_tokens, routes, metadata_entries, route_offset,
+        count, blocks_per_token, gathered, column_capacity, error, stream, moe_layerwise_max_input_tokens);
+}
+hipError_t launch_moe_scatter(MoeCopyView<const float> down, int input_tokens,
+        MoeCopyView<const MoeRouteIndex> routes, int metadata_entries, int route_offset,
+        int count, int width, int ranks, MoeCopyView<float> contributions,
+        int column_capacity, int* error, hipStream_t stream) noexcept {
+    return moe_scatter_impl(down, input_tokens, routes, metadata_entries, route_offset,
+        count, width, ranks, contributions, column_capacity, error, stream, moe_copy_max_input_tokens);
+}
+hipError_t launch_moe_scatter_layerwise(MoeCopyView<const float> down, int input_tokens,
+        MoeCopyView<const MoeRouteIndex> routes, int metadata_entries, int route_offset,
+        int count, int width, int ranks, MoeCopyView<float> contributions,
+        int column_capacity, int* error, hipStream_t stream) noexcept {
+    return moe_scatter_impl(down, input_tokens, routes, metadata_entries, route_offset,
+        count, width, ranks, contributions, column_capacity, error, stream, moe_layerwise_max_input_tokens);
 }
 
 hipError_t launch_shared_sigmoid_add(const float* input, const float* raw_gate, int count,

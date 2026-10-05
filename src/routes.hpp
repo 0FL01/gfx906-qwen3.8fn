@@ -16,7 +16,9 @@ struct RouteAssignment {
 };
 
 // Fixed 512-expert/top10 CPU routing map, not an expert/activation scheduler.
-// Constructor capacity is 1..1024 tokens; all storage is allocated once there.
+// Default constructor bound remains 1024. The separate explicit layerwise bound
+// permits 16384; neither changes Session's existing <=1024 chunk contract.
+// All storage is allocated once in the constructor.
 // Successful prepare/accessor calls allocate nothing and create no threads.
 // One owner, not concurrent; copying/moving is disabled to keep views owner-bound.
 // Initially assignments/groups are empty and all 512 counts are zero.
@@ -25,7 +27,8 @@ struct RouteAssignment {
 // all previously published views and their contents unchanged.
 class RouteGroups {
 public:
-    explicit RouteGroups(int token_capacity);
+    enum class Bound { chunk1024, layerwise16384 };
+    explicit RouteGroups(int token_capacity, Bound bound = Bound::chunk1024);
     RouteGroups(const RouteGroups&) = delete;
     RouteGroups& operator=(const RouteGroups&) = delete;
     RouteGroups(RouteGroups&&) = delete;
@@ -49,8 +52,8 @@ public:
 private:
     static constexpr int expert_count = 512;
     static constexpr int top_k = 10;
-    static constexpr int max_tokens = 1024;
-    static std::size_t checked_capacity(int token_capacity);
+    static constexpr int max_tokens = 16384;
+    static std::size_t checked_capacity(int token_capacity, Bound bound);
     bool aliases_owned(const void* data, std::size_t bytes) const noexcept;
 
     int token_capacity_;

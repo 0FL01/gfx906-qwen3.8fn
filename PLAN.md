@@ -342,3 +342,10 @@ pass. Journal60/source296ea56dirty. Resident shape tests support quantized and
 small-output dense atN>=16; large F32 output2560 regresses and is excluded.
 Next: selective Session integration, frozen full-model gates and matched full
 requests. No component number is a model speed claim.
+
+
+### 2026-10-05 layerwise scheduling prerequisite
+Opt-in full-window routing and bounded GPU frames pass32/128/4096 full-vocabulary
+self-parity, full teacher taps, occupied continuation and ownership gates.
+Both-GPU opaque byte-copy16384 bound and full39CTest pass; details README/journal78.
+MTP integration, representative full-request win and16K fit remain OPEN.

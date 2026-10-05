@@ -30,17 +30,23 @@ bool overlaps(const void* data, std::size_t bytes, const void* owned,
 
 } // namespace
 
-std::size_t RouteGroups::checked_capacity(int token_capacity) {
+std::size_t RouteGroups::checked_capacity(int token_capacity, Bound bound) {
     static_assert(max_tokens <= std::numeric_limits<int>::max() / top_k);
     static_assert(static_cast<std::size_t>(max_tokens) <=
                   std::numeric_limits<std::size_t>::max() / top_k / sizeof(RouteAssignment));
-    if (token_capacity < 1 || token_capacity > max_tokens)
-        invalid("routes: token capacity must be 1..1024");
+    int limit = 0;
+    switch (bound) {
+    case Bound::chunk1024: limit = 1024; break;
+    case Bound::layerwise16384: limit = max_tokens; break;
+    default: invalid("routes: unknown constructor bound");
+    }
+    if (token_capacity < 1 || token_capacity > limit)
+        invalid("routes: token capacity outside explicit constructor bound");
     return static_cast<std::size_t>(token_capacity) * top_k;
 }
 
-RouteGroups::RouteGroups(int token_capacity)
-    : token_capacity_(token_capacity), assignments_(checked_capacity(token_capacity)) {}
+RouteGroups::RouteGroups(int token_capacity, Bound bound)
+    : token_capacity_(token_capacity), assignments_(checked_capacity(token_capacity, bound)) {}
 
 bool RouteGroups::aliases_owned(const void* data, std::size_t bytes) const noexcept {
     // Include all inline scratch/metadata and the full allocated vector storage,
@@ -53,7 +59,7 @@ bool RouteGroups::aliases_owned(const void* data, std::size_t bytes) const noexc
 void RouteGroups::prepare(std::span<const std::int32_t> ids,
                           std::span<const float> weights, int tokens) {
     // Check signed bounds before conversion/multiplication, and exact shapes
-    // before bytes/endpoints or reads. expected <= 10240, so all scan positions,
+    // before bytes/endpoints or reads. expected <= 163840, so all scan positions,
     // cursors and byte counts are representable and fit constructor storage.
     if (tokens < 1 || tokens > token_capacity_)
         invalid("routes: tokens outside constructor capacity");

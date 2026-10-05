@@ -36,6 +36,11 @@ struct SessionConfig {
     // Constructor-only target prefix snapshots/tap. Requires max_batch_tokens>=3.
     // Off adds no GPU buffers, transfers or arithmetic; host sizeof does change.
     bool speculative_checkpoints = false;
+    // Separate constructor-only full-prompt owner, 0 (off) or 1..16384.
+    // Requires max_batch_tokens>=4 and trace off. GPU frames remain <=1024;
+    // this is NOT an extension of step_batch/verify_window. No payload at zero.
+    // Checkpoint taps, when enabled, reserve max(max_batch_tokens,this) rows.
+    int layerwise_prefill_capacity = 0;
 };
 
 // force_cpu is a source-compatible diagnostic name for CPU LINEAR projections
@@ -267,7 +272,8 @@ struct SessionMemory {
     // Snapshot/tap GPU capacities also included in workspace and independent
     // live-Buffer traversal. Exactly FOUR prefix slots per mutable state.
     bool speculative_checkpoints = false;
-    // Each tap capacity is max_batch_tokens*10240*sizeof(float), on device1.
+    // Each tap capacity is max(max_batch_tokens,layerwise_prefill_capacity)
+    // *10240*sizeof(float), on device1. Published rows are actual logical N.
     // The second buffer protects published physical bytes on execution failure.
     std::array<std::uint64_t, 2> checkpoint_recurrent_bytes{}, checkpoint_history_bytes{},
         checkpoint_qsa_tail_bytes{}, checkpoint_ple_history_bytes{}, target_tap_bytes{}, target_tap_staging_bytes{};
@@ -277,6 +283,15 @@ struct SessionMemory {
     // allocator overhead, RSS and thread stacks are excluded.
     std::uint64_t host_session_impl_bytes = 0, host_session_config_bytes = 0;
     std::uint64_t host_speculative_owner_bytes = 0, host_speculative_hash_payload_bytes = 0;
+    // Extra explicit full-prompt capacities (not RSS), all zero when disabled.
+    // GPU buffers are ALSO included in workspace/the independent Buffer ledger.
+    int layerwise_prefill_capacity = 0;
+    std::uint64_t host_layerwise_owner = 0, host_layerwise_activations = 0;
+    std::uint64_t host_layerwise_ffn_input = 0, host_layerwise_injection = 0;
+    std::uint64_t host_layerwise_probabilities = 0, host_layerwise_routes = 0;
+    std::uint64_t host_layerwise_groups = 0, pinned_layerwise_metadata = 0;
+    std::array<std::uint64_t, 2> layerwise_original_q8_bytes{},
+        layerwise_contribution_bytes{}, layerwise_metadata_bytes{};
 };
 
 // One exclusive interactive session, static 24/24 layer split. Canonical expert
@@ -289,6 +304,7 @@ struct SessionMemory {
 // No tokenizer/sampler and no linkage to llama/ggml execution.
 class Session {
 public:
+    enum class OutputMode { all_rows, last_row };
     explicit Session(const std::string& model_path, SessionConfig config = {});
     ~Session();
     Session(const Session&) = delete;
@@ -297,6 +313,20 @@ public:
     // N=1..max_batch_tokens, token-major [N][248320] completed logits. Validate
     // the entire window's IDs/length/capacity before any state/cache mutation.
     std::span<const float> step_batch(std::span<const std::int32_t> tokens);
+    // Opt-in GPU-only ordinary PP, N=1..layerwise_prefill_capacity. The whole
+    // window routes once per layer, canonical projections retain qualified selective tiles<=128.
+    // all_rows returns [N][248320]; last_row returns ONLY [1][248320], for input
+    // start+N-1. Every pre-head residual is computed and checked in BOTH modes.
+    // Beyond the existing frame, full-row host logits grow only on an explicit
+    // all_rows request; last_row does not allocate N*V just to hide other rows.
+    // With checkpoints, transactional preservation can require TWO full-row
+    // logit owners; memory().host_logit_capacity reports both actual capacities.
+    // Tap always exposes ALL N actual rows, including last_row mode. No prefix
+    // snapshot/verify publication. Pending verify, active hybrid policy, invalid
+    // IDs/length/capacity/mode reject atomically, preserving pending ownership.
+    // Borrowed-span lifetime and failure/reset rules are the ordinary API's.
+    std::span<const float> prefill_layerwise(std::span<const std::int32_t> tokens,
+                                           OutputMode mode = OutputMode::all_rows);
     // Ordinary forward of the SAME full window/state/tap, but project and return
     // only the final input's [248320] logits. Earlier LM-head rows do not feed
     // state and are deliberately not requested. Bounds, borrowed-view lifetime,

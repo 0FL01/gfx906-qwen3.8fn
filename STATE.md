@@ -73,10 +73,20 @@ gates pass, but broad Q4_0 down geometry regresses; rejected/restored.
 Only narrow gate/up tails show useful potential; not model-qualified.
 All candidate source/extended fixture preserved in runs; production untouched.
 
-NEXT inspect and adapt the old unapplied layerwise-prefill patch to current
-tiled128/fused/last-head APIs. Start opt-in bounded4096, first small correctness
-fixture and measured allocation ledger; 16K/MTP memory fit is not established.
-No new full-request speed claim or completed-plan claim.
+Layerwise prefill correctness slice PASSED, opt-in defaultoff. Sourcec685d14/
+dirtytrue; model32job649,128job654 exit0.4096job667 model/fullbuild passed,
+then SSH disconnected255; SAME container finished39CTest1151.06s, recovered
+with docker-wait job676 exit0. No rerun. Journal78 copied and verified.
+Byte-copy16K bound job663 exit0/4m18:bothGPUs327680pairs each,9310gather/scatter,
+270host rejects; original copy and491148-check CPU routes pass.
+Target-only4096 freeGPU0/1~4.56/3.75GB; trained-MTP fit NOT checked yet.
+Warm monotone-ID fixture halves expert upload bytes but all-row is slower;
+no component/model speed promotion. Qualified correctness only, not fullR4.
+
+NEXT integrate explicit optional layerwise capacity into MtpRunner/CLI,
+keep defaultoff, test original32IDs/RNG/reset/capacity plus target+sidecar fit.
+Then matched trace-off4K/16K+512 A/B/A (layerwise4096 vs originalchunk1024).
+Do not overwrite saved baselines. Only ordinary executable rebuild permitted.
 
 ## Принятые границы / не повторять
 

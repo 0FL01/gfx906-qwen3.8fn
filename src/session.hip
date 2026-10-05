@@ -73,6 +73,10 @@ SessionConfig checked_config(SessionConfig config) {
         throw std::invalid_argument("Session attention_query_tile");
     if (config.speculative_checkpoints && config.max_batch_tokens < 3)
         throw std::invalid_argument("Session speculative checkpoints require max_batch_tokens>=3");
+    if (config.layerwise_prefill_capacity < 0 || config.layerwise_prefill_capacity > 16384 ||
+        (config.layerwise_prefill_capacity &&
+         (config.max_batch_tokens < 4 || !config.trace_directory.empty())))
+        throw std::invalid_argument("Session layerwise capacity/resources/trace");
     return config;
 }
 void hip(hipError_t e) {
@@ -415,6 +419,103 @@ struct Device {
     }
 };
 
+// R4 donor decision (RECON16): KEEP mx dcd6854 canonical Q4/Q8 short
+// projections, band16 copy_ready/consumer_done staging; KEEP furnace 905021d
+// chronological GDN/selected-Q4 B8 attention. ADAPT reinstinct 0b79e32's
+// token/rank gather/scatter orchestration only: our qualified opaque 36B Q8
+// copies now have a separate checked <=16384 entry point. No GEMM/packer/math
+// replacement, scheduler import, PP cache admission, or shortened QSA horizon.
+struct LayerwiseDevice {
+    Buffer original, contributions, metadata;
+    explicit LayerwiseDevice(Device& d, int capacity) {
+        hip(hipSetDevice(d.id));
+        original = Buffer(checked_size(checked_size(capacity, H / 32), sizeof(Q8_1)));
+        contributions = Buffer(checked_size(checked_size(capacity, 10 * H), sizeof(float)));
+        metadata = Buffer(checked_size(checked_size(capacity, 10), sizeof(MoeRouteIndex)));
+    }
+    static int offset(const RouteGroups& groups, std::span<const RouteAssignment> group,
+                      int begin, int count, int tokens) {
+        if (tokens < 1 || tokens > moe_layerwise_max_input_tokens || group.empty() ||
+            begin < 0 || count < 1 || count > linear_device_tiled_max_columns ||
+            static_cast<std::size_t>(begin) > group.size() ||
+            static_cast<std::size_t>(count) > group.size() - static_cast<std::size_t>(begin) ||
+            groups.assignments().size() != static_cast<std::size_t>(tokens) * 10)
+            throw std::runtime_error("Session layerwise route tile extent");
+        // Borrowed from this exact owner, as in the original chunk route_offset.
+        const auto first = group.data() - groups.assignments().data() + begin;
+        const auto entries = static_cast<std::ptrdiff_t>(groups.assignments().size());
+        if (first < 0 || first > entries || count > entries - first || first > INT32_MAX)
+            throw std::runtime_error("Session layerwise route source offset");
+        return static_cast<int>(first);
+    }
+    void gather(Device& d, const RouteGroups& groups, std::span<const RouteAssignment> group,
+                int begin, int count, int tokens) {
+        hip(launch_moe_gather_q8_layerwise({original.get<Q8_1>(), original.bytes() / sizeof(Q8_1)}, tokens,
+            {metadata.get<MoeRouteIndex>(), metadata.bytes() / sizeof(MoeRouteIndex)}, tokens * 10,
+            offset(groups, group, begin, count, tokens), count, H / 32,
+            {reinterpret_cast<Q8_1*>(d.f(23)), d.scratch[23].bytes() / sizeof(Q8_1)}, count, d.flag(), d.stream));
+    }
+    void scatter(Device& d, const RouteGroups& groups, std::span<const RouteAssignment> group,
+                 int begin, int count, int tokens) {
+        hip(launch_moe_scatter_layerwise({d.f(19), d.scratch[19].bytes() / sizeof(float)}, tokens,
+            {metadata.get<MoeRouteIndex>(), metadata.bytes() / sizeof(MoeRouteIndex)}, tokens * 10,
+            offset(groups, group, begin, count, tokens), count, H, 10,
+            {contributions.get(), contributions.bytes() / sizeof(float)}, count, d.flag(), d.stream));
+    }
+};
+
+struct LayerwisePrefill {
+    // At N16384, each device adds 47185920 original Q8 + 1677721600
+    // contributions + 1310720 DTO = 1726218240 bytes (1.608 GiB).
+    // With R6 and bmax1024, root extra tap growth is 1258291200 bytes:
+    // root total NEW R4 GPU bytes 2984509440 BEFORE trained-MTP owners.
+    // The 16K fit is UNQUALIFIED. memory() is actual post-load evidence;
+    // these are allocation formulas, not an observed fit or speed claim.
+    // CPU additional payload incl DTO = 1549008896 bytes plus owner sizeof.
+    // Full logits N16384 require 16273899520 bytes/owner ONLY all_rows; a
+    // repeated transactional all_rows call may reserve TWO such owners.
+    std::array<Device*, 2> owners;
+    std::array<std::unique_ptr<LayerwiseDevice>, 2> gpu;
+    // Two PAGEABLE full-N activation owners; DMA uses the existing bounded
+    // pinned handoff. N16384: 671088640 bytes EACH, 1342177280 total.
+    std::array<std::vector<float>, 2> activations;
+    std::vector<float> mixed, injection, probabilities, weights;
+    std::vector<std::int32_t> ids;
+    RouteGroups groups;
+    MoeRouteIndex* dto = nullptr;
+    std::size_t dto_bytes;
+    explicit LayerwisePrefill(std::array<Device*, 2> devices, int capacity)
+        : owners(devices), mixed(checked_size(capacity, H)), injection(checked_size(capacity, 4)),
+          probabilities(checked_size(capacity, 512)), weights(checked_size(capacity, 10)),
+          ids(checked_size(capacity, 10)), groups(capacity, RouteGroups::Bound::layerwise16384),
+          dto_bytes(checked_size(checked_size(capacity, 10), sizeof(MoeRouteIndex))) {
+        try {
+            for (auto& a : activations) a.resize(checked_size(capacity, W));
+            hip(hipHostMalloc(&dto, dto_bytes, hipHostMallocDefault));
+            for (int id = 0; id < 2; ++id) gpu[id] = std::make_unique<LayerwiseDevice>(*owners[id], capacity);
+        } catch (...) { release(); throw; }
+    }
+    ~LayerwisePrefill() { release(); }
+    void release() noexcept {
+        // Includes DMA reads of dto and existing ExpertStage pinned payloads.
+        // Owners outlive this optional object, also during constructor unwind.
+        for (auto* d : owners) if (d) d->drain_cleanup();
+        if (dto) { cleanup(hipHostFree(dto)); dto = nullptr; }
+    }
+    void upload_routes(Device& d, int tokens) {
+        const auto assignments = groups.assignments();
+        if (assignments.size() != static_cast<std::size_t>(tokens) * 10 ||
+            assignments.size() > dto_bytes / sizeof(MoeRouteIndex))
+            throw std::runtime_error("Session layerwise metadata extent");
+        for (std::size_t i = 0; i < assignments.size(); ++i)
+            dto[i] = {assignments[i].token, assignments[i].rank};
+        // Prior whole-layer completion precedes refill of this SINGLE pinned
+        // DTO; it is immutable through every microtile/scatter in this layer.
+        hip(hipMemcpyAsync(gpu[d.id]->metadata.get<MoeRouteIndex>(), dto,
+            assignments.size() * sizeof(MoeRouteIndex), hipMemcpyHostToDevice, d.stream));
+    }
+};
+
 Buffer upload(Device& d, std::span<const std::byte> bytes) {
     hip(hipSetDevice(d.id)); Buffer result(bytes.size());
     hip(hipMemcpyAsync(result.get<void>(), bytes.data(), bytes.size(), hipMemcpyHostToDevice, d.stream));
@@ -526,6 +627,32 @@ void combine(Device& d, const float* residual, const float* block, int tokens, f
         hip(launch_hc_combine(residual + first * W, block + first * H, d.f(8) + first * 4,
             count, output + first * W, d.flag(), d.stream));
     });
+}
+
+// Extracted unchanged from Layer::ffn: identical ID tie-breaks, bucket order,
+// ascending XOR reduction, floor, reciprocal and separately rounded multiply.
+// Shared by old chunks and new global routing; no extra normalization.
+void select_routes(const float* probabilities, std::int32_t* ids, float* weights, int tokens) {
+    for (int t = 0; t < tokens; ++t) {
+        const float* row = probabilities + t * 512;
+        std::array<int, 512> order{}; std::iota(order.begin(), order.end(), 0);
+        std::partial_sort(order.begin(), order.begin() + 10, order.end(), [&](int i, int j) {
+            return row[i] > row[j] || (row[i] == row[j] && i < j);
+        });
+        std::array<float, 32> buckets{};
+        for (int i = 0; i < 10; ++i) buckets[order[i] % 32] += row[order[i]];
+        for (int distance = 1; distance < 32; distance *= 2) {
+            const auto previous = buckets;
+            for (int lane = 0; lane < 32; ++lane)
+                buckets[lane] = previous[lane] + previous[lane ^ distance];
+        }
+        const float denominator = std::max(buckets[0], 1.0f / 16384.0f);
+        if (!(denominator > 0) || !std::isfinite(denominator)) throw std::runtime_error("invalid route denominator");
+        const float inverse = 1.0f / denominator;
+        for (int i = 0; i < 10; ++i) {
+            ids[t * 10 + i] = order[i]; weights[t * 10 + i] = row[order[i]] * inverse;
+        }
+    }
 }
 
 struct Experts {
@@ -846,7 +973,8 @@ struct Experts {
     void run_group(Device& d, int id, const Q8_1* input, int columns, SessionStats& stats) {
         project(d, acquire(d, id, columns, stats), input, columns);
     }
-    void stage_band(Device& d, ExpertStage& stage, std::span<const int> ids, SessionStats& stats) const {
+    void stage_band(Device& d, ExpertStage& stage, std::span<const int> ids, SessionStats& stats,
+                    const RouteGroups& groups) const {
         if (ids.empty() || ids.size() > expert_band) throw std::runtime_error("expert band size");
         if (stage.used) {
             // CPU must not refill pinned bytes until the prior DMA read finishes.
@@ -856,7 +984,7 @@ struct Experts {
         }
         for (std::size_t i = 0; i < ids.size(); ++i) {
             const int expert = ids[i], slot = resident(expert);
-            const auto reuse = static_cast<std::uint64_t>(d.routes->group(expert).size());
+            const auto reuse = static_cast<std::uint64_t>(groups.group(expert).size());
             std::size_t offset = i * total();
             std::size_t source_offset = slot < 0 ? 0 : static_cast<std::size_t>(slot) * total();
             for (int j = 0; j < 3; ++j) {
@@ -881,24 +1009,28 @@ struct Experts {
         hip(hipEventRecord(stage.copy_ready, d.copy_stream));
         hip(hipStreamWaitEvent(d.stream, stage.copy_ready, 0));
     }
-    void run_chunk(Device& d, const Q8_1* original, SessionStats& stats) {
+    void run_chunk(Device& d, const Q8_1* original, SessionStats& stats,
+                   LayerwiseDevice* full = nullptr, const RouteGroups* global = nullptr, int tokens = 0) {
+        const auto& groups = global ? *global : *d.routes;
         static_assert(microtile_tokens == linear_device_tiled_max_columns);
         std::array<int, 512> active{};
         int count = 0;
-        for (int expert = 0; expert < 512; ++expert) if (!d.routes->group(expert).empty()) active[count++] = expert;
+        for (int expert = 0; expert < 512; ++expert) if (!groups.group(expert).empty()) active[count++] = expert;
         auto* gathered = reinterpret_cast<Q8_1*>(d.f(23));
         for (int first = 0, band = 0; first < count; first += expert_band, ++band) {
             auto& stage = *d.stages[band % 2];
             const int length = std::min(expert_band, count - first);
-            stage_band(d, stage, std::span(active).subspan(first, length), stats);
+            stage_band(d, stage, std::span(active).subspan(first, length), stats, groups);
             for (int i = 0; i < length; ++i) {
-                const auto group = d.routes->group(active[first + i]);
+                const auto group = groups.group(active[first + i]);
                 for (int begin = 0; begin < static_cast<int>(group.size());) {
                     const int remaining = static_cast<int>(group.size()) - begin;
                     const int columns = std::min(remaining >= 16 ? microtile_tokens : linear_device_short_max_columns, remaining);
-                    d.gather_routes(original, group, begin, columns);
+                    if (full) full->gather(d, groups, group, begin, columns, tokens);
+                    else d.gather_routes(original, group, begin, columns);
                     project(d, stage.data.get<std::byte>() + i * total(), gathered, columns);
-                    d.scatter_routes(group, begin, columns);
+                    if (full) full->scatter(d, groups, group, begin, columns, tokens);
+                    else d.scatter_routes(group, begin, columns);
                     begin += columns;
                 }
             }
@@ -1248,28 +1380,7 @@ struct Layer {
         }
         auto& ids = d.route_ids;
         auto& weights = d.route_weights;
-        for (int t = 0; t < tokens; ++t) {
-            const float* row = probabilities.data() + t * 512;
-            std::array<int, 512> order{}; std::iota(order.begin(), order.end(), 0);
-            std::partial_sort(order.begin(), order.begin() + 10, order.end(), [&](int i, int j) {
-                return row[i] > row[j] || (row[i] == row[j] && i < j);
-            });
-            // Keep the logical ID%32 buckets and ascending-XOR width32 sum,
-            // floor, reciprocal and multiply, exactly as in the qualified N1.
-            std::array<float, 32> buckets{};
-            for (int i = 0; i < 10; ++i) buckets[order[i] % 32] += row[order[i]];
-            for (int distance = 1; distance < 32; distance *= 2) {
-                const auto previous = buckets;
-                for (int lane = 0; lane < 32; ++lane)
-                    buckets[lane] = previous[lane] + previous[lane ^ distance];
-            }
-            const float denominator = std::max(buckets[0], 1.0f / 16384.0f);
-            if (!(denominator > 0) || !std::isfinite(denominator)) throw std::runtime_error("invalid route denominator");
-            const float inverse = 1.0f / denominator;
-            for (int i = 0; i < 10; ++i) {
-                ids[t * 10 + i] = order[i]; weights[t * 10 + i] = row[order[i]] * inverse;
-            }
-        }
+        select_routes(probabilities.data(), ids.data(), weights.data(), tokens);
         if (probe) {
             // Exact semantic ID->F32 conversion (0..511), never reinterpret I32
             // bytes. f(22) is dead until the wide rank fold's weight upload.
@@ -1527,6 +1638,9 @@ struct Session::Impl {
     // before pool: constructor unwind joins CPU, then drains GPU before snapshots
     // or any earlier live layer/PLE/pinned owner can release its buffers.
     std::unique_ptr<TargetCheckpoints> checkpoints;
+    // Constructor-only full-prompt resources; destruction drains before DMA
+    // staging or activation ownership is released, including constructor unwind.
+    std::unique_ptr<LayerwisePrefill> layerwise;
     // Declared last: constructor unwind joins before borrowed RAM/frames release.
     std::unique_ptr<CpuExpertPool> cpu_pool;
 
@@ -1615,7 +1729,11 @@ struct Session::Impl {
         }
         if (config.speculative_checkpoints)
             checkpoints = std::make_unique<TargetCheckpoints>(
-                std::array<Device*, 2>{devices[0].get(), devices[1].get()}, ple_hash.state().config(), config.max_batch_tokens);
+                std::array<Device*, 2>{devices[0].get(), devices[1].get()}, ple_hash.state().config(),
+                std::max(config.max_batch_tokens, config.layerwise_prefill_capacity));
+        if (config.layerwise_prefill_capacity)
+            layerwise = std::make_unique<LayerwisePrefill>(
+                std::array<Device*, 2>{devices[0].get(), devices[1].get()}, config.layerwise_prefill_capacity);
         reset();
     }
     ~Impl() {
@@ -1690,6 +1808,19 @@ struct Session::Impl {
         result.host_embedding_capacity = embeddings.capacity();
         result.host_logit_capacity = (host_logits.capacity() + working_logits.capacity()) * sizeof(float);
         result.pinned_handoff = pinned->bytes;
+        if (layerwise) {
+            const auto& p = *layerwise;
+            result.layerwise_prefill_capacity = config.layerwise_prefill_capacity;
+            result.host_layerwise_owner = sizeof(LayerwisePrefill) + 2 * sizeof(LayerwiseDevice);
+            for (const auto& a : p.activations) result.host_layerwise_activations += a.capacity() * sizeof(float);
+            result.host_layerwise_ffn_input = p.mixed.capacity() * sizeof(float);
+            result.host_layerwise_injection = p.injection.capacity() * sizeof(float);
+            result.host_layerwise_probabilities = p.probabilities.capacity() * sizeof(float);
+            result.host_layerwise_routes = p.weights.capacity() * sizeof(float) + p.ids.capacity() * sizeof(std::int32_t);
+            // Inline RouteGroups metadata is included in host_layerwise_owner.
+            result.host_layerwise_groups = static_cast<std::size_t>(config.layerwise_prefill_capacity) * 10 * sizeof(RouteAssignment);
+            result.pinned_layerwise_metadata = p.dto_bytes;
+        }
         for (const auto& frame : probe_down) result.host_hybrid_probe += frame.capacity() * sizeof(float);
         for (const auto& frame : probe_ffn) result.host_hybrid_probe += frame.capacity() * sizeof(float);
         if (config.hybrid_probe)
@@ -1728,6 +1859,13 @@ struct Session::Impl {
                 weight(h.down); weight(h.up); weight(h.inject); add(out.weights, h.norm);
             };
             for (const auto& b : d.scratch) add(out.workspace, b);
+            if (layerwise) {
+                const auto& p = *layerwise->gpu[id];
+                result.layerwise_original_q8_bytes[id] = p.original.bytes();
+                result.layerwise_contribution_bytes[id] = p.contributions.bytes();
+                result.layerwise_metadata_bytes[id] = p.metadata.bytes();
+                for (const auto* b : {&p.original, &p.contributions, &p.metadata}) add(out.workspace, *b);
+            }
             for (const auto* b : {&d.q8, &d.error, &d.logits, &d.gathered_k, &d.gathered_v,
                     &d.partial_o, &d.partial_ms, &d.histogram, &d.select_state, &d.candidates,
                     &d.ids, &d.block_ids, &d.counts, &d.routed_contributions, &d.route_metadata, &d.ds4,
@@ -2068,6 +2206,193 @@ struct Session::Impl {
             throw;
         }
     }
+    std::span<const float> prefill_layerwise(std::span<const std::int32_t> window, Session::OutputMode mode) {
+        if (!usable) throw std::runtime_error("Session invalidated; reset required");
+        // ALL argument/resource/diagnostic preflight precedes owner or stream
+        // mutation, including a bad FINAL token and pending verify ownership.
+        if (!layerwise || window.empty() || !window.data() ||
+            window.size() > static_cast<std::size_t>(config.layerwise_prefill_capacity) ||
+            (mode != Session::OutputMode::all_rows && mode != Session::OutputMode::last_row) ||
+            hybrid_policy.mode != SessionHybridMode::disabled ||
+            (checkpoints && checkpoints->state.pending))
+            throw std::invalid_argument("Session layerwise resources/length/mode/policy/pending verify");
+        if (statistics.consumed_tokens > static_cast<std::uint64_t>(config.capacity) ||
+            window.size() > static_cast<std::uint64_t>(config.capacity) - statistics.consumed_tokens)
+            throw std::invalid_argument("Session layerwise capacity");
+        for (const auto token : window) if (token < 0 || token >= V) throw std::invalid_argument("token ID");
+        const auto assignments = static_cast<std::uint64_t>(window.size()) * 48 * 10;
+        auto room = [](std::uint64_t current, std::uint64_t increment) {
+            if (increment > UINT64_MAX - current) throw std::invalid_argument("Session completed-work diagnostic overflow");
+        };
+        room(statistics.expert_hits, assignments); room(statistics.expert_misses, assignments);
+        room(statistics.expert_upload_bytes, assignments * short_stage_bytes);
+        room(route_statistics.expert_groups_gt128, assignments / 129);
+        for (auto word : std::bit_cast<std::array<std::uint64_t, 6>>(attention_statistics)) room(word, assignments);
+        if (checkpoints) room(checkpoints->stats.target_forward_rows, window.size());
+        const int tokens = static_cast<int>(window.size());
+        const int position = static_cast<int>(statistics.consumed_tokens);
+        const int result_rows = mode == Session::OutputMode::all_rows ? tokens : 1;
+        const auto result_elements = checked_size(result_rows, V);
+        auto& p = *layerwise;
+        SessionStats working_stats = statistics;
+        SessionAttentionStats working_attention = attention_statistics;
+        SessionRouteStats call_routes{};
+        const auto begin = std::chrono::steady_clock::now();
+        try {
+            if (cpu_pool) cpu_ok(cpu_pool->drain());
+            for (auto& d : devices) d->drain();
+            if (checkpoints) {
+                checkpoints->state = {true, false, 0, 0, 0};
+                checkpoints->prefix_calls = {}; // Ordinary PP NEVER writes prefix slots.
+            }
+            // Allocation is an explicit OUTPUT decision, never a constructor N*V
+            // default. Checkpoint users preserve the old borrowed publication in
+            // host_logits until every gate succeeds (same two-owner swap as R6).
+            auto& destination = checkpoints ? working_logits : host_logits;
+            if (destination.size() < result_elements) destination.resize(result_elements);
+            auto finite = [](const float* x, std::size_t count, const char* label) {
+                for (std::size_t i = 0; i < count; ++i)
+                    if (!std::isfinite(x[i])) throw std::runtime_error(label);
+            };
+            for (int t = 0; t < tokens; ++t) {
+                const auto row = std::span(embeddings).subspan(embedding_stride * window[t], embedding_stride);
+                for (int i = 0; i < H; ++i) {
+                    const float x = tensor_element(embedding_type, row, static_cast<std::size_t>(i));
+                    if (!std::isfinite(x)) throw std::runtime_error("embedding nonfinite");
+                    for (int c = 0; c < 4; ++c) p.activations[0][static_cast<std::size_t>(t) * W + c * H + i] = x;
+                }
+            }
+            auto load = [&](Device& d, const float* cpu, int count) {
+                std::copy_n(cpu, static_cast<std::size_t>(count) * W, handoff);
+                hip(hipMemcpyAsync(d.f(0), handoff, static_cast<std::size_t>(count) * W * sizeof(float), hipMemcpyHostToDevice, d.stream));
+                // PLE and the next CPU staging refill both use handoff. Protect
+                // its pinned H2D lifetime even when PLE starts this frame.
+                d.check("layerwise residual upload");
+            };
+            auto download = [&](Device& d, const float* gpu, float* cpu, int count) {
+                hip(hipMemcpyAsync(handoff, gpu, static_cast<std::size_t>(count) * W * sizeof(float), hipMemcpyDeviceToHost, d.stream));
+                d.check("layerwise residual completion");
+                finite(handoff, static_cast<std::size_t>(count) * W, "layerwise residual nonfinite");
+                std::copy_n(handoff, static_cast<std::size_t>(count) * W, cpu);
+            };
+            auto no_attention_observation = [](const char*, const float*, int, int = -1) {};
+            auto no_ffn_observation = [](const std::string&, const float*, int, int = -1, int = 0) {};
+            int current = 0;
+            for (int l = 0; l < 48; ++l) {
+                auto& layer = *layers[l]; auto& d = layer.device;
+                auto& g = *p.gpu[d.id];
+                hip(hipSetDevice(d.id)); d.clear();
+                auto& input = p.activations[current]; auto& output = p.activations[1 - current];
+                // Phase 1: chronological HC/attention/PLE/router frames. GDN
+                // mutates once in order; QSA retains its COMPLETE history and
+                // uses position+first+t+1, never a frame-local causal horizon.
+                // input becomes the POST-attention residual; output is untouched.
+                for (int first = 0; first < tokens; first += config.max_batch_tokens) {
+                    const int count = std::min(config.max_batch_tokens, tokens - first);
+                    const auto row = static_cast<std::size_t>(first);
+                    load(d, input.data() + row * W, count);
+                    float* residual = d.f(0); float* alternate = d.f(1);
+                    if (l == 1) ple(d, window.subspan(row, count), residual, alternate, false);
+                    layer.attention_hc.mix(d, residual, epsilon, count);
+                    layer.attention(position + first, config.capacity, epsilon, count, false,
+                        batch_attention, working_attention, nullptr, no_attention_observation);
+                    combine(d, residual, d.f(9), count, alternate); std::swap(residual, alternate);
+                    layer.ffn_hc.mix(d, residual, epsilon, count);
+                    layer.router.apply(d, d.f(6), d.f(9), count);
+                    tiles(count, [&](int local, int n) {
+                        hip(launch_router_softmax(d.f(9) + local * 512, n, d.f(10) + local * 512, d.flag(), d.stream));
+                        hip(launch_quantize_q8_1(d.f(6) + local * H, d.q8.get<Q8_1>() + local * (H / 32),
+                            H, n, d.flag(), d.stream));
+                    });
+                    hip(hipMemcpyAsync(p.probabilities.data() + row * 512, d.f(10),
+                        static_cast<std::size_t>(count) * 512 * sizeof(float), hipMemcpyDeviceToHost, d.stream));
+                    hip(hipMemcpyAsync(g.original.get<Q8_1>() + row * (H / 32), d.q8.get<Q8_1>(),
+                        static_cast<std::size_t>(count) * (H / 32) * sizeof(Q8_1), hipMemcpyDeviceToDevice, d.stream));
+                    download(d, residual, input.data() + row * W, count);
+                    // Retain exact f6/f8 bytes; recomputing HC is unnecessary and
+                    // could conflate its arithmetic with expert traffic savings.
+                    hip(hipMemcpyAsync(handoff, d.f(6), static_cast<std::size_t>(count) * H * sizeof(float), hipMemcpyDeviceToHost, d.stream));
+                    hip(hipMemcpyAsync(handoff + count * H, d.f(8), static_cast<std::size_t>(count) * 4 * sizeof(float), hipMemcpyDeviceToHost, d.stream));
+                    d.check("layerwise FFN HC/router completion");
+                    finite(handoff, static_cast<std::size_t>(count) * (H + 4), "layerwise FFN HC nonfinite");
+                    finite(p.probabilities.data() + row * 512, static_cast<std::size_t>(count) * 512, "layerwise router nonfinite");
+                    std::copy_n(handoff, static_cast<std::size_t>(count) * H, p.mixed.data() + row * H);
+                    std::copy_n(handoff + count * H, static_cast<std::size_t>(count) * 4, p.injection.data() + row * 4);
+                }
+                select_routes(p.probabilities.data(), p.ids.data(), p.weights.data(), tokens);
+                p.groups.prepare(std::span(p.ids).first(tokens * 10), std::span(p.weights).first(tokens * 10), tokens);
+                for (const int count : p.groups.counts()) {
+                    call_routes.last_max_expert_group_assignments = std::max(
+                        call_routes.last_max_expert_group_assignments, static_cast<std::uint64_t>(count));
+                    if (count > 128) ++call_routes.expert_groups_gt128;
+                }
+                p.upload_routes(d, tokens);
+                // ONE physical acquisition for each active expert/layer, all
+                // actual assignments (including >128) use qualified selective tiles<=128.
+                // Original all-N Q8 stays immutable until every scatter ends.
+                layer.experts.run_chunk(d, g.original.get<Q8_1>(), working_stats, &g, &p.groups, tokens);
+                d.check("layerwise global expert completion");
+                // Phase 2: preserve original-rank separately rounded MUL+ADD,
+                // shared mix, then the original widened HC FFN combine.
+                for (int first = 0; first < tokens; first += config.max_batch_tokens) {
+                    const int count = std::min(config.max_batch_tokens, tokens - first);
+                    const auto row = static_cast<std::size_t>(first);
+                    load(d, input.data() + row * W, count);
+                    std::copy_n(p.mixed.data() + row * H, static_cast<std::size_t>(count) * H, handoff);
+                    std::copy_n(p.injection.data() + row * 4, static_cast<std::size_t>(count) * 4, handoff + count * H);
+                    hip(hipMemcpyAsync(d.f(6), handoff, static_cast<std::size_t>(count) * H * sizeof(float), hipMemcpyHostToDevice, d.stream));
+                    hip(hipMemcpyAsync(d.f(8), handoff + count * H, static_cast<std::size_t>(count) * 4 * sizeof(float), hipMemcpyHostToDevice, d.stream));
+                    hip(hipMemcpyAsync(d.f(22), p.weights.data() + row * 10,
+                        static_cast<std::size_t>(count) * 10 * sizeof(float), hipMemcpyHostToDevice, d.stream));
+                    tiles(count, [&](int local, int n) {
+                        hip(launch_routed_fold(g.contributions.get() + (row + local) * 10 * H,
+                            d.f(22) + local * 10, n, d.f(20) + local * H, d.flag(), d.stream));
+                    });
+                    layer.shared_project(count, false, no_ffn_observation);
+                    layer.shared_add(count);
+                    combine(d, d.f(0), d.f(20), count, d.f(1));
+                    if (l == 47 && checkpoints)
+                        hip(hipMemcpyAsync(checkpoints->staged_tap.get() + row * W, d.f(1),
+                            static_cast<std::size_t>(count) * W * sizeof(float), hipMemcpyDeviceToDevice, d.stream));
+                    download(d, d.f(1), output.data() + row * W, count);
+                }
+                current = 1 - current;
+            }
+            // ALL full-window pre-head residual rows were finite-checked above,
+            // regardless of the explicit output projection request.
+            auto& d = *devices[1]; hip(hipSetDevice(d.id));
+            const int head_first = mode == Session::OutputMode::all_rows ? 0 : tokens - 1;
+            for (int first = head_first; first < tokens; first += config.max_batch_tokens) {
+                const int count = std::min(config.max_batch_tokens, tokens - first);
+                load(d, p.activations[current].data() + static_cast<std::size_t>(first) * W, count);
+                head_hc->mix(d, d.f(0), epsilon, count, true);
+                head.apply(d, d.f(6), d.logits.get(), count);
+                hip(hipMemcpyAsync(destination.data() + static_cast<std::size_t>(first - head_first) * V,
+                    d.logits.get(), static_cast<std::size_t>(count) * V * sizeof(float), hipMemcpyDeviceToHost, d.stream));
+                d.check("layerwise head completion");
+            }
+            finite(destination.data(), result_elements, "logits nonfinite");
+            call_routes.expert_groups_gt128 += route_statistics.expert_groups_gt128;
+            working_stats.consumed_tokens += static_cast<std::uint64_t>(tokens);
+            working_stats.last_completed_ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - begin).count();
+            if (checkpoints) {
+                host_logits.swap(working_logits);
+                std::swap(checkpoints->tap, checkpoints->staged_tap);
+                checkpoints->tap_rows = tokens; checkpoints->tap_position = static_cast<std::uint64_t>(position);
+                checkpoints->stats.target_forward_rows += static_cast<std::uint64_t>(tokens);
+            }
+            statistics = working_stats; route_statistics = call_routes; attention_statistics = working_attention;
+            probe_tokens = 0; // Optional short-input probes must not expose stale rows.
+            return {host_logits.data(), result_elements};
+        } catch (...) {
+            usable = false;
+            if (cpu_pool) (void)cpu_pool->drain();
+            for (auto& d : devices) d->drain_cleanup();
+            for (auto& l : layers) l->experts.invalidate_cache();
+            throw;
+        }
+    }
+
     void restore_prefix(int retained) {
         if (!usable) throw std::runtime_error("Session invalidated; reset required");
         if (!checkpoints || !checkpoints->state.pending || retained < 0 || retained > checkpoints->state.inputs)
@@ -2120,6 +2445,9 @@ Session::Session(const std::string& path, SessionConfig config) : impl_(std::mak
 Session::~Session() = default;
 std::span<const float> Session::step(std::int32_t token) { return step_batch(std::span(&token, 1)); }
 std::span<const float> Session::step_batch(std::span<const std::int32_t> tokens) { return impl_->step_batch(tokens); }
+std::span<const float> Session::prefill_layerwise(std::span<const std::int32_t> tokens, OutputMode mode) {
+    return impl_->prefill_layerwise(tokens, mode);
+}
 std::span<const float> Session::prefill_last(std::span<const std::int32_t> tokens) { return impl_->step_batch(tokens, false, true); }
 std::span<const float> Session::verify_window(std::span<const std::int32_t> tokens) { return impl_->step_batch(tokens, true); }
 void Session::restore_prefix(int retained_inputs) { impl_->restore_prefix(retained_inputs); }

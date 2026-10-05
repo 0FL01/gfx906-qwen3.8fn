@@ -115,6 +115,7 @@ inline constexpr int silu_pairs_width = 640, silu_pairs_max_columns = 30;
 
 // Indexed MoE copies have a separate BYTE-ONLY contract from the numeric ops.
 inline constexpr int moe_copy_max_input_tokens = 1024;
+inline constexpr int moe_layerwise_max_input_tokens = 16384;
 inline constexpr int moe_copy_width = 2560;
 inline constexpr int moe_copy_ranks = 10;
 inline constexpr int moe_copy_q8_blocks = 80;
@@ -181,6 +182,18 @@ template<class T> struct MoeCopyView {
 // contributions[(token*10+rank)] for routes[route_offset+c], c<count. No fold,
 // scaling, FP arithmetic or float interpretation; other rows untouched.
 [[nodiscard]] hipError_t launch_moe_scatter(MoeCopyView<const float> down,
+        int input_tokens, MoeCopyView<const MoeRouteIndex> routes, int metadata_entries,
+        int route_offset, int count, int width, int ranks, MoeCopyView<float> contributions,
+        int column_capacity, int* error, hipStream_t stream) noexcept;
+
+// Separate full-prompt entry points. ONLY input_tokens' host bound differs
+// (1..16384). All whole-buffer/overlap/DTO/sticky/opaque-byte rules above, and
+// count<=128, are unchanged. Old entry points still reject input_tokens>1024.
+[[nodiscard]] hipError_t launch_moe_gather_q8_layerwise(MoeCopyView<const Q8_1> input,
+        int input_tokens, MoeCopyView<const MoeRouteIndex> routes, int metadata_entries,
+        int route_offset, int count, int blocks_per_token, MoeCopyView<Q8_1> gathered,
+        int column_capacity, int* error, hipStream_t stream) noexcept;
+[[nodiscard]] hipError_t launch_moe_scatter_layerwise(MoeCopyView<const float> down,
         int input_tokens, MoeCopyView<const MoeRouteIndex> routes, int metadata_entries,
         int route_offset, int count, int width, int ranks, MoeCopyView<float> contributions,
         int column_capacity, int* error, hipStream_t stream) noexcept;

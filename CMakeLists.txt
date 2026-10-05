@@ -198,6 +198,10 @@ if(CORE_WITH_HIP)
   target_link_libraries(core-moe-route-copy PRIVATE qwen-session)
   target_compile_definitions(core-moe-route-copy PRIVATE CORE_REVISION="${CORE_REVISION}" CORE_DIRTY=$<BOOL:${CORE_DIRTY}>)
   target_compile_options(core-moe-route-copy PRIVATE -Wall -Wextra -Werror -ffp-contract=off)
+  add_executable(core-moe-route-copy-layerwise tests/moe_route_copy_test.hip)
+  target_link_libraries(core-moe-route-copy-layerwise PRIVATE qwen-session)
+  target_compile_definitions(core-moe-route-copy-layerwise PRIVATE CORE_MOE_LAYERWISE_TEST=1 CORE_REVISION="${CORE_REVISION}" CORE_DIRTY=$<BOOL:${CORE_DIRTY}>)
+  target_compile_options(core-moe-route-copy-layerwise PRIVATE -Wall -Wextra -Werror -ffp-contract=off)
 
   add_executable(core-silu-q8 tests/silu_q8_test.hip)
   target_link_libraries(core-silu-q8 PRIVATE qwen-session qwen-linear-gpu)
@@ -230,6 +234,12 @@ if(CORE_WITH_HIP)
   target_link_libraries(core-prefill-attention-test PRIVATE qwen-session)
   target_compile_definitions(core-prefill-attention-test PRIVATE CORE_REVISION="${CORE_REVISION}" CORE_DIRTY=$<BOOL:${CORE_DIRTY}>)
   target_compile_options(core-prefill-attention-test PRIVATE -Wall -Wextra -Wpedantic -Werror -ffp-contract=off)
+
+  # Manual model gate: MODEL [32|128|4096|16384]. No automatic heavy model test.
+  add_executable(core-prefill-layerwise-test src/prefill_layerwise_test.cpp)
+  target_link_libraries(core-prefill-layerwise-test PRIVATE qwen-session)
+  target_compile_definitions(core-prefill-layerwise-test PRIVATE CORE_REVISION="${CORE_REVISION}" CORE_DIRTY=$<BOOL:${CORE_DIRTY}>)
+  target_compile_options(core-prefill-layerwise-test PRIVATE -Wall -Wextra -Wpedantic -Werror -ffp-contract=off)
 
   add_executable(core-prefill-failure-trace src/prefill_failure_trace.cpp)
   target_link_libraries(core-prefill-failure-trace PRIVATE qwen-session)

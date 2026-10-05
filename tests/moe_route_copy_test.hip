@@ -25,7 +25,13 @@ namespace {
 using qwen::MoeCopyView;
 using qwen::MoeRouteIndex;
 using qwen::Q8_1;
-constexpr int tokens = 1024, ranks = 10, blocks = 80, width = 2560;
+#ifndef CORE_MOE_LAYERWISE_TEST
+#define CORE_MOE_LAYERWISE_TEST 0
+#endif
+constexpr bool layerwise = CORE_MOE_LAYERWISE_TEST != 0;
+constexpr int tokens = layerwise ? 16384 : 1024, ranks = 10, blocks = 80, width = 2560;
+constexpr auto gather_call = layerwise ? qwen::launch_moe_gather_q8_layerwise : qwen::launch_moe_gather_q8;
+constexpr auto scatter_call = layerwise ? qwen::launch_moe_scatter_layerwise : qwen::launch_moe_scatter;
 constexpr int columns = 129; // count<=128 plus an untouched neighbor column.
 constexpr int entries = tokens * ranks;
 constexpr std::size_t q8_row_bytes = blocks * sizeof(Q8_1);
@@ -34,10 +40,10 @@ constexpr std::size_t contribution_bytes = std::size_t(entries) * down_row_bytes
 constexpr std::array<int, 14> counts{1,2,3,4,7,8,9,16,31,32,63,64,127,128};
 constexpr std::byte poison{0xa5};
 static_assert(sizeof(float) == 4 && sizeof(int) == 4 && std::endian::native == std::endian::little);
-static_assert(q8_row_bytes == 2880 && down_row_bytes == 10240 && contribution_bytes == 104857600);
+static_assert(q8_row_bytes == 2880 && down_row_bytes == 10240 && contribution_bytes == std::size_t(tokens) * 102400);
 static_assert(counts.front() == 1 && counts.back() == qwen::session_ops_max_tokens);
 static_assert(std::all_of(counts.begin(), counts.end(), [](int n) { return n >= 1 && n <= 128; }));
-static_assert(qwen::moe_copy_max_input_tokens == tokens && qwen::moe_copy_ranks == ranks &&
+static_assert((layerwise ? qwen::moe_layerwise_max_input_tokens : qwen::moe_copy_max_input_tokens) == tokens && qwen::moe_copy_ranks == ranks &&
     qwen::moe_copy_q8_blocks == blocks && qwen::moe_copy_width == width);
 static_assert(sizeof(qwen::RouteAssignment) == 16 && sizeof(MoeRouteIndex) == 8);
 
@@ -143,7 +149,7 @@ std::vector<MoeRouteIndex> make_routes() {
     std::vector<float> weights(entries, 0.125f);
     for (int token = 0; token < tokens; ++token) for (int rank = 0; rank < ranks; ++rank)
         ids[token * ranks + rank] = (token * 37 + rank * 53) % 512;
-    qwen::RouteGroups groups(tokens); groups.prepare(ids, weights, tokens);
+    qwen::RouteGroups groups(tokens, layerwise ? qwen::RouteGroups::Bound::layerwise16384 : qwen::RouteGroups::Bound::chunk1024); groups.prepare(ids, weights, tokens);
     std::vector<MoeRouteIndex> result;
     result.reserve(entries);
     std::array<bool, entries> seen{};
@@ -154,7 +160,7 @@ std::vector<MoeRouteIndex> make_routes() {
         result.push_back({std::int32_t(token), std::int32_t(rank)});
     }
     require(result.size() == entries && std::all_of(seen.begin(), seen.end(), [](bool v) { return v; }),
-            "full 0..1023/token,0..9/rank coverage");
+            "full actual token/rank coverage");
     return result;
 }
 void upload_routes(Buffer& metadata, std::span<const MoeRouteIndex> routes) {
@@ -206,12 +212,12 @@ struct Fixture {
         flags.flag(0);
     }
     hipError_t gather(int offset, int count, int actual_tokens = tokens, int valid_entries = entries) {
-        return qwen::launch_moe_gather_q8(original.view<const Q8_1>(), actual_tokens,
+        return gather_call(original.view<const Q8_1>(), actual_tokens,
             metadata.view<const MoeRouteIndex>(), valid_entries, offset, count, blocks,
             gathered.view<Q8_1>(), columns, flags.as<int>(), stream.value);
     }
     hipError_t scatter(int offset, int count, int actual_tokens = tokens, int valid_entries = entries) {
-        return qwen::launch_moe_scatter(down.view<const float>(), actual_tokens,
+        return scatter_call(down.view<const float>(), actual_tokens,
             metadata.view<const MoeRouteIndex>(), valid_entries, offset, count, width, ranks,
             contributions.view<float>(), columns, flags.as<int>(), stream.value);
     }
@@ -225,7 +231,7 @@ struct Fixture {
     void readonly() { original.verify(); down.verify(); metadata.verify(); flags.verify(); }
     void all() { readonly(); gathered.verify(); contributions.verify(); }
     void valid() {
-        // Full sorted metadata reused for every tile; all 10240 pairs actually
+        // Full sorted metadata reused for every tile; all actual token/rank pairs actually
         // copied, with varying counts/offsets and an explicit partial last tile.
         int offset = 0;
         std::size_t step = 0;
@@ -313,17 +319,17 @@ void Fixture::host_rejections() {
     const ScatterCall s{down.view<const float>(), metadata.view<const MoeRouteIndex>(), contributions.view<float>(),
         tokens, entries, 3, 8, width, ranks, columns, flags.as<int>()};
     auto reject_gather = [&](const GatherCall& a) {
-        require(qwen::launch_moe_gather_q8(a.input, a.actual_tokens, a.routes, a.valid_entries,
+        require(gather_call(a.input, a.actual_tokens, a.routes, a.valid_entries,
             a.offset, a.count, a.row_blocks, a.output, a.capacity, a.error, stream.value) == hipErrorInvalidValue,
             "host gather rejection"); ++tally.host_rejects;
     };
     auto reject_scatter = [&](const ScatterCall& a) {
-        require(qwen::launch_moe_scatter(a.input, a.actual_tokens, a.routes, a.valid_entries,
+        require(scatter_call(a.input, a.actual_tokens, a.routes, a.valid_entries,
             a.offset, a.count, a.row_width, a.top_k, a.output, a.capacity, a.error, stream.value) == hipErrorInvalidValue,
             "host scatter rejection"); ++tally.host_rejects;
     };
     auto both = [&](auto change) { auto a = g; auto b = s; change(a); change(b); reject_gather(a); reject_scatter(b); };
-    for (int v : {0, -1, 1025, std::numeric_limits<int>::max()}) both([&](auto& a) { a.actual_tokens = v; });
+    for (int v : {0, -1, tokens + 1, std::numeric_limits<int>::max()}) both([&](auto& a) { a.actual_tokens = v; });
     for (int v : {0, -1, entries + 1, std::numeric_limits<int>::max()}) both([&](auto& a) { a.valid_entries = v; });
     both([](auto& a) { a.actual_tokens = 7; a.valid_entries = 71; });
     for (int v : {0, -1, 129, std::numeric_limits<int>::max()}) both([&](auto& a) { a.count = v; });
@@ -425,7 +431,7 @@ void run() {
     std::cout << "{\"kind\":\"moe_route_copy_source\",\"protocol\":1,\"revision\":\"" << revision
         << "\",\"dirty\":" << CORE_DIRTY
         << ",\"scope\":\"opaque byte copy only\",\"route_abi_bytes\":8,\"q8_abi_bytes\":36,\"q8_row_bytes\":2880,\"down_row_bytes\":10240"
-           ",\"tokens\":1024,\"ranks\":10,\"column_capacity\":129,\"counts\":[";
+           ",\"tokens\":" << tokens << ",\"layerwise\":" << (layerwise ? "true" : "false") << ",\"ranks\":10,\"column_capacity\":129,\"counts\":[";
     for (std::size_t i = 0; i < counts.size(); ++i) { if (i) std::cout << ','; std::cout << counts[i]; }
     std::cout << "],\"payload_alignments\":[16,4],\"tolerance\":0,\"jsonl_records\":4}\n";
     for (int device = 0; device < 2; ++device) {
