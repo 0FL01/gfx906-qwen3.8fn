@@ -43,6 +43,7 @@ public:
                       bool ignore_eos=false,std::int32_t eos=248046);
     MtpEmission next();
     MtpRunStats stats() const;
+    SessionLayerwiseTransfers layerwise_transfers() const;
     bool requires_begin() const;
 private:
     struct Impl;

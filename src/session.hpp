@@ -47,6 +47,9 @@ struct SessionConfig {
     // value; checkpoint taps separately retain the full logical capacity.
     // Zero preserves serial layerwise scheduling and owns no worker/payload.
     int prefill_pipeline_tokens = 0;
+    // Opt-in stage-local residual backing; requires the bounded pipeline.
+    // One FP32 [stage_tokens][10240] buffer per GPU, no arithmetic change.
+    bool prefill_residual_device = false;
     // One-shot diagnostic failure after a completed stage window. Both -1 off;
     // stage0/1, window0..4095. Reset permits reuse after the injected failure.
     int prefill_pipeline_fail_stage = -1, prefill_pipeline_fail_window = -1;
@@ -142,6 +145,18 @@ struct SessionRouteStats {
     // Cumulative number of call/layer/expert groups with >128 assignments since reset.
     std::uint64_t expert_groups_gt128 = 0;
 };
+
+// Submitted copy extents and explicit checks in layerwise_layers only.
+// Cumulative successfully completed calls since reset; failures/rejections
+// retain publication. Excludes head/PLE-internal/expert copies and barriers.
+// These are API byte extents, NOT measured PCIe traffic or elapsed time.
+struct SessionLayerwiseTransfers {
+    std::uint64_t residual_h2d_bytes = 0, residual_d2h_bytes = 0, residual_d2d_bytes = 0;
+    std::uint64_t ffn_h2d_bytes = 0, ffn_d2h_bytes = 0;
+    std::uint64_t router_d2h_bytes = 0, route_h2d_bytes = 0, loop_barriers = 0;
+    bool operator==(const SessionLayerwiseTransfers&) const = default;
+};
+static_assert(sizeof(SessionLayerwiseTransfers) == 8 * sizeof(std::uint64_t));
 
 // Experimental batch API invocations in successfully completed full calls only,
 // cumulative since reset. Disabled/N1 calls contribute nothing. These are NOT
@@ -310,7 +325,8 @@ struct SessionMemory {
     std::uint64_t host_layerwise_probabilities = 0, host_layerwise_routes = 0;
     std::uint64_t host_layerwise_groups = 0, pinned_layerwise_metadata = 0;
     std::array<std::uint64_t, 2> layerwise_original_q8_bytes{},
-        layerwise_contribution_bytes{}, layerwise_metadata_bytes{};
+        layerwise_contribution_bytes{}, layerwise_metadata_bytes{}, layerwise_residual_bytes{};
+    bool prefill_residual_device = false;
     // Pipeline extras only. Existing layerwise fields count stage0. Thread
     // stacks/runtime/allocator bookkeeping and process RSS are excluded.
     int prefill_pipeline_tokens = 0, prefill_pipeline_workers = 0;
@@ -398,6 +414,7 @@ public:
     void set_attention_batch(bool enabled);
     bool attention_batch() const;
     SessionAttentionStats attention_stats() const;
+    SessionLayerwiseTransfers layerwise_transfers() const;
     // Exclusive API. Validates before any drain/mutation; enabling requires
     // constructor cpu_workers>0. Changing a bounded policy allocates nothing.
     void set_hybrid_policy(SessionHybridPolicy);

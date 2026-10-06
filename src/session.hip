@@ -85,6 +85,8 @@ SessionConfig checked_config(SessionConfig config) {
           (config.layerwise_prefill_capacity + config.prefill_pipeline_tokens - 1) /
               config.prefill_pipeline_tokens > PrefillPipeline::max_windows)))
         throw std::invalid_argument("Session prefill pipeline resources/window");
+    if (config.prefill_residual_device && !config.prefill_pipeline_tokens)
+        throw std::invalid_argument("Session device residual requires bounded pipeline");
     const bool fault = config.prefill_pipeline_fail_stage != -1 || config.prefill_pipeline_fail_window != -1;
     if (fault && (!config.prefill_pipeline_tokens ||
         config.prefill_pipeline_fail_stage < 0 || config.prefill_pipeline_fail_stage > 1 ||
@@ -445,12 +447,13 @@ struct Device {
 // copies now have a separate checked <=16384 entry point. No GEMM/packer/math
 // replacement, scheduler import, PP cache admission, or shortened QSA horizon.
 struct LayerwiseDevice {
-    Buffer original, contributions, metadata;
-    explicit LayerwiseDevice(Device& d, int capacity) {
+    Buffer original, contributions, metadata, residual;
+    explicit LayerwiseDevice(Device& d, int capacity, bool resident) {
         hip(hipSetDevice(d.id));
         original = Buffer(checked_size(checked_size(capacity, H / 32), sizeof(Q8_1)));
         contributions = Buffer(checked_size(checked_size(capacity, 10 * H), sizeof(float)));
         metadata = Buffer(checked_size(checked_size(capacity, 10), sizeof(MoeRouteIndex)));
+        if (resident) residual = Buffer(checked_size(checked_size(capacity, W), sizeof(float)));
     }
     static int offset(const RouteGroups& groups, std::span<const RouteAssignment> group,
                       int begin, int count, int tokens) {
@@ -529,10 +532,10 @@ struct LayerwisePrefill : LayerwiseHost {
         stage1_transfer_bytes = checked_size(checked_size(frame, W), sizeof(float));
         hip(hipHostMalloc(&stage1_transfer, stage1_transfer_bytes, hipHostMallocDefault));
     }
-    explicit LayerwisePrefill(std::array<Device*, 2> devices, int capacity)
+    explicit LayerwisePrefill(std::array<Device*, 2> devices, int capacity, bool resident)
         : LayerwiseHost(capacity), stage_capacity(capacity), owners(devices) {
         try {
-            for (int id = 0; id < 2; ++id) gpu[id] = std::make_unique<LayerwiseDevice>(*owners[id], capacity);
+            for (int id = 0; id < 2; ++id) gpu[id] = std::make_unique<LayerwiseDevice>(*owners[id], capacity, resident);
         } catch (...) { drain(); throw; }
     }
     ~LayerwisePrefill() {
@@ -1643,6 +1646,7 @@ struct Session::Impl {
         int position;
         std::array<SessionStats, 2> stats{};
         std::array<SessionAttentionStats, 2> attention{};
+        std::array<SessionLayerwiseTransfers, 2> transfers{};
         LayerwiseRouteCounts* routes;
     };
     Model model;
@@ -1650,6 +1654,7 @@ struct Session::Impl {
     SessionStats statistics;
     SessionRouteStats route_statistics;
     SessionAttentionStats attention_statistics;
+    SessionLayerwiseTransfers transfer_statistics;
     bool batch_attention = false;
     SessionHybridPolicy hybrid_policy;
     // Preserve the original 20-counter member footprint/alignment; the new
@@ -1793,7 +1798,8 @@ struct Session::Impl {
         if (config.layerwise_prefill_capacity)
             layerwise = std::make_unique<LayerwisePrefill>(
                 std::array<Device*, 2>{devices[0].get(), devices[1].get()},
-                config.prefill_pipeline_tokens ? config.prefill_pipeline_tokens : config.layerwise_prefill_capacity);
+                config.prefill_pipeline_tokens ? config.prefill_pipeline_tokens : config.layerwise_prefill_capacity,
+                config.prefill_residual_device);
         if (config.prefill_pipeline_tokens)
             layerwise->enable_pipeline(layerwise->stage_capacity, config.max_batch_tokens);
         reset();
@@ -1853,7 +1859,7 @@ struct Session::Impl {
         for (auto& l : layers) { l->experts.finish_admissions(false); l->reset(); }
         hip(hipSetDevice(0)); hip(hipMemsetAsync(ple_history.get<void>(), 0, ple_history.bytes(), devices[0]->stream));
         for (auto& d : devices) { hip(hipSetDevice(d->id)); d->clear(); hip(hipStreamSynchronize(d->stream)); }
-        ple_hash.reset(); statistics = {}; route_statistics = {}; attention_statistics = {}; publish_hybrid({});
+        ple_hash.reset(); statistics = {}; route_statistics = {}; attention_statistics = {}; transfer_statistics = {}; publish_hybrid({});
         if (checkpoints) checkpoints->clear();
         probe_tokens = 0; usable = true;
     }
@@ -1866,6 +1872,7 @@ struct Session::Impl {
         SessionMemory result;
         result.capacity = config.capacity; result.expert_slots = config.expert_slots;
         result.speculative_checkpoints = config.speculative_checkpoints;
+        result.prefill_residual_device = config.prefill_residual_device;
         result.host_session_impl_bytes = sizeof(Impl); result.host_session_config_bytes = sizeof(SessionConfig);
         if (checkpoints) {
             result.host_speculative_owner_bytes = sizeof(TargetCheckpoints);
@@ -1952,7 +1959,8 @@ struct Session::Impl {
                 result.layerwise_original_q8_bytes[id] = p.original.bytes();
                 result.layerwise_contribution_bytes[id] = p.contributions.bytes();
                 result.layerwise_metadata_bytes[id] = p.metadata.bytes();
-                for (const auto* b : {&p.original, &p.contributions, &p.metadata}) add(out.workspace, *b);
+                result.layerwise_residual_bytes[id] = p.residual.bytes();
+                for (const auto* b : {&p.original, &p.contributions, &p.metadata, &p.residual}) add(out.workspace, *b);
             }
             for (const auto* b : {&d.q8, &d.error, &d.logits, &d.gathered_k, &d.gathered_v,
                     &d.partial_o, &d.partial_ms, &d.histogram, &d.select_state, &d.candidates,
@@ -2298,25 +2306,65 @@ struct Session::Impl {
     int layerwise_layers(std::span<const std::int32_t> window, int position,
                      int layer_first, int layer_end, int tap_offset,
                      LayerwiseHost& p, float* transfer, SessionStats& working_stats,
-                     SessionAttentionStats& working_attention, LayerwiseRouteCounts& route_counts) {
+                     SessionAttentionStats& working_attention, LayerwiseRouteCounts& route_counts,
+                     SessionLayerwiseTransfers& transfers) {
         const int tokens = static_cast<int>(window.size());
         auto finite = [](const float* x, std::size_t count, const char* label) {
             for (std::size_t i = 0; i < count; ++i)
                 if (!std::isfinite(x[i])) throw std::runtime_error(label);
         };
-        auto load = [&](Device& d, const float* cpu, int count) {
-            std::copy_n(cpu, static_cast<std::size_t>(count) * W, transfer);
-            hip(hipMemcpyAsync(d.f(0), transfer, static_cast<std::size_t>(count) * W * sizeof(float), hipMemcpyHostToDevice, d.stream));
+        auto load = [&](Device& d, const float* cpu, int count, const float* device_input = nullptr) {
+            const auto bytes = static_cast<std::size_t>(count) * W * sizeof(float);
+            if (device_input) {
+                hip(hipMemcpyAsync(d.f(0), device_input, bytes, hipMemcpyDeviceToDevice, d.stream));
+                transfers.residual_d2d_bytes += bytes;
+            } else {
+                std::copy_n(cpu, static_cast<std::size_t>(count) * W, transfer);
+                hip(hipMemcpyAsync(d.f(0), transfer, bytes, hipMemcpyHostToDevice, d.stream));
+                transfers.residual_h2d_bytes += bytes;
+            }
             // PLE and the next CPU staging refill both use transfer. Protect
             // its pinned H2D lifetime even when PLE starts this frame.
-            d.check("layerwise residual upload");
+            ++transfers.loop_barriers; d.check("layerwise residual upload");
         };
-        auto download = [&](Device& d, const float* gpu, float* cpu, int count) {
-            hip(hipMemcpyAsync(transfer, gpu, static_cast<std::size_t>(count) * W * sizeof(float), hipMemcpyDeviceToHost, d.stream));
-            d.check("layerwise residual completion");
+        auto download = [&](Device& d, const float* gpu, float* cpu, int count, float* device_output = nullptr) {
+            const auto bytes = static_cast<std::size_t>(count) * W * sizeof(float);
+            if (device_output) {
+                // Both attention and FFN residual producers are hc_combine:
+                // it validates every operand and arithmetic result with the
+                // same sticky flag. Keep the completed error check here.
+                hip(hipMemcpyAsync(device_output, gpu, bytes, hipMemcpyDeviceToDevice, d.stream));
+                transfers.residual_d2d_bytes += bytes;
+                ++transfers.loop_barriers; d.check("layerwise device residual completion");
+                return;
+            }
+            hip(hipMemcpyAsync(transfer, gpu, bytes, hipMemcpyDeviceToHost, d.stream));
+            transfers.residual_d2h_bytes += bytes;
+            ++transfers.loop_barriers; d.check("layerwise residual completion");
             finite(transfer, static_cast<std::size_t>(count) * W, "layerwise residual nonfinite");
             std::copy_n(transfer, static_cast<std::size_t>(count) * W, cpu);
         };
+        float* resident = nullptr;
+        if (config.prefill_residual_device) {
+            if (layer_first < 0 || layer_end > 48 || layer_first >= layer_end ||
+                layer_first / 24 != (layer_end - 1) / 24 || tokens > layerwise->stage_capacity)
+                throw std::runtime_error("device residual stage ownership/extent");
+            auto& d = *devices[layer_first / 24];
+            hip(hipSetDevice(d.id)); d.clear();
+            auto& buffer = layerwise->gpu[d.id]->residual;
+            if (buffer.bytes() < static_cast<std::size_t>(tokens) * W * sizeof(float))
+                throw std::runtime_error("device residual capacity");
+            resident = buffer.get();
+            for (int first = 0; first < tokens; first += config.max_batch_tokens) {
+                const int count = std::min(config.max_batch_tokens, tokens - first);
+                const auto offset = static_cast<std::size_t>(first) * W;
+                const auto bytes = static_cast<std::size_t>(count) * W * sizeof(float);
+                std::copy_n(p.activations[0].data() + offset, static_cast<std::size_t>(count) * W, transfer);
+                hip(hipMemcpyAsync(resident + offset, transfer, bytes, hipMemcpyHostToDevice, d.stream));
+                transfers.residual_h2d_bytes += bytes;
+                ++transfers.loop_barriers; d.check("layerwise device stage entry");
+            }
+        }
         auto no_attention_observation = [](const char*, const float*, int, int = -1) {};
         auto no_ffn_observation = [](const std::string&, const float*, int, int = -1, int = 0) {};
         int current = 0;
@@ -2332,7 +2380,7 @@ struct Session::Impl {
             for (int first = 0; first < tokens; first += config.max_batch_tokens) {
                 const int count = std::min(config.max_batch_tokens, tokens - first);
                 const auto row = static_cast<std::size_t>(first);
-                load(d, input.data() + row * W, count);
+                load(d, input.data() + row * W, count, resident ? resident + row * W : nullptr);
                 float* residual = d.f(0); float* alternate = d.f(1);
                 if (l == 1) ple(d, window.subspan(row, count), residual, alternate, false);
                 layer.attention_hc.mix(d, residual, epsilon, count);
@@ -2348,14 +2396,16 @@ struct Session::Impl {
                 });
                 hip(hipMemcpyAsync(p.probabilities.data() + row * 512, d.f(10),
                     static_cast<std::size_t>(count) * 512 * sizeof(float), hipMemcpyDeviceToHost, d.stream));
+                transfers.router_d2h_bytes += static_cast<std::size_t>(count) * 512 * sizeof(float);
                 hip(hipMemcpyAsync(g.original.get<Q8_1>() + row * (H / 32), d.q8.get<Q8_1>(),
                     static_cast<std::size_t>(count) * (H / 32) * sizeof(Q8_1), hipMemcpyDeviceToDevice, d.stream));
-                download(d, residual, input.data() + row * W, count);
+                download(d, residual, input.data() + row * W, count, resident ? resident + row * W : nullptr);
                 // Retain exact f6/f8 bytes; recomputing HC is unnecessary and
                 // could conflate its arithmetic with expert traffic savings.
                 hip(hipMemcpyAsync(transfer, d.f(6), static_cast<std::size_t>(count) * H * sizeof(float), hipMemcpyDeviceToHost, d.stream));
                 hip(hipMemcpyAsync(transfer + count * H, d.f(8), static_cast<std::size_t>(count) * 4 * sizeof(float), hipMemcpyDeviceToHost, d.stream));
-                d.check("layerwise FFN HC/router completion");
+                transfers.ffn_d2h_bytes += static_cast<std::size_t>(count) * (H + 4) * sizeof(float);
+                ++transfers.loop_barriers; d.check("layerwise FFN HC/router completion");
                 finite(transfer, static_cast<std::size_t>(count) * (H + 4), "layerwise FFN HC nonfinite");
                 finite(p.probabilities.data() + row * 512, static_cast<std::size_t>(count) * 512, "layerwise router nonfinite");
                 std::copy_n(transfer, static_cast<std::size_t>(count) * H, p.mixed.data() + row * H);
@@ -2366,23 +2416,26 @@ struct Session::Impl {
             for (int expert = 0; expert < 512; ++expert)
                 route_counts[l][expert] += static_cast<std::uint32_t>(p.groups.counts()[expert]);
             p.upload_routes(d, g, tokens);
+            transfers.route_h2d_bytes += static_cast<std::size_t>(tokens) * 10 * sizeof(MoeRouteIndex);
             // ONE physical acquisition for each active expert/layer, all
             // actual assignments (including >128) use qualified selective tiles<=128.
             // Original all-N Q8 stays immutable until every scatter ends.
             layer.experts.run_chunk(d, g.original.get<Q8_1>(), working_stats, &g, &p.groups, tokens);
-            d.check("layerwise global expert completion");
+            ++transfers.loop_barriers; d.check("layerwise global expert completion");
             // Phase 2: preserve original-rank separately rounded MUL+ADD,
             // shared mix, then the original widened HC FFN combine.
             for (int first = 0; first < tokens; first += config.max_batch_tokens) {
                 const int count = std::min(config.max_batch_tokens, tokens - first);
                 const auto row = static_cast<std::size_t>(first);
-                load(d, input.data() + row * W, count);
+                load(d, input.data() + row * W, count, resident ? resident + row * W : nullptr);
                 std::copy_n(p.mixed.data() + row * H, static_cast<std::size_t>(count) * H, transfer);
                 std::copy_n(p.injection.data() + row * 4, static_cast<std::size_t>(count) * 4, transfer + count * H);
                 hip(hipMemcpyAsync(d.f(6), transfer, static_cast<std::size_t>(count) * H * sizeof(float), hipMemcpyHostToDevice, d.stream));
                 hip(hipMemcpyAsync(d.f(8), transfer + count * H, static_cast<std::size_t>(count) * 4 * sizeof(float), hipMemcpyHostToDevice, d.stream));
                 hip(hipMemcpyAsync(d.f(22), p.weights.data() + row * 10,
                     static_cast<std::size_t>(count) * 10 * sizeof(float), hipMemcpyHostToDevice, d.stream));
+                transfers.ffn_h2d_bytes += static_cast<std::size_t>(count) * (H + 4) * sizeof(float);
+                transfers.route_h2d_bytes += static_cast<std::size_t>(count) * 10 * sizeof(float);
                 tiles(count, [&](int local, int n) {
                     hip(launch_routed_fold(g.contributions.get() + (row + local) * 10 * H,
                         d.f(22) + local * 10, n, d.f(20) + local * H, d.flag(), d.stream));
@@ -2393,9 +2446,17 @@ struct Session::Impl {
                 if (l == 47 && checkpoints)
                     hip(hipMemcpyAsync(checkpoints->staged_tap.get() + (static_cast<std::size_t>(tap_offset) + row) * W, d.f(1),
                         static_cast<std::size_t>(count) * W * sizeof(float), hipMemcpyDeviceToDevice, d.stream));
-                download(d, d.f(1), output.data() + row * W, count);
+                download(d, d.f(1), output.data() + row * W, count, resident ? resident + row * W : nullptr);
             }
             current = 1 - current;
+        }
+        if (resident) {
+            auto& d = *devices[layer_first / 24];
+            for (int first = 0; first < tokens; first += config.max_batch_tokens) {
+                const int count = std::min(config.max_batch_tokens, tokens - first);
+                const auto offset = static_cast<std::size_t>(first) * W;
+                download(d, resident + offset, p.activations[current].data() + offset, count);
+            }
         }
         return current;
     }
@@ -2456,7 +2517,7 @@ struct Session::Impl {
             auto& p = *layerwise;
             layerwise_embed(window, p);
             const int current = layerwise_layers(window, task.position + first, 0, 24, first,
-                p, handoff, task.stats[0], task.attention[0], *task.routes);
+                p, handoff, task.stats[0], task.attention[0], *task.routes, task.transfers[0]);
             pipeline_fault(0, index);
             p.activations[current].swap(p.ring[slot]);
         } catch (...) {
@@ -2488,6 +2549,8 @@ struct Session::Impl {
         room(route_statistics.expert_groups_gt128, assignments / 129);
         for (auto word : std::bit_cast<std::array<std::uint64_t, 6>>(attention_statistics)) room(word, assignments);
         if (checkpoints) room(checkpoints->stats.target_forward_rows, window.size());
+        const auto transfer_bound = static_cast<std::uint64_t>(window.size()) * 48 * 4 * W * sizeof(float);
+        for (auto word : std::bit_cast<std::array<std::uint64_t, 8>>(transfer_statistics)) room(word, transfer_bound);
         const int tokens = static_cast<int>(window.size());
         const int position = static_cast<int>(statistics.consumed_tokens);
         const int result_rows = mode == Session::OutputMode::all_rows ? tokens : 1;
@@ -2495,6 +2558,7 @@ struct Session::Impl {
         auto& p = *layerwise;
         SessionStats working_stats = statistics;
         SessionAttentionStats working_attention = attention_statistics;
+        SessionLayerwiseTransfers working_transfers = transfer_statistics;
         SessionRouteStats call_routes{};
         LayerwiseRouteCounts route_counts{};
         const auto begin = std::chrono::steady_clock::now();
@@ -2515,7 +2579,7 @@ struct Session::Impl {
                     if (!std::isfinite(x[i])) throw std::runtime_error(label);
             };
             if (prefill_pipeline) {
-                PipelineCall task{window, position, {}, {}, &route_counts};
+                PipelineCall task{window, position, {}, {}, {}, &route_counts};
                 pipeline_call = &task;
                 // Ensure task remains alive until even a failed callback has
                 // drained. This scope owns the borrowed task, not GPU payload.
@@ -2532,7 +2596,7 @@ struct Session::Impl {
                         // transfers vector ownership, never a live DMA address.
                         prefill_pipeline->release(index);
                         const int current = layerwise_layers(window.subspan(first, count), position + first,
-                            24, 48, first, h, p.stage1_transfer, task.stats[1], task.attention[1], route_counts);
+                            24, 48, first, h, p.stage1_transfer, task.stats[1], task.attention[1], route_counts, task.transfers[1]);
                         pipeline_fault(1, index);
                         const bool all = mode == Session::OutputMode::all_rows;
                         if (all || first + count == tokens) {
@@ -2560,11 +2624,15 @@ struct Session::Impl {
                     for (int i = 0; i < 5; ++i) sum[i] += added[i];
                     sum[5] = std::max(sum[5], added[5]);
                     working_attention = std::bit_cast<SessionAttentionStats>(sum);
+                    auto copies = std::bit_cast<std::array<std::uint64_t, 8>>(working_transfers);
+                    const auto extra = std::bit_cast<std::array<std::uint64_t, 8>>(task.transfers[stage]);
+                    for (int i = 0; i < 8; ++i) copies[i] += extra[i];
+                    working_transfers = std::bit_cast<SessionLayerwiseTransfers>(copies);
                 }
             } else {
                 layerwise_embed(window, p);
                 const int current = layerwise_layers(window, position, 0, 48, 0,
-                    p, handoff, working_stats, working_attention, route_counts);
+                    p, handoff, working_stats, working_attention, route_counts, working_transfers);
                 const int head_first = mode == Session::OutputMode::all_rows ? 0 : tokens - 1;
                 for (int first = head_first; first < tokens; first += config.max_batch_tokens) {
                     const int count = std::min(config.max_batch_tokens, tokens - first);
@@ -2588,6 +2656,7 @@ struct Session::Impl {
                 checkpoints->stats.target_forward_rows += static_cast<std::uint64_t>(tokens);
             }
             statistics = working_stats; route_statistics = call_routes; attention_statistics = working_attention;
+            transfer_statistics = working_transfers;
             probe_tokens = 0; // Optional short-input probes must not expose stale rows.
             return {host_logits.data(), result_elements};
         } catch (...) {
@@ -2688,6 +2757,7 @@ SessionRouteStats Session::route_stats() const { return impl_->route_statistics;
 void Session::set_attention_batch(bool enabled) { impl_->set_attention_batch(enabled); }
 bool Session::attention_batch() const { return impl_->batch_attention; }
 SessionAttentionStats Session::attention_stats() const { return impl_->attention_statistics; }
+SessionLayerwiseTransfers Session::layerwise_transfers() const { return impl_->transfer_statistics; }
 void Session::set_hybrid_policy(SessionHybridPolicy policy) { impl_->set_hybrid_policy(policy); }
 SessionHybridPolicy Session::hybrid_policy() const { return impl_->hybrid_policy; }
 SessionHybridStats Session::hybrid_stats() const { return impl_->hybrid_stats(); }

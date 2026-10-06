@@ -25,7 +25,7 @@ void json_string(std::string_view s) {
     std::cout<<'"';
 }
 void usage(){std::cout<<"core-mtp-run TARGET SIDECAR --sample --seed UINT64 --generate N "
-    "[--capacity N --slots N --prefill-chunk N --layerwise-prefill N --prefill-pipeline N --attention-query-tile N --ignore-eos "
+    "[--capacity N --slots N --prefill-chunk N --layerwise-prefill N --prefill-pipeline N --prefill-residual-device --attention-query-tile N --ignore-eos "
     "--temperature T --top-p P --top-k K] token-id...\n"
     "Opt-in trained MTP2 token-ID runner; no tokenizer, HTTP or performance qualification.\n";}
 }
@@ -36,7 +36,7 @@ int main(int argc,char** argv) {
         const std::string sidecar=argv[2];
         if(sidecar.empty())throw std::invalid_argument("sidecar required");
         std::vector<const char*> args{argv[0],argv[1]};
-        int layerwise=0,pipeline=0;bool seen_layerwise=false,seen_pipeline=false;
+        int layerwise=0,pipeline=0;bool seen_layerwise=false,seen_pipeline=false,resident=false;
         for(int i=3;i<argc;++i) {
             if(std::string_view(argv[i])=="--layerwise-prefill") {
                 if(seen_layerwise || ++i==argc)throw std::invalid_argument("one layerwise capacity required");
@@ -50,10 +50,14 @@ int main(int argc,char** argv) {
                 const auto parsed=std::from_chars(value.data(),value.data()+value.size(),pipeline);
                 if(parsed.ec!=std::errc{} || parsed.ptr!=value.data()+value.size() || pipeline<0 || pipeline>4096)
                     throw std::invalid_argument("pipeline subwindow must be 0..4096");
+            } else if(std::string_view(argv[i])=="--prefill-residual-device") {
+                if(resident)throw std::invalid_argument("duplicate device residual option");
+                resident=true;
             } else args.push_back(argv[i]);
         }
         auto o=qwen::session_cli::parse(int(args.size()),args.data());
         o.config.layerwise_prefill_capacity=layerwise;o.config.prefill_pipeline_tokens=pipeline;
+        o.config.prefill_residual_device=resident;
         if(o.help){usage();return 0;}
         if(!o.sample || o.generate<1 || o.config.cpu_workers || o.hybrid_policy.mode!=qwen::SessionHybridMode::disabled ||
            !o.config.trace_directory.empty() || !o.logits_path.empty())
@@ -65,6 +69,7 @@ int main(int argc,char** argv) {
             <<",\"prefill_chunk\":"<<o.config.max_batch_tokens<<",\"attention_query_tile\":"<<o.config.attention_query_tile
             <<",\"layerwise_prefill_capacity\":"<<o.config.layerwise_prefill_capacity
             <<",\"prefill_pipeline_tokens\":"<<o.config.prefill_pipeline_tokens
+            <<",\"prefill_residual_device\":"<<(resident?"true":"false")
             <<",\"seed\":"<<o.sampling.seed<<",\"correction_seed\":"<<(o.sampling.seed^0x9e3779b97f4a7c15ULL)
             <<",\"temperature\":"<<o.sampling.temperature<<",\"top_p\":"<<o.sampling.top_p<<",\"top_k\":"<<o.sampling.top_k
             <<",\"requested_outputs\":"<<o.generate<<",\"ignore_eos\":"<<(o.ignore_eos?"true":"false")
@@ -87,6 +92,7 @@ int main(int argc,char** argv) {
         }
         const auto request_ms=elapsed(request_start);const auto s=runner.stats();
         if(s.outputs!=outputs || s.consumed!=o.tokens.size()+outputs-1)throw std::runtime_error("final pending/output contract");
+        const auto copies=runner.layerwise_transfers();
         const char* stop=emission.reason==qwen::SpeculativeStopReason::eos?"eos":"output_budget";
         std::cout<<"{\"kind\":\"mtp_request_complete\",\"actual_outputs\":"<<outputs<<",\"consumed\":"<<s.consumed
             <<",\"pending\":"<<pending<<",\"stop\":\""<<stop<<"\",\"windows\":"<<s.windows
@@ -96,6 +102,14 @@ int main(int argc,char** argv) {
             <<",\"decode_ms\":"<<s.decode_ms<<",\"draft_ms\":"<<s.draft_ms<<",\"verify_ms\":"<<s.verify_ms
             <<",\"rebuild_ms\":"<<s.rebuild_ms<<",\"PP\":"<<(s.prefill_ms>0?1000*s.prompt_tokens/s.prefill_ms:0)
             <<",\"TG\":"<<(s.decode_ms>0?1000*(outputs-1)/s.decode_ms:0)
+            <<",\"layerwise_residual_h2d_bytes\":"<<copies.residual_h2d_bytes
+            <<",\"layerwise_residual_d2h_bytes\":"<<copies.residual_d2h_bytes
+            <<",\"layerwise_residual_d2d_bytes\":"<<copies.residual_d2d_bytes
+            <<",\"layerwise_ffn_h2d_bytes\":"<<copies.ffn_h2d_bytes
+            <<",\"layerwise_ffn_d2h_bytes\":"<<copies.ffn_d2h_bytes
+            <<",\"layerwise_router_d2h_bytes\":"<<copies.router_d2h_bytes
+            <<",\"layerwise_route_h2d_bytes\":"<<copies.route_h2d_bytes
+            <<",\"layerwise_loop_barriers\":"<<copies.loop_barriers
             <<",\"timing_scope\":\"completed_host_wall; PP includes target and teacher warmup; load separate; request includes output IO\""
             <<",\"performance_qualified\":false,\"passed\":true}\n";
         if(!std::cout)throw std::runtime_error("completion write failed");

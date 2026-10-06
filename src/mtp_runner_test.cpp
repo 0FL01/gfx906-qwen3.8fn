@@ -17,6 +17,8 @@ std::vector<std::int32_t> finish(qwen::MtpRunner& r,qwen::MtpEmission e){
 int main(int argc,char** argv){
  try {
     static_assert(std::endian::native==std::endian::little);
+    bool resident=false;
+    if(argc>3 && std::string_view(argv[argc-1])=="--resident"){resident=true;--argc;}
     if(argc==4 && std::string_view(argv[3])=="--pipeline-16k-carry") {
         constexpr int prompt_tokens=16387;
         std::vector<std::int32_t> prompt(prompt_tokens);prompt[0]=248044;
@@ -25,7 +27,7 @@ int main(int argc,char** argv){
         for(int cap:{4096,16384}) {
             qwen::SessionConfig c;c.capacity=17472;c.expert_slots=112;
             c.max_batch_tokens=1024;c.attention_query_tile=8;
-            c.layerwise_prefill_capacity=cap;c.prefill_pipeline_tokens=2048;
+            c.layerwise_prefill_capacity=cap;c.prefill_pipeline_tokens=2048;c.prefill_residual_device=resident;
             qwen::MtpRunner r(argv[1],argv[2],c,qwen::SamplingConfig(12345));
             const auto out=finish(r,r.begin(prompt,32,true));const auto stats=r.stats();
             need(out.size()==32 && stats.consumed==prompt_tokens+31,"16K carry output/prefix");
@@ -47,7 +49,7 @@ int main(int argc,char** argv){
             const int cap=variant ? 1025 : 0;
             qwen::SessionConfig c;c.capacity=2112;c.expert_slots=112;
             c.max_batch_tokens=1024;c.attention_query_tile=8;c.layerwise_prefill_capacity=cap;
-            c.prefill_pipeline_tokens=variant==2 ? 512 : 0;
+            c.prefill_pipeline_tokens=variant==2 ? 512 : 0;c.prefill_residual_device=resident && variant==2;
             qwen::MtpRunner r(argv[1],argv[2],c,qwen::SamplingConfig(12345));
             const auto out=finish(r,r.begin(prompt,32,true));const auto s=r.stats();
             need(out.size()==32 && s.consumed==2082,"large carry output/prefix");
@@ -70,6 +72,7 @@ int main(int argc,char** argv){
         c.layerwise_prefill_capacity=16384;c.prefill_pipeline_tokens=2048;
         c.max_batch_tokens=1024;c.attention_query_tile=8;
     }
+    c.prefill_residual_device=resident;
     qwen::MtpRunner r(argv[1],argv[2],c,qwen::SamplingConfig(12345));
     const std::array<std::int32_t,8> prompt{248044,100,101,102,103,104,105,106};
     need(r.requires_begin(),"new state");reject([&]{(void)r.next();});

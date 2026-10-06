@@ -3330,3 +3330,55 @@ before another speculative optimization. Read-only source clone is pinned at
 6f32ec070f23ced9f50e704d854d775da52591ab. Its published MI50 benchmark uses
 Coder IQ1_M, fully VRAM-resident experts, MTP4 plus suffix drafting, greedy256,
 int8 hybrid KV; direct comparison with our Q4_0/MTP2/sample512 is invalid.
+
+### 2026-10-06 bounded GPU-resident residual qualification (journal 109)
+Added opt-in SessionConfig.prefill_residual_device / --prefill-residual-device;
+it requires the existing bounded pipeline and remains OFF by default.
+A stage keeps one private FP32 residual backing and reuses the existing separate
+frame scratch. HC, GDN, QSA, experts, CPU routing, FFN staging, reduction order,
+finite-error checks, and whole-call publication remain unchanged.
+The existing HC combine validates every operand/result with the sticky flag;
+resident copies retain the completed error checks. Stage exit still validates
+the downloaded residual. No new kernel or precision/weight conversion.
+
+Native source f4d5e6166e8afb841422cdc7eaf58dc273bafb25 dirty:
+- serial32 / resident32-stage8: 125,642,240 comparisons each, exact
+- resident256-stage129: 862,512,640 comparisons, exact
+- resident4096-stage2048: 13,494,576,640 comparisons, exact
+- stage0 failure with taps and stage1 failure without taps preserve publication,
+  including new diagnostics; reset permits correct reuse
+- MTP API32/reset/custom-stop/capacity48 and 2051-token carry match prior IDs/RNG
+- full strict build and all 41 CTests pass (1157.78 seconds)
+- three production CLI preflight rejections pass without model files
+- same target configuration at capacity17408/stage2048 proves exactly
+  83,886,080 additional owned/workspace bytes and one buffer per GPU
+
+SessionLayerwiseTransfers reports actual submitted residual, FFN, router and
+routing-metadata extents and explicit loop-check counts for committed calls.
+Failure/rejection retains publication; reset clears it. Head, PLE-internal and
+expert transfers/checks are excluded. These are not hardware PCIe counters or
+elapsed wait times. Their closed-form extents are asserted in native fixtures.
+
+Short native PID1660234 completed0. Long PID1664601 finished all native phases
+successfully; its final parser expected an obsolete CTest summary spelling and
+exited1 after the native build exited0. Recovery verified all 41 individual
+Passed rows and the current summary, retained the original failure receipt,
+and did not rerun or alter test results. Finalizer completed0; journal109 and
+actual logs/manifests were validated on the controller with the old108 byte
+prefix intact. Runtime SHA256:
+dc980a175142abdc4725bc077e5de02d5e2ead8e6746aa3e4d69174644d63508.
+Protected historical baseline remains unchanged.
+
+Reproduce the large native gate:
+core-prefill-layerwise-test MODEL 4096 2048 8 --resident
+Memory delta: core-prefill-layerwise-test MODEL --resident-memory
+MTP path: core-mtp-run TARGET SIDECAR --sample --seed12345 --generate512
+--capacity17408 --slots112 --prefill-chunk1024 --layerwise-prefill16384
+--prefill-pipeline2048 --prefill-residual-device --attention-query-tile8
+--ignore-eos --temperature1 --top-p0.95 --top-k20 TOKEN_IDS
+(Separate option names and values when invoking the CLI.)
+
+This is a bounded correctness/memory slice, not a speed promotion. Full16K
+logit/tap qualification, independent HF, occupied128K and natural EOS remain
+outside this result. Next is same-binary A/B/A4K/16K+512, changing only the
+residual flag; retain it only with measured full-request benefit.

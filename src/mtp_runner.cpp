@@ -24,6 +24,7 @@ SessionConfig checked(SessionConfig c) {
        (c.layerwise_prefill_capacity>4096 && !c.prefill_pipeline_tokens) ||
        (c.prefill_pipeline_tokens && (c.layerwise_prefill_capacity+c.prefill_pipeline_tokens-1)/
           c.prefill_pipeline_tokens>PrefillPipeline::max_windows) ||
+       (c.prefill_residual_device && !c.prefill_pipeline_tokens) ||
        c.prefill_pipeline_fail_stage!=-1 || c.prefill_pipeline_fail_window!=-1)
         throw std::invalid_argument("MTP pipeline requires layerwise resources and no diagnostic fault");
     c.speculative_checkpoints=true;c.max_batch_tokens=std::max(3,c.max_batch_tokens);
@@ -167,5 +168,6 @@ MtpRunStats MtpRunner::stats()const {
     auto out=impl_->counters;out.proposal_draws=impl_->proposal.random_draws();
     out.decision_draws=impl_->decision.random_draws();return out;
 }
+SessionLayerwiseTransfers MtpRunner::layerwise_transfers()const{return impl_->target.layerwise_transfers();}
 bool MtpRunner::requires_begin()const{return !impl_->ready || impl_->done;}
 }
