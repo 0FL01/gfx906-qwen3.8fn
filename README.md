@@ -3557,3 +3557,30 @@ wave64s, Q8_1 ABI, FMA and DPP order; this differs from rejected N16 accumulator
 Model-free cross-check against unchanged short-N8, CPU rows/odd shapes/tails/
 canaries/graphs and source-switched A/B/A precede any model integration.
 Prototype snapshots are separate; production linear source remains unchanged.
+
+### 2026-10-06 paired canonicalN8 LDS reuse rejected (journal116)
+Native PID1720062 completed0 at05:05:44UTC, sourcea466ae3 dirty. Model-free
+source-switched A/B/A; Q4_0 tiled N>=16 uses one256-thread CTA containing two
+independent128-thread canonicalN8 groups. Group0 loads decoded weight codes/
+scales once into SoA LDS; both groups preserve original Q8_1 36-byte ABI,
+FMA order, wave1+wave0 and DPP reductions. Only weight reuse/CTA grouping
+changes, not the previously rejected N16 accumulator scheme. Tail/N1/other
+quant paths unchanged. Component fixture label now describes canonical N8
+accumulator groups, not the candidate's16-column physical CTA.
+
+All three runs on both GPUs pass548cases/device,574,166,786 exact values,
+184,516 CPU values,21host rejects and546graph launch checks. Odd shapes,
+partial K, odd N8 tile counts,1..7-column tails, extreme activation codes and
+canaries are included. Nevertheless candidate wins0/72 changed coordinates,
+median mean-control/candidate0.748800545x. Reject; do not waste full-model or
+full-request runs on this candidate. No performance promotion. Original linear
+source/fixture restored, ordinary model runtime SHA49878c...35c396 and protected
+baseline unchanged. Actual copied logs/manifests/source hashes verified and
+old115journal prefix preserved. Production implementation remains unchanged.
+
+Next measured attention target: integer chronological bitonic sort in batch
+input validation. Proposed within-wave merge in registers can replace repeated
+block barriers while retaining every count/ID/query/scale check, sorted multiset
+and validation-before-gather boundary. Test cross-build exact outputs, all
+failure/padding/graph cases and A/B/A before integrating. This is not yet code
+or a claimed win. Do not retry rejected matrix geometries without new evidence.

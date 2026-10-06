@@ -61,15 +61,16 @@ Actual logs/manifests/resources/counters and old114 prefix validated.
 Runtime SHA49878c725837880a1ba310213d4460d072af6f531d4d1d50bd8e91a09835c396.
 This is same-engine qualification; independent HF/128K/naturalEOS remain open.
 
-Next physical step: prepare revision file from current Git HEAD, copy the
-runs/linear-paired8-{off,on}.hip and fixture snapshots plus component/launch
-scripts, then launch r4-linear-paired8-launch.py exactly once. Fresh prefix
-runs/r4-linear-paired8-component-20261006. No experiment has run yet.
-Driver changes only standalone component build, restores production linear
-source and fixture even after failure, and protects ordinary runtime hashes.
-Candidate uses SoA LDS weight planes across TWO independent canonical N8
-groups, each preserving128-thread arithmetic. No larger accumulators or
-new activation ABI. If mixed/negative, do not run expensive model gates.
+Journal116: paired-N8 LDS reuse rejected. Native1720062 completed0 at05:05:44UTC.
+548cases/device,574,166,786 exact values/device;0/72 changed timing coordinates
+win both A,median0.748800545x. Original linear source+fixture restored, ordinary
+model SHA49878c...35c396 unchanged. No expensive model gate or promotion.
+
+Next: attention batch input-validation bitonic sort, which costs5.943s summed
+in the resident profile. Keep exact integer sorting and validation boundaries;
+perform <=wave64 merge stages in registers and retain CTA barriers at cross-wave
+dependencies. Component exact witness/failure/graph/padding A/B/A first.
+No candidate code or speed claim yet; parent continues personally.
 
 Fresh profile journal112: Q4_0N8matrix63.662s, attention40.025s, sort5.943s,
 gather5.744s, scalevalidation3.956s summed during targetPP158.823s traced.
