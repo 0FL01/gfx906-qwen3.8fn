@@ -562,3 +562,31 @@ natural EOS. Paired performance remains journal110:4K76.631s/PP105.181 and
 Next: fresh annotated16K profile of the retained residual+QSA candidate,
 with trace-off/traced128-output trajectory comparison and actual GPU timeline
 unions. Do not infer bottlenecks solely from the pre-resident trace.
+
+### 2026-10-06 retained-residual fresh profile (journal112)
+Native PID1688034 completed0 at02:28:49UTC. Annotation-only build preserves
+ordinary runtime SHA256dc980a...63508 and protected baseline. Exact32 smoke
+and128-output trace-off/traced IDs/acceptance/RNG/pending match.
+16K+128 ordinary133.434810s versus traced174.843363s; significant overhead,
+not a speed comparison. Compiled f4d5e61 dirty, resident+batched-QSA enabled.
+
+Actual completed target-PP range158.823253s;3,171,060 kernels, summed
+169.882094s across both GPUs. Individual kernel timeline unions85.197480 /
+84.657509s; union142.331615s, actual intersection27.523374s. No crossing
+events. These are unions/intersections, not overlap of broad envelopes.
+Top kernel sums: Q4_0 N8 matrix63.662384s(37.47%), sparse attention chunk
+40.025397s(23.56%), GDN6.727816s, input validation/chronological bitonic sort
+5.943099s, gather5.744329s, selected-scale preflight3.956389s. Index score
+1.629774s, query norm/RoPE1.296272s; another QSA launch reduction is therefore
+a smaller target than matrix/attention organization in this trace. H2D copy
+sums16.496715/16.525057s, D2H0.395839/0.395995s. CSV has no byte column;
+actual submitted byte extents are the separate Session diagnostics.
+
+Next small candidate: distribute selected-scale preflight across multiple
+CTAs/query rather than one CTA scanning all selected Q4 blocks. Keep the
+existing separate global preflight boundary before any gather/decode, exact
+invalid-bit classes and all-query failure-atomic publication. No math/precision
+or selection change; N1 untouched. First require full component frozen gates,
+cross-build output witness, failure/padding/graph checks and A/B/A; only then
+model gates and full requests. Matrix planar packing remains a later measured
+candidate, not a promise based on the top-kernel name.

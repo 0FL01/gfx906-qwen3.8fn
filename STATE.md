@@ -42,11 +42,14 @@ under runs/r4-resident-full16k-f4d-20261006. Check its pid/series/exit files
 before acting; never duplicate it. It requires120GB MemAvailable and the
 retained pair. No rebuild while it runs. Full16K qualification is complete in journal111:29,497,640,960 exact comparisons and16387 carry; native0 at02:10:53UTC.
 Actual full16K logs/manifests/resources/counters validated and journal111 appended.
-Next physical job: runs/r4-profile-resident16k-host-20261006. Check its pid/series/exit
-files before acting. Diagnostic16K+128 untraced/traced comparison; annotated-only
-profile build must preserve the ordinary runtime and output trajectory.
-Read fresh target PP kernel/copy totals and timeline intersections before choosing
-the next optimization. No profile wall-time speed claim.
+Fresh profile completed0, journal112; ordinary binary unchanged.
+TargetPP158.823s traced, Q4_0 N8 matrix63.662s summed, attention40.025s,
+input preflight/sort5.943s, gather5.744s, selected-scale preflight3.956s.
+Actual GPU kernel intersection27.523s; no trace-wall speed claim.
+Next: bounded multi-CTA selected-scale preflight, keeping every global
+validation boundary and arithmetic unchanged. Component cross-build A/B/A,
+failure/padding/graph checks first, then full-model gates and full requests.
+No candidate implementation or performance result yet.
 
 ## Confirmed performance baseline
 Journal108, pushed8cae1a4: bounded batched QSA selector integration.
