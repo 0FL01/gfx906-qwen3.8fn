@@ -1,5 +1,17 @@
 # Current state
 
+## PAUSED BY USER — 2026-10-06
+The06:30UTC instruction is satisfied: finish only current comparison, remove
+our load, pause so the user can test Strata. DO NOT RESUME without a new user
+instruction. Do not start prepared full16K scripts or further experiments.
+PID1738589 completed0 at06:49:09UTC including its final restore build.
+Verified06:49:54UTC: PID absent, no running containers, GPUs0% each,
+VRAM10,891,264 bytes each,8080 closed. Receipt runs/r4-user-pause-20261006.json.
+User notified06:50:24UTC; they may now start their own Strata workload.
+Strata remains installed at /home/radneon/strata; start.sh/stop.sh/logs.sh.
+Do not interfere with or stop a subsequent user-run Strata container.
+This hold supersedes all earlier next-step/autonomous-continuation text.
+
 ## Goal and constraints
 Complete all of PLAN.md and beat pinned llama.cpp on comparable full requests.
 Work personally through SSH nc-lab, without engineering subagents.
@@ -69,11 +81,15 @@ Full41CTest1160.51s, wide/attention/full4K/tile128 exact;MTP2051carry pass.
 Compiled2236f28 dirty, production changes attention.hip and expanded fixture.
 All FP/weights/precision and globalvalidation boundaries unchanged.
 
-Current physical step: runs/r4-wave-sort-ab-20261006. Check pid/series/exit
-files first; A/B/A4K/16K+512, scale-grid and resident mode ON in all arms.
-No other GPU work, source edits or builds during pair. Candidate restored
-at completion; validate actual artifacts/journal prefix, commit/push. If a
-retained full-request winner, qualify full16K logits/taps and longcarry next.
+Journal118 current comparison CLOSED, no active engineering job.
+Wave-sort4K B75.203356s PP107.368360; A2 faster75.075920s.
+16K B157.244652s PP135.648046; A2 PP135.651847 essentially tied.
+All512 IDs/acceptance/RNG/pending exact. Mixed full-request result: NOT a
+performance promotion. Candidate remains restored, compiled2236f28 dirty,
+ordinary SHA c9d7fdda8a5c490f5999fd5bd66b480b4975d93990d2ffebe906482a059d98e5.
+No wave-sort full16K logit gate was launched; it is explicitly UNRUN.
+The last accepted resident+scale-grid performance is journal114, full16K115.
+Only documentation/results closeout followed the finished test; no new load.
 
 Rejected journal116 paired-N8 LDS prototype:0/72wins,median0.748800545x;
 linear source+fixture restored. Do not repeat without new evidence.

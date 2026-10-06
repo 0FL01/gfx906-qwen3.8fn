@@ -3617,3 +3617,48 @@ Next is source-switched A/B/A4K/16K+512 with scale-grid and resident mode ON in
 every arm, changing only integer-sort scheduling. No full-request promotion
 yet. Full16K logits/taps, independent HF, occupied128K, naturalEOS and full
 R4–R8 completion are not implied by this slice.
+
+### 2026-10-06 wave-sort full-request comparison and USER PAUSE (journal118)
+Native PID1738589 completed0 at06:49:09UTC, including the existing final
+candidate restore build. Source2236f28 dirty; implementation7a6ddce.
+All arms use resident residual and multi-CTA scale preflight; only integer
+bitonic sort scheduling differs. Logical4096/16384, stage2048/frame1024,
+attention8/slots112, primary1/.95/20/seed12345,512outputs/ignoreEOS.
+Builds outside requests; load separate, no prefix reuse, expert-cache warmness
+unknown. Actual command arguments and prompt IDs match across the triple.
+
+4096 prompt +512 output:
+- 4k-A1: request77.722073900s, PP105.634718, TG13.121018
+- 4k-B: request75.203356204s, PP107.368360, TG13.791223
+- 4k-A2: request75.075919582s, PP106.994966, TG13.888944
+Mean-A/B request1.015898766x, PP1.009950751x. Both-control request win:False; both-control PP win:True.
+
+16384 prompt +512 output:
+- 16k-A1: request160.829939778s, PP134.023915, TG13.244722
+- 16k-B: request157.244651950s, PP135.648046, TG14.015624
+- 16k-A2: request157.491875640s, PP135.651847, TG13.919872
+Mean-A/B request1.012186461x, PP1.006045101x. Both-control request win:True; both-control PP win:False.
+
+All512 IDs/acceptance/proposal and decision RNG/pending match. Candidate
+restored and protected baseline unchanged. Result is MIXED, not an end-to-end
+performance promotion:4K candidate75.203356s is slower than A2's75.075920s;
+16K PP135.648046 is effectively tied with A2's135.651847. Component24/24 wins
+do not establish a stable whole-request advantage. Existing qualified
+resident+scale-grid performance and full16K receipts remain journals110–115.
+
+User at06:30UTC explicitly requested finishing ONLY this comparison, then
+pausing and freeing the machine to test Strata themselves. NO NEW TESTS were
+started. In particular the prepared wave-sort full16K reference remains UNRUN.
+At06:49:54UTC benchmark PID absent, no running containers, both GPUs0% busy
+and10,891,264 bytes used each;8080 closed. Receipt:
+runs/r4-user-pause-20261006.json. User notified06:50:24UTC.
+Strata was not started by the assistant; ~/strata/start.sh and logs.sh remain
+for manual use. Do not stop or interfere with the user's subsequent Strata run.
+
+Source and ordinary runtime remain the correctness-qualified wave-sort
+candidate (SHA c9d7fdda8a5c490f5999fd5bd66b480b4975d93990d2ffebe906482a059d98e5),
+not a newly promoted performance baseline. No additional restore/rebuild was
+started after the allowed series. Candidate full16K/independentHF/128K/natural
+EOS and broader R4–R8 remain open. Resume only on a new user instruction.
+Actual copied outputs/manifests/inputs, source-switched provenance and old117
+journal byte prefix were independently validated on the controller.
