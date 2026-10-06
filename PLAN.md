@@ -590,3 +590,37 @@ or selection change; N1 untouched. First require full component frozen gates,
 cross-build output witness, failure/padding/graph checks and A/B/A; only then
 model gates and full requests. Matrix planar packing remains a later measured
 candidate, not a promise based on the top-kernel name.
+
+### 2026-10-06 bounded attention scale-preflight grid (journal113)
+Changed only launch_attention_q4_batch's selected-Q4-scale scan partition:
+a grid-stride set of CTAs/query instead of one CTA/query. At ordinary maximum
+2051 selected rows,17 CTAs; short visibility keeps a bounded smaller grid.
+All selected scales are still validated globally BEFORE any gather/decode.
+Existing count/ID/query preflight, sticky invalid bit, global stream boundary,
+all-query atomic output suppression, chronological sort, Q4->half conversion,
+attention arithmetic and standalone N1 API remain unchanged. No workspace or
+model-value change. This is scheduling of the qualified scan, not removed
+validation or fusion across its required boundary. Existing mx/furnace-derived
+attention math is KEEP; grid-stride distribution is WRITE OURS.
+
+Model-free same-fixture A/B/A, source5bdfd25 dirty: each GPU38cases/352queries,
+2,162,688 numeric/bit comparisons,65device rejects (40 new partition boundary
+cases),180host rejects,6sticky checks, graph replay/padding/cleanup pass.
+Cross-build76cases/4,336,640 values including padding are EXACT. Component
+full-attention-chain timings beat both controls on18/18 long coordinates;
+batch8-long median1.072978x. Only20/24 total coordinates win; short128 cases
+are mixed. No universal gain or full-request speed claim.
+
+Native component PID1691853 completed0 at02:39:54UTC. Model PID1694916
+completed0 at03:42:27UTC: full strict build and41/41CTest(1158.69s),
+wide786,677,760 and attention1,036,984,320 comparisons, full4096/stage2048
+resident13,494,576,640 and tile128441,443,840 comparisons, all exact diagnostic
+bits/frozen gates;2051 MTP carry matches32 IDs/acceptance/RNG. Production
+model-gate durations include fixture work and are not speed measurements.
+Actual artifacts copied/validated on controller, old112journal prefix intact;
+protected baseline unchanged.
+
+Next is source-switched A/B/A4K/16K+512 with residual mode ON in all arms and
+only scale-scan geometry changed. Candidate has not yet passed this full-request
+gate or its own full16K logit reference. Retain only on measured request benefit.
+Independent HF, occupied128K, natural EOS and complete R4–R8 remain open.

@@ -512,7 +512,7 @@ __global__ __launch_bounds__(threads)
 void validate_scales_batch(const Q4_0* keys, const Q4_0* values,
                           AttentionQ4BatchView<const std::int32_t> selections,
                           AttentionQ4BatchView<const int> lengths, int first_visible, int* error) {
-    const auto q = blockIdx.x;
+    const auto q = blockIdx.y;
     const auto* ids = batch_row(selections, q);
     const auto* counts = batch_row(lengths, q);
     const int visible = first_visible + static_cast<int>(q);
@@ -522,7 +522,8 @@ void validate_scales_batch(const Q4_0* keys, const Q4_0* values,
     if (!active) return;
     const int n = counts[0];
     int flags = 0;
-    for (int i = threadIdx.x; i < n * row_blocks; i += threads) {
+    for (int i = blockIdx.x * threads + threadIdx.x; i < n * row_blocks;
+         i += gridDim.x * threads) {
         const int id = ids[i / row_blocks];
         if (id < 0 || id >= visible) { flags |= attention_error_invalid; continue; }
         const std::size_t b = static_cast<std::size_t>(id) * row_blocks + i % row_blocks;
@@ -754,7 +755,16 @@ hipError_t launch_attention_q4_batch(AttentionQ4BatchView<const float> query,
         return hipErrorInvalidValue;
     validate_inputs_batch<<<batch, threads, 0, stream>>>(query, ids, counts, first_visible, w);
     auto status = hipGetLastError(); if (status != hipSuccess) return status;
-    validate_scales_batch<<<batch, threads, 0, stream>>>(cache.keys, cache.values, ids, counts, first_visible, w.error);
+    // KEEP the qualified mx/furnace-derived gather/attention arithmetic and
+    // separate ALL-query scale validation boundary. Only distribute this scan:
+    // each selected Q4 block is visited exactly once in a grid-stride partition.
+    // At most eight 256-element iterations/CTA at maximum selection; short
+    // visibility uses one CTA. All flags join before the next stream launch.
+    // No cache decode, buffer, arithmetic, selector or N1-path change.
+    const int max_selected = std::min(attention_max_selected, first_visible + batch - 1);
+    const int scale_ctas = (max_selected * row_blocks + threads * 8 - 1) / (threads * 8);
+    validate_scales_batch<<<dim3(scale_ctas, batch), threads, 0, stream>>>(
+        cache.keys, cache.values, ids, counts, first_visible, w.error);
     status = hipGetLastError(); if (status != hipSuccess) return status;
     gather_selected_batch<<<dim3((attention_max_selected + 3) / 4, batch), threads, 0, stream>>>(cache.keys, cache.values, counts, first_visible, w);
     status = hipGetLastError(); if (status != hipSuccess) return status;

@@ -42,14 +42,26 @@ under runs/r4-resident-full16k-f4d-20261006. Check its pid/series/exit files
 before acting; never duplicate it. It requires120GB MemAvailable and the
 retained pair. No rebuild while it runs. Full16K qualification is complete in journal111:29,497,640,960 exact comparisons and16387 carry; native0 at02:10:53UTC.
 Actual full16K logs/manifests/resources/counters validated and journal111 appended.
-Fresh profile completed0, journal112; ordinary binary unchanged.
-TargetPP158.823s traced, Q4_0 N8 matrix63.662s summed, attention40.025s,
-input preflight/sort5.943s, gather5.744s, selected-scale preflight3.956s.
-Actual GPU kernel intersection27.523s; no trace-wall speed claim.
-Next: bounded multi-CTA selected-scale preflight, keeping every global
-validation boundary and arithmetic unchanged. Component cross-build A/B/A,
-failure/padding/graph checks first, then full-model gates and full requests.
-No candidate implementation or performance result yet.
+Journal113: multi-CTA scale preflight passes component and model gates.
+Component18/18 long coordinates beat both A; batch8long median1.072978x.
+Short128 mixed; no universal gain. Full41CTest1158.69s, wide/attention/4K/tile128
+numeric gates exact and2051MTP carry pass. Native model0 at03:42:27UTC.
+Compiled source5bdfd25 dirty; two implementation files attention.hip and
+attention_batch_test.hip. No math/precision/validation-boundary change.
+
+Current physical step: runs/r4-scale-grid-ab-20261006. Check PID/series/exit
+files before acting. A/B/A4K/16K+512 source-switches only attention.hip scale
+grid; residual mode ON in all arms. Do not rebuild/edit GPU source during pair.
+Candidate restored at end. After result, collect actual artifacts, append
+canonical journal once, document/commit/push. If retained, run full16K reference;
+if not a stable end-to-end win, do not promote based on component timing.
+
+Fresh profile journal112: Q4_0N8matrix63.662s, attention40.025s, sort5.943s,
+gather5.744s, scalevalidation3.956s summed during targetPP158.823s traced.
+Potential next matrix experiment is LDS weight reuse across TWO independent
+canonical N8 groups, preserving each group's128-thread reduction exactly.
+This is a hypothesis, not implemented or measured. Do not repeat rejected N16
+accumulator geometry or failed expert-wide MMQ.
 
 ## Confirmed performance baseline
 Journal108, pushed8cae1a4: bounded batched QSA selector integration.

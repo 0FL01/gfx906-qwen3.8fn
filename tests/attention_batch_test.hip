@@ -546,6 +546,27 @@ void host_failures(Summary& s) {
     f.sources(); f.neighbors();
 }
 
+// Exercise separate scale-scan partitions, including the final partial tile.
+// Bad early/late query still suppresses ALL gathers and publication.
+void scale_partition_failures(Summary& s) {
+    Fixture f(8, 2049); f.selection();
+    const auto keys = f.hk, values = f.hv;
+    for (int q : {0, 7}) {
+        const auto row = static_cast<std::size_t>(q);
+        const int n = f.hc[row * f.cs];
+        for (int rank : {0, 127, 128, 2047, n - 1}) {
+            if (rank >= n) continue;
+            const auto id = static_cast<std::size_t>(f.hi[row * f.is + static_cast<std::size_t>(rank)]);
+            for (int block : {0, 15}) for (bool value : {false, true}) {
+                auto& cache = value ? f.hv : f.hk;
+                cache[id * 16 + static_cast<std::size_t>(block)].d = 0x7e01;
+                failed(f, s, attention_error_invalid, true);
+                f.hk = keys; f.hv = values;
+            }
+        }
+    }
+}
+
 Summary device(int index) {
     check(hipSetDevice(index)); hipDeviceProp_t prop{}; check(hipGetDeviceProperties(&prop, index));
     require(std::string_view(prop.gcnArchName).starts_with("gfx906") && prop.warpSize == 64, "fixture requires gfx906 wave64");
@@ -578,7 +599,7 @@ Summary device(int index) {
         f.sources(); f.neighbors();
         s.timings.push_back({batch, first, milliseconds / 64});
     }
-    device_failures(s); host_failures(s);
+    device_failures(s); scale_partition_failures(s); host_failures(s);
     return s; // every fixture/stream/graph/buffer destroyed BEFORE serialization
 }
 
