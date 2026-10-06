@@ -656,3 +656,26 @@ faster in total request (~57s4K/~144s16K), so the overall goal remains open.
 Actual raw outputs/manifests/inputs copied and independently validated against
 journal, old113byte prefix intact. Candidate-specific full16K logit/tap
 reference and16387carry run next; matching512outputs alone does not close that.
+
+### 2026-10-06 scale-grid full16K closure (journal115)
+Native PID1713217 completed0 at04:56:30UTC. Same compiled5bdfd25 dirty
+qualified runtime SHA49878c725837880a1ba310213d4460d072af6f531d4d1d50bd8e91a09835c396.
+Full16384-token all-vocabulary logits and taps:29,497,640,960 comparisons,
+zero absolute error/gate ratio/diagnostic bit mismatches. Includes all-row,
+last-row-only, occupied5, split/reset/reject/continuation checks; frozen gates
+unchanged.16387-token resident MTP carry logical4096/16384 matches32 IDs,
+acceptance and RNG. Native durations2212.622s/502.690s are correctness-fixture
+time, not performance. Actual logs/manifests/resources/counters validated on
+controller; old114journal prefix retained, protected baseline unchanged.
+
+The scale-grid candidate is now qualified at full16K against the same-engine
+N1 reference. It remains distinct from independent HF, occupied128K, natural
+EOS or a llama.cpp victory. Retained performance is journal114:4K75.346s
+PP106.280,16K157.177s PP135.832.
+
+Next bounded experiment, not yet run: reuse decoded Q4_0 weights in LDS across
+two independent canonical N8 groups. Each group retains the original pair of
+wave64s, Q8_1 ABI, FMA and DPP order; this differs from rejected N16 accumulators.
+Model-free cross-check against unchanged short-N8, CPU rows/odd shapes/tails/
+canaries/graphs and source-switched A/B/A precede any model integration.
+Prototype snapshots are separate; production linear source remains unchanged.

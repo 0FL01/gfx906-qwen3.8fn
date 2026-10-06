@@ -55,11 +55,21 @@ Journal114: scale-grid full-request pair completed0 at04:06:07UTC.
 Both beat BOTH controls,512IDs/acceptance/RNG/pending exact. Candidate restored.
 Modest PP gains1.59%/2.80%, not component7.3%. Donor still faster overall.
 
-Current physical step: runs/r4-scale-grid-full16k-20261006. Check pid/series/exit
-files first; full16384 logit/tap reference then16387 MTP carry. No rebuild or
-GPU source edits while it runs. Runtime SHA49878c725837880a1ba310213d4460d072af6f531d4d1d50bd8e91a09835c396.
-After native0 validate actual artifacts, append canonical journal once and
-commit/push closure. Full16K qualification remains pending for this candidate.
+Journal115: full16K scale-grid logit/tap gate completed0 at04:56:30UTC.
+29,497,640,960 comparisons exact;16387 MTP carry IDs/acceptance/RNG pass.
+Actual logs/manifests/resources/counters and old114 prefix validated.
+Runtime SHA49878c725837880a1ba310213d4460d072af6f531d4d1d50bd8e91a09835c396.
+This is same-engine qualification; independent HF/128K/naturalEOS remain open.
+
+Next physical step: prepare revision file from current Git HEAD, copy the
+runs/linear-paired8-{off,on}.hip and fixture snapshots plus component/launch
+scripts, then launch r4-linear-paired8-launch.py exactly once. Fresh prefix
+runs/r4-linear-paired8-component-20261006. No experiment has run yet.
+Driver changes only standalone component build, restores production linear
+source and fixture even after failure, and protects ordinary runtime hashes.
+Candidate uses SoA LDS weight planes across TWO independent canonical N8
+groups, each preserving128-thread arithmetic. No larger accumulators or
+new activation ABI. If mixed/negative, do not run expensive model gates.
 
 Fresh profile journal112: Q4_0N8matrix63.662s, attention40.025s, sort5.943s,
 gather5.744s, scalevalidation3.956s summed during targetPP158.823s traced.
