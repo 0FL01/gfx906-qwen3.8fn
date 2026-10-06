@@ -49,12 +49,17 @@ numeric gates exact and2051MTP carry pass. Native model0 at03:42:27UTC.
 Compiled source5bdfd25 dirty; two implementation files attention.hip and
 attention_batch_test.hip. No math/precision/validation-boundary change.
 
-Current physical step: runs/r4-scale-grid-ab-20261006. Check PID/series/exit
-files before acting. A/B/A4K/16K+512 source-switches only attention.hip scale
-grid; residual mode ON in all arms. Do not rebuild/edit GPU source during pair.
-Candidate restored at end. After result, collect actual artifacts, append
-canonical journal once, document/commit/push. If retained, run full16K reference;
-if not a stable end-to-end win, do not promote based on component timing.
+Journal114: scale-grid full-request pair completed0 at04:06:07UTC.
+4K+512 B75.346020s PP106.280132 TG13.884250; mean-A request1.024764x,PP1.015873x.
+16K+512 B157.176657s PP135.832297 TG13.978684; request1.032254x,PP1.027954x.
+Both beat BOTH controls,512IDs/acceptance/RNG/pending exact. Candidate restored.
+Modest PP gains1.59%/2.80%, not component7.3%. Donor still faster overall.
+
+Current physical step: runs/r4-scale-grid-full16k-20261006. Check pid/series/exit
+files first; full16384 logit/tap reference then16387 MTP carry. No rebuild or
+GPU source edits while it runs. Runtime SHA49878c725837880a1ba310213d4460d072af6f531d4d1d50bd8e91a09835c396.
+After native0 validate actual artifacts, append canonical journal once and
+commit/push closure. Full16K qualification remains pending for this candidate.
 
 Fresh profile journal112: Q4_0N8matrix63.662s, attention40.025s, sort5.943s,
 gather5.744s, scalevalidation3.956s summed during targetPP158.823s traced.

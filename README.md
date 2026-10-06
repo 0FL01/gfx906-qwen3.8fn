@@ -3502,3 +3502,35 @@ Next is source-switched A/B/A4K/16K+512 with residual mode ON in all arms and
 only scale-scan geometry changed. Candidate has not yet passed this full-request
 gate or its own full16K logit reference. Retain only on measured request benefit.
 Independent HF, occupied128K, natural EOS and complete R4–R8 remain open.
+
+### 2026-10-06 scale-grid full-request pair (journal114)
+Native PID1706348 completed0 at04:06:07UTC. Source-switched A/B/A of ONLY
+attention scale validation geometry, source5bdfd25 dirty, implementationa81ad04.
+Resident residual and batched-QSA enabled in every arm. Logical4096/16384,
+stage2048/frame1024/attention8/slots112, primary1/.95/20/seed12345,512outputs,
+ignoreEOS. Builds outside requests; load separate, no prefix reuse, expert-cache
+warmness unknown. Actual arguments and prompt IDs match across all three arms.
+
+4096 prompt +512 output:
+- 4k-A1: request77.970641871s, PP104.737842, TG13.149297
+- 4k-B: request75.346020174s, PP106.280132, TG13.884250
+- 4k-A2: request76.453075707s, PP104.501490, TG13.716127
+Mean-A/B request1.024763599x, PP1.015872751x; candidate beats BOTH controls for both.
+
+16384 prompt +512 output:
+- 16k-A1: request163.076339675s, PP132.059384, TG13.099482
+- 16k-B: request157.176657414s, PP135.832297, TG13.978684
+- 16k-A2: request161.416107358s, PP132.217625, TG13.627603
+Mean-A/B request1.032253938x, PP1.027954320x; candidate beats BOTH controls for both.
+
+All512 IDs, acceptance histogram, proposal/decision RNG and pending token
+match. Candidate restored and protected baseline unchanged. Retain this
+measured scheduling optimization; it does not alter reductions, precision,
+selected scales checked, or the validation-before-decode boundary. Modest
+PP gains1.59%/2.80% are the measured result; component7.3% must not be quoted
+as end-to-end PP. No trace-wall or independent-HF claim. Pinned llama.cpp still
+faster in total request (~57s4K/~144s16K), so the overall goal remains open.
+
+Actual raw outputs/manifests/inputs copied and independently validated against
+journal, old113byte prefix intact. Candidate-specific full16K logit/tap
+reference and16387carry run next; matching512outputs alone does not close that.
