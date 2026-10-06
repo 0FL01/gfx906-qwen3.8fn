@@ -29,16 +29,21 @@ r4-resident-finalize-f4d.exit.json is0 after verifying all41 actual Passed rows.
 No native test rerun or output alteration. Actual controller logs and old108
 journal byte prefix validated. Full16K logits/taps and speed are NOT qualified.
 
-## Next physical step
-Copy runs/r4-resident-ab-f4d.py and r4-resident-ab-launch.py to GPU runs, then
-launch the latter exactly once. They require the finalizer0 and qualified
-runtime hash. Same binary, A/B/A4K/16K+512, only the residual flag changes;
-assert full IDs/acceptance/RNG/pending, copy extents and loop-barrier counts.
-Do not rebuild or edit GPU sources while this benchmark runs.
-Runtime SHA256:
-dc980a175142abdc4725bc077e5de02d5e2ead8e6746aa3e4d69174644d63508
-After a retained candidate's pair, run the full16K reference before claiming
-full16K logits/taps. Do not confuse diagnostic fixture wall times with speed.
+## Current physical step
+Journal110: same-binary resident A/B/A completed0 at01:22:47UTC.
+4K B76.630827s PP105.181314 TG13.559101, A83.464509/81.757773s.
+16K B160.540752s PP133.168911 TG13.624024, A178.951137/179.278324s.
+Mean-control full-request gains7.804%/11.570%; PP13.254%/14.048%.
+Both beat both controls; all512 trajectories and submitted-copy extents exact.
+Retained opt-in; default OFF. Donor still faster overall (~57/~144s).
+
+Full16K resident logit/tap and16387-token carry driver is prepared/launched
+under runs/r4-resident-full16k-f4d-20261006. Check its pid/series/exit files
+before acting; never duplicate it. It requires120GB MemAvailable and the
+retained pair. No rebuild while it runs. Full16K qualification remains pending.
+After completion, validate actual raw logs/manifests, append canonical journal
+once, copy/verify actual files, document and commit/push. Then revisit measured
+PP bottlenecks using the user research; do not repeat rejected geometry sweeps.
 
 ## Confirmed performance baseline
 Journal108, pushed8cae1a4: bounded batched QSA selector integration.

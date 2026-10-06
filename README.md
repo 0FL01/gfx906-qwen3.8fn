@@ -3382,3 +3382,39 @@ This is a bounded correctness/memory slice, not a speed promotion. Full16K
 logit/tap qualification, independent HF, occupied128K and natural EOS remain
 outside this result. Next is same-binary A/B/A4K/16K+512, changing only the
 residual flag; retain it only with measured full-request benefit.
+
+### 2026-10-06 resident residual full-request pair (journal 110)
+Native PID1676011 completed0 at01:22:47UTC. Trace-off SAME binary
+A1(off)/B(on)/A2(off), changing only --prefill-residual-device; actual inputs,
+all manifests, source stamp and binary hashes validated. Source remains
+f4d5e6166e8afb841422cdc7eaf58dc273bafb25 dirty, implementation commit0602367.
+Logical4096/16384, stage2048, frame1024, attention8, slots112, output512;
+temperature1/top-p0.95/top-k20/seed12345/ignore-EOS. Model load excluded.
+No prefix reuse; expert-cache warmness unknown.
+
+4096 prompt +512 output:
+- 4k-A1: request83.464508964s, PP92.860259, TG12.984906
+- 4k-B: request76.630826896s, PP105.181314, TG13.559101
+- 4k-A2: request81.757773036s, PP92.883332, TG13.569619
+Mean-control request speedup1.078040579x; PP speedup1.132543142x. Candidate beats BOTH controls for request and PP.
+
+16384 prompt +512 output:
+- 16k-A1: request178.951136696s, PP117.088573, TG13.095487
+- 16k-B: request160.540751868s, PP133.168911, TG13.624024
+- 16k-A2: request179.278323943s, PP116.444295, TG13.247354
+Mean-control request speedup1.115696346x; PP speedup1.140481215x. Candidate beats BOTH controls for request and PP.
+
+All512 output IDs, accepted counts, proposal/decision RNG draws and pending
+last token match in each triple. Submitted residual H2D/D2H extents each fall
+48x:16K each64,424,509,440 bytes ->1,342,177,280 bytes; additional resident
+D2D128,849,018,880 bytes. These are API byte extents, not physical PCIe counters.
+FFN, router and routing metadata extents stay unchanged; explicit loop-check
+counts also match the implementation's formula. Resident adds80MiB per GPU.
+
+Retain the opt-in candidate for these measured workloads; default remains OFF.
+The full16K logit/tap reference is the next qualification step and is not implied
+by matching512 generated outputs. Same-engine parity is not independent HF.
+Pinned llama.cpp remains faster in total request (~57s4K/~144s16K); no victory
+claim, no occupied128K or natural-EOS qualification. Both TG numerators here
+are511; donor's is512. Full raw logs/manifests and old109 journal prefix were
+independently validated on the controller.
