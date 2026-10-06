@@ -573,12 +573,14 @@ Summary device(int index) {
     Summary s; s.device = index;
     // Each 2047..2056 case includes its actual complete-block/tail count (2051
     // only at 2051/2055); visibility never implies reading unused capacity.
-    std::vector<int> lengths{1, 2, 3, 63, 64, 65};
+    std::vector<int> lengths{1, 2, 3, 31, 32, 33, 63, 64, 65, 127, 128, 129,
+                             255, 256, 257, 511, 512, 513, 1023, 1024, 1025};
     for (int n = 2047; n <= 2056; ++n) lengths.push_back(n);
     for (int n : lengths) { Fixture f(1, n); f.selection(); parity(f, s); }
     for (int b : {2, 3, 8}) { Fixture f(b, 2049); f.selection(true); parity(f, s); }
     for (int b : {5, 7, 127, 128}) { Fixture f(b, 1); f.selection(true); parity(f, s); }
     { Fixture f(3, 65); f.selection(true, true); parity(f, s); }
+    { Fixture f(8, 2051); f.selection(false, true); parity(f, s); }
     { Fixture f(2, 131071, attention_max_capacity); f.selection(true); parity(f, s); }
     if (measure_performance) for (int batch : {1, 3, 8}) for (int first : {128, 2051, 4096, 16384}) {
         Fixture f(batch, first); f.selection(); parity(f, s);

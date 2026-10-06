@@ -493,6 +493,27 @@ void validate_inputs_batch(AttentionQ4BatchView<const float> queries,
     __syncthreads();
     for (int span = 2; span <= width; span *= 2) {
         for (int stride = span / 2; stride > 0; stride /= 2) {
+            if (stride < 64) {
+                // ADAPT this same integer bitonic network, not its order or
+                // validation contract. Remaining partners are in ONE wave64.
+                // Keep that merge in registers; a CTA barrier still joins all
+                // waves before the next cross-wave stage or ID publication.
+                // Power-of-two width and XOR stride keep every active partner
+                // inside its populated wave (including width<64). Repetitions
+                // and INT32_MAX padding retain the identical sorted multiset.
+                for (int i = threadIdx.x; i < width; i += threads) {
+                    auto value = ordered[i];
+                    for (int local = stride; local > 0; local /= 2) {
+                        const auto other = __shfl_xor(value, local, 64);
+                        const bool take_min = ((i & span) == 0) == ((i & local) == 0);
+                        value = take_min ? (value < other ? value : other) :
+                                           (value > other ? value : other);
+                    }
+                    ordered[i] = value;
+                }
+                __syncthreads();
+                break;
+            }
             for (int i = threadIdx.x; i < width; i += threads) {
                 const int other = i ^ stride;
                 if (i < other) {

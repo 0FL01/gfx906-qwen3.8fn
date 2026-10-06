@@ -61,16 +61,22 @@ Actual logs/manifests/resources/counters and old114 prefix validated.
 Runtime SHA49878c725837880a1ba310213d4460d072af6f531d4d1d50bd8e91a09835c396.
 This is same-engine qualification; independent HF/128K/naturalEOS remain open.
 
-Journal116: paired-N8 LDS reuse rejected. Native1720062 completed0 at05:05:44UTC.
-548cases/device,574,166,786 exact values/device;0/72 changed timing coordinates
-win both A,median0.748800545x. Original linear source+fixture restored, ordinary
-model SHA49878c...35c396 unchanged. No expensive model gate or promotion.
+Journal117: wave64-register integer bitonic merge passes component/model gates.
+54cases/GPU;108case4,620,000value exact witness,65device/180host rejects and
+graph/padding/cleanup.24/24component coordinates beat both controls;batch8long
+median1.035874x. No fullrequest promotion from component timings.
+Full41CTest1160.51s, wide/attention/full4K/tile128 exact;MTP2051carry pass.
+Compiled2236f28 dirty, production changes attention.hip and expanded fixture.
+All FP/weights/precision and globalvalidation boundaries unchanged.
 
-Next: attention batch input-validation bitonic sort, which costs5.943s summed
-in the resident profile. Keep exact integer sorting and validation boundaries;
-perform <=wave64 merge stages in registers and retain CTA barriers at cross-wave
-dependencies. Component exact witness/failure/graph/padding A/B/A first.
-No candidate code or speed claim yet; parent continues personally.
+Current physical step: runs/r4-wave-sort-ab-20261006. Check pid/series/exit
+files first; A/B/A4K/16K+512, scale-grid and resident mode ON in all arms.
+No other GPU work, source edits or builds during pair. Candidate restored
+at completion; validate actual artifacts/journal prefix, commit/push. If a
+retained full-request winner, qualify full16K logits/taps and longcarry next.
+
+Rejected journal116 paired-N8 LDS prototype:0/72wins,median0.748800545x;
+linear source+fixture restored. Do not repeat without new evidence.
 
 Fresh profile journal112: Q4_0N8matrix63.662s, attention40.025s, sort5.943s,
 gather5.744s, scalevalidation3.956s summed during targetPP158.823s traced.

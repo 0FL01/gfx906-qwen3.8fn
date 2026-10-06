@@ -706,3 +706,36 @@ block barriers while retaining every count/ID/query/scale check, sorted multiset
 and validation-before-gather boundary. Test cross-build exact outputs, all
 failure/padding/graph cases and A/B/A before integrating. This is not yet code
 or a claimed win. Do not retry rejected matrix geometries without new evidence.
+
+### 2026-10-06 wave64 integer sort qualification (journal117)
+Only the batched attention input-preflight bitonic network changes scheduling:
+when remaining XOR partners lie in one wave64, keep the remainder of that merge
+in registers via integer shuffle/min/max. Cross-wave stages remain in the same
+shared array; a CTA barrier joins every wave before any subsequent cross-wave
+dependency or ordered-ID publication. Width is power-of-two, padded INT32_MAX;
+active partners remain valid even below64. Repeated IDs preserve the multiset.
+For width4096 the source network uses33 block barriers instead of78; this is
+a static schedule count, not a measured latency. No new buffer or FP operation.
+All count/ID/query/selected-scale checks and separate validation-before-gather
+boundaries remain; selected-scale grid froma81ad04 is unchanged. Standalone
+N1 kernel untouched. Donor decision: ADAPT our existing integer bitonic network,
+KEEP mx/furnace-derived attention arithmetic, no external runtime/framework.
+
+Model-free source2236f28 dirty A/B/A passed on both GPUs:54cases/375queries,
+2,304,000 numeric/bit elements each,65device/180host rejects,6sticky checks,
+graph/padding/canaries/cleanup. Added15 power-of-two boundary lengths and
+large8-query duplicate selections. Cross-build108cases/4,620,000 values exact.
+24/24 component coordinates beat BOTH controls; batch8-long median1.035874x.
+This is full attention-chain component time, not end-to-end PP.
+
+Full strict build and41/41CTest(1160.51s), wide786,677,760 / attention
+1,036,984,320 / full4096resident13,494,576,640 / tile128441,443,840 comparisons
+pass with zero diagnostic bit mismatches.2051 MTP carry32outputs/acceptance/RNG
+match. ComponentPID1724571 and modelPID1727576 native0 receipts and actual
+copied logs/manifests were validated on controller; old116journal prefix
+retained and protected baseline unchanged. Frozen gates/models unchanged.
+
+Next is source-switched A/B/A4K/16K+512 with scale-grid and resident mode ON in
+every arm, changing only integer-sort scheduling. No full-request promotion
+yet. Full16K logits/taps, independent HF, occupied128K, naturalEOS and full
+R4–R8 completion are not implied by this slice.
