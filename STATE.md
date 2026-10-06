@@ -27,7 +27,7 @@ Short PID1660234 completed0. Long PID1664601's native phases all passed,
 but its final CTest-summary string check failed. Original exit1 is retained;
 r4-resident-finalize-f4d.exit.json is0 after verifying all41 actual Passed rows.
 No native test rerun or output alteration. Actual controller logs and old108
-journal byte prefix validated. Full16K logits/taps and speed are NOT qualified.
+journal byte prefix validated. Full16K logits/taps are now qualified by journal111, performance by journal110.
 
 ## Current physical step
 Journal110: same-binary resident A/B/A completed0 at01:22:47UTC.
@@ -40,10 +40,13 @@ Retained opt-in; default OFF. Donor still faster overall (~57/~144s).
 Full16K resident logit/tap and16387-token carry driver is prepared/launched
 under runs/r4-resident-full16k-f4d-20261006. Check its pid/series/exit files
 before acting; never duplicate it. It requires120GB MemAvailable and the
-retained pair. No rebuild while it runs. Full16K qualification remains pending.
-After completion, validate actual raw logs/manifests, append canonical journal
-once, copy/verify actual files, document and commit/push. Then revisit measured
-PP bottlenecks using the user research; do not repeat rejected geometry sweeps.
+retained pair. No rebuild while it runs. Full16K qualification is complete in journal111:29,497,640,960 exact comparisons and16387 carry; native0 at02:10:53UTC.
+Actual full16K logs/manifests/resources/counters validated and journal111 appended.
+Next physical job: runs/r4-profile-resident16k-host-20261006. Check its pid/series/exit
+files before acting. Diagnostic16K+128 untraced/traced comparison; annotated-only
+profile build must preserve the ordinary runtime and output trajectory.
+Read fresh target PP kernel/copy totals and timeline intersections before choosing
+the next optimization. No profile wall-time speed claim.
 
 ## Confirmed performance baseline
 Journal108, pushed8cae1a4: bounded batched QSA selector integration.

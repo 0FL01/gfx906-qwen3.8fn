@@ -540,3 +540,25 @@ Pinned llama.cpp remains faster in total request (~57s4K/~144s16K); no victory
 claim, no occupied128K or natural-EOS qualification. Both TG numerators here
 are511; donor's is512. Full raw logs/manifests and old109 journal prefix were
 independently validated on the controller.
+
+### 2026-10-06 resident residual full16K qualification (journal111)
+Native PID1680636 completed0 at02:10:53UTC. Same qualified f4d5e61 dirty
+binaries, same model and frozen .02+.002*abs(reference) gates. Opt-in resident
+residual, logical16384/stage2048/frame1024/attention8. Full all-vocabulary
+logits and checkpoint taps:29,497,640,960 comparisons, maxabs0, maxratio0,
+zero diagnostic bit mismatches. Includes occupied5, split calls, resets,
+rejections and continuations; one retained full N1 reference. The separate
+16387-token carry compares logical4096/16384 with resident enabled, matching
+all32 output IDs, acceptance counts and RNG. Native durations2219.869s and
+505.245s include fixture work and are NOT performance claims.
+
+Actual raw logs/manifests, resident memory ownership and submitted-transfer
+records were copied and independently validated on the controller; canonical
+journal110 byte prefix preserved. Protected baseline and qualified ordinary
+runtime SHA256 remain unchanged. This closes the resident candidate's full16K
+same-engine numerical qualification, not independent HF, occupied128K or
+natural EOS. Paired performance remains journal110:4K76.631s/PP105.181 and
+16K160.541s/PP133.169. Pinned llama.cpp is still faster in total request.
+Next: fresh annotated16K profile of the retained residual+QSA candidate,
+with trace-off/traced128-output trajectory comparison and actual GPU timeline
+unions. Do not infer bottlenecks solely from the pre-resident trace.
